@@ -237,7 +237,7 @@ test('budget gate: spent >= cap blocks all AI engines before any call', async ()
     store.recordUsage({ user: 'local', model: 'claude-opus-4-1', tokens_in: 90000, tokens_out: 30000, cost: 5.5, day: todayKey() });
     assert.equal(store.statsToday('local').cost, 5.5);
     const config = Object.assign(configFromEnv({ DAILY_BUDGET_USD: '5' }), {
-      apiKey: 'sk-ant-should-not-be-used',
+      apiKey: 'test-claude-key-not-real',
       openaiKey: 'sk-openai-should-not-be-used',
       dailyBudgetUsd: 5
     });
