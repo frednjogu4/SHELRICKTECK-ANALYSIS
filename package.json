@@ -1,0 +1,28 @@
+{
+  "name": "aurum-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AURUM trading workspace — hybrid build (dev project + single-file export)",
+  "scripts": {
+    "dev": "vite",
+    "api": "node server/server.js",
+    "build": "vite build && cp dist/index.html dist/AURUM_Workspace.html",
+    "website": "node server/websiteserver.js",
+    "preview": "vite preview",
+    "test": "node tests/smoke.mjs && node --test server/tests/ tests/mt5Risk.test.mjs tests/mt5Execution.test.mjs tests/cloud.test.mjs tests/localHosting.test.mjs tests/goldMonitor.test.mjs tests/pwaInstall.test.mjs",
+    "test:server": "node --test server/tests/",
+    "start": "node server/server.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "jsdom": "^26.0.0",
+    "vite": "^7.0.0",
+    "vite-plugin-singlefile": "^2.2.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0",
+    "express": "^4.22.3",
+    "ws": "^8.22.0"
+  }
+}

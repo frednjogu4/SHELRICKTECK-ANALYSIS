@@ -1,0 +1,2 @@
+This package is intended for PC-local analysis only.
+If the bundled local API is missing or fails health checks, do not fall back to Railway.

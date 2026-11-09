@@ -1,0 +1,18 @@
+# Render blueprint — UI + API + WS on one service
+services:
+  - type: web
+    name: aurum-workspace
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: DAILY_BUDGET_USD
+        value: "5"
+      - key: ENVIRONMENT
+        value: demo
+      # Optional (enables env-token trading proxy — token stays server-side):
+      # - key: DERIV_APP_ID
+      # - key: DERIV_API_TOKEN
+      #   sync: false
+    autoDeploy: true

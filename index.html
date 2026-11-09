@@ -1,0 +1,1914 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Fredrick TRADING — Trading Workspace</title>
+<meta name="manifest" href="/manifest.webmanifest">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://s3.tradingview.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' wss://ws.derivws.com wss://api.derivws.com https://*.supabase.co; frame-src https://www.tradingview.com https://s.tradingview.com; font-src 'self' data:; object-src 'none'; base-uri 'self'">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0a0e16">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Shelricktech">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="/icons/favicon-32.png">
+<style>
+/* ============ Design tokens ============ */
+:root{
+  --bg:#0a0e16; --surface:#10151f; --surface-2:#141a26; --surface-3:#1a2130;
+  --border:#222b3b; --border-soft:#1b2331;
+  --text:#e8ecf4; --text-2:#98a3b6; --text-3:#68738a;
+  --brand:#e0b45c; --brand-hi:#f0cc82; --brand-ink:#1a1406;
+  --green:#2ecc8f; --green-soft:rgba(46,204,143,.12);
+  --red:#f0616d; --red-soft:rgba(240,97,109,.12);
+  --amber:#f2b64f; --amber-soft:rgba(242,182,79,.12);
+  --blue:#5b9cf8; --blue-soft:rgba(91,156,248,.12);
+  --radius:10px; --radius-sm:6px; --radius-lg:14px;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --shadow:0 10px 30px rgba(0,0,0,.4);
+  --sidebar-w:232px;
+}
+[data-theme="light"]{
+  --bg:#f3f5f9; --surface:#ffffff; --surface-2:#f8fafc; --surface-3:#eef2f7;
+  --border:#e2e7f0; --border-soft:#edf1f6;
+  --text:#161e2c; --text-2:#57617a; --text-3:#8a93a6;
+  --brand:#b98a2e; --brand-hi:#cfa044; --brand-ink:#ffffff;
+  --green:#14a36c; --red:#d6404f; --amber:#c8871a; --blue:#3b7cf0;
+  --shadow:0 10px 30px rgba(22,30,46,.10);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:var(--font); background:var(--bg); color:var(--text);
+  font-size:14.5px; line-height:1.5; -webkit-font-smoothing:antialiased;
+  min-height:100vh;
+}
+h1,h2,h3,h4{margin:0; font-weight:650; letter-spacing:-.01em}
+p{margin:0}
+button,input,select,textarea{font:inherit; color:inherit}
+a{color:var(--blue); text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--blue); outline-offset:2px; border-radius:4px}
+::selection{background:rgba(224,180,92,.3)}
+.mono{font-family:var(--mono); font-variant-numeric:tabular-nums}
+.num{font-variant-numeric:tabular-nums}
+.muted{color:var(--text-2)}
+.faint{color:var(--text-3)}
+.small{font-size:12.5px}
+.tiny{font-size:11.5px}
+.up{color:var(--green)} .down{color:var(--red)} .flat{color:var(--text-2)}
+.right{text-align:right} .center{text-align:center}
+.hidden{display:none !important}
+.row{display:flex; align-items:center; gap:10px}
+.row.between{justify-content:space-between}
+.row.wrap{flex-wrap:wrap}
+.grow{flex:1; min-width:0}
+/* scrollbars */
+*::-webkit-scrollbar{width:10px; height:10px}
+*::-webkit-scrollbar-thumb{background:var(--border); border-radius:8px; border:2px solid var(--bg)}
+*::-webkit-scrollbar-track{background:transparent}
+
+/* ============ Buttons / inputs / badges ============ */
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:7px;
+  padding:8px 15px; border-radius:var(--radius-sm); border:1px solid var(--border);
+  background:var(--surface-2); color:var(--text); font-size:13.5px; font-weight:600;
+  cursor:pointer; transition:background .15s, border-color .15s, transform .05s;
+  white-space:nowrap;
+}
+.btn:hover{background:var(--surface-3); border-color:var(--text-3)}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--brand); border-color:transparent; color:var(--brand-ink)}
+.btn.primary:hover{background:var(--brand-hi)}
+.btn.buy{background:var(--green); border-color:transparent; color:#04160e}
+.btn.sell{background:var(--red); border-color:transparent; color:#1d0507}
+.btn.ghost{background:transparent}
+.btn.ghost:hover{background:var(--surface-2)}
+.btn.danger{background:transparent; border-color:var(--red); color:var(--red)}
+.btn.danger:hover{background:var(--red-soft)}
+.btn.sm{padding:5px 10px; font-size:12.5px; border-radius:5px}
+.btn.lg{padding:11px 20px; font-size:14.5px}
+.btn:disabled{opacity:.45; cursor:not-allowed}
+.input, select.input, textarea.input{
+  width:100%; padding:9px 12px; background:var(--surface-2); border:1px solid var(--border);
+  border-radius:var(--radius-sm); font-size:14px; color:var(--text);
+  transition:border-color .15s, box-shadow .15s;
+}
+.input::placeholder{color:var(--text-3)}
+.input:focus{outline:none; border-color:var(--blue); box-shadow:0 0 0 3px var(--blue-soft)}
+select.input{appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2398a3b6' fill='none' stroke-width='1.6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat; background-position:right 12px center; padding-right:30px}
+label.field{display:block; margin-bottom:12px}
+label.field > span{display:block; font-size:12px; font-weight:600; color:var(--text-2); margin-bottom:5px; letter-spacing:.02em}
+.badge{
+  display:inline-flex; align-items:center; gap:5px; padding:2.5px 8px; border-radius:99px;
+  font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+}
+.badge.buy{background:var(--green-soft); color:var(--green)}
+.badge.sell{background:var(--red-soft); color:var(--red)}
+.badge.wait{background:var(--amber-soft); color:var(--amber)}
+.badge.lean-up{border:1px solid var(--green); color:var(--green); background:transparent}
+.badge.lean-dn{border:1px solid var(--red); color:var(--red); background:transparent}
+.badge.neutral{background:var(--blue-soft); color:var(--blue)}
+.badge.gold{background:rgba(224,180,92,.14); color:var(--brand)}
+.badge.gray{background:var(--surface-3); color:var(--text-2)}
+.dot{width:7px; height:7px; border-radius:50%; background:var(--text-3); display:inline-block; flex:none}
+.dot.live{background:var(--green); box-shadow:0 0 0 0 rgba(46,204,143,.5); animation:pulse 2s infinite}
+.dot.warn{background:var(--amber)}
+.dot.off{background:var(--text-3)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(46,204,143,.45)}70%{box-shadow:0 0 0 7px rgba(46,204,143,0)}100%{box-shadow:0 0 0 0 rgba(46,204,143,0)}}
+.chip{
+  display:inline-flex; align-items:center; gap:6px; padding:5px 11px; border-radius:99px;
+  border:1px solid var(--border); background:var(--surface-2); color:var(--text-2);
+  font-size:12.5px; font-weight:600; cursor:pointer; transition:.15s;
+}
+.chip:hover{border-color:var(--text-3); color:var(--text)}
+.chip.active{background:var(--text); border-color:var(--text); color:var(--bg)}
+.seg{display:inline-flex; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:3px; gap:3px}
+.seg button{
+  border:0; background:transparent; color:var(--text-2); font-size:12.5px; font-weight:650;
+  padding:5px 12px; border-radius:4px; cursor:pointer; transition:.12s;
+}
+.seg button:hover{color:var(--text)}
+.seg button.active{background:var(--surface); color:var(--text); box-shadow:0 1px 3px rgba(0,0,0,.25)}
+
+/* ============ Cards / tables ============ */
+.card{
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:18px 20px;
+}
+.card.flush{padding:0; overflow:hidden}
+.card-head{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; flex-wrap:wrap}
+.card-head h3{font-size:14.5px; font-weight:650}
+.card-head .sub{font-size:12px; color:var(--text-3); margin-top:2px}
+.grid{display:grid; gap:16px}
+.grid.c2{grid-template-columns:repeat(2,1fr)}
+.grid.c3{grid-template-columns:repeat(3,1fr)}
+.grid.c4{grid-template-columns:repeat(4,1fr)}
+.split{display:grid; grid-template-columns:1.7fr 1fr; gap:16px; align-items:start}
+.split.rev{grid-template-columns:1fr 1.7fr}
+.tbl-wrap{overflow-x:auto; border-radius:var(--radius)}
+table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
+.tbl th{
+  text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.07em;
+  color:var(--text-3); font-weight:700; padding:10px 14px; border-bottom:1px solid var(--border);
+  background:var(--surface-2); white-space:nowrap;
+}
+.tbl td{padding:11px 14px; border-bottom:1px solid var(--border-soft); white-space:nowrap}
+.tbl tbody tr:last-child td{border-bottom:0}
+.tbl tbody tr{transition:background .12s}
+.tbl tbody tr:hover{background:var(--surface-2)}
+.tbl td.num,.tbl th.num{text-align:right; font-variant-numeric:tabular-nums}
+.sym-cell{display:flex; align-items:center; gap:10px}
+.sym-avatar{
+  width:30px; height:30px; border-radius:8px; flex:none; display:grid; place-items:center;
+  font-size:10.5px; font-weight:800; letter-spacing:.02em; background:var(--surface-3);
+  color:var(--text-2); border:1px solid var(--border);
+}
+.sym-name{font-weight:650; font-size:13.5px; line-height:1.2}
+.sym-full{font-size:11.5px; color:var(--text-3)}
+/* Markets table: keep every key column on-screen; clip/tooltip long values rather than forcing horizontal scroll. */
+#mktTable{table-layout:fixed;width:100%}
+#mktTable th:nth-child(1){width:26%}
+#mktTable th:nth-child(2){width:13%}
+#mktTable th:nth-child(3){width:8%}
+#mktTable th:nth-child(4){width:9%}
+#mktTable th:nth-child(5){width:32%}
+#mktTable th:nth-child(6){width:12%}
+#mktTable th,#mktTable td{padding:8px 8px}
+#mktTable td{overflow:hidden;text-overflow:ellipsis}
+#mktTable .sym-cell{gap:6px;min-width:0}
+#mktTable .mkt-symbol-text{min-width:0;overflow:hidden}
+#mktTable .sym-name{font-size:12.5px}
+#mktTable .sym-full{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#mktTable .sym-avatar{width:26px;height:26px}
+#mktTable .spark{width:52px;height:18px}
+#mktTable [data-msig] .badge{max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+#mktTable .market-levels{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;font-size:9.5px}
+#mktTable .mkt-trade{min-width:0;padding:5px 8px;font-size:11px}
+@media(max-width:1050px){
+  #mktTable th,#mktTable td{padding:7px 5px}
+}
+@media(max-width:640px){
+  #mktTable th,#mktTable td{padding:7px 3px;font-size:11px}
+  #mktTable th:nth-child(1){width:33%}
+  #mktTable th:nth-child(2){width:20%}
+  #mktTable th:nth-child(3),#mktTable td:nth-child(3){display:none}
+  #mktTable th:nth-child(4){width:11%}
+  #mktTable th:nth-child(5){width:25%}
+  #mktTable th:nth-child(6){width:11%}
+  #mktTable .sym-cell{gap:3px}
+  #mktTable .sym-avatar{display:none}
+  #mktTable .watch-pin{width:16px;min-width:16px;padding:0;font-size:12px}
+  #mktTable .sym-name{font-size:11px}
+  #mktTable .sym-full{font-size:9px}
+  #mktTable .spark{width:34px;height:16px}
+  #mktTable .market-levels{display:none}
+  #mktTable .mkt-trade{padding:4px 3px;font-size:9px}
+  #mktTable [data-msig] .badge{padding:3px 4px;font-size:9px}
+}
+.empty{
+  text-align:center; padding:34px 16px; color:var(--text-3); font-size:13.5px;
+}
+.empty b{display:block; color:var(--text-2); font-size:14px; margin-bottom:4px}
+
+/* ============ KPI ============ */
+.kpi{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px}
+.kpi .label{font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--text-3); margin-bottom:8px}
+.kpi .value{font-size:25px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums; line-height:1.15}
+.kpi .delta{margin-top:7px; font-size:12.5px; font-weight:600; color:var(--text-3); display:flex; align-items:center; gap:6px}
+.kpi .delta .v{font-variant-numeric:tabular-nums}
+
+/* ============ Auth screen ============ */
+.auth{min-height:100vh; display:grid; grid-template-columns:1.15fr 1fr}
+@media (min-width:961px){
+  .auth{height:100vh}
+  .auth-brand,.auth-form-side{overflow:auto}
+}
+.auth-welcome{font-size:15px; font-weight:600; letter-spacing:.02em; color:var(--text-2)}
+.auth-oneline{color:var(--text-2); font-size:13px; margin-top:12px; line-height:1.6}
+.auth-details{margin-top:12px; font-size:13px}
+.auth-details summary{cursor:pointer; color:var(--text-2); font-weight:600}
+.auth-brand{
+  position:relative; overflow:hidden; padding:34px 44px; display:flex; flex-direction:column; justify-content:space-between;
+  background:
+    radial-gradient(60% 50% at 15% 20%, rgba(224,180,92,.14), transparent 60%),
+    radial-gradient(50% 45% at 85% 80%, rgba(91,156,248,.10), transparent 60%),
+    var(--surface);
+  border-right:1px solid var(--border);
+}
+.auth-brand .logo{display:flex; align-items:center; gap:12px; font-size:19px; font-weight:800; letter-spacing:.14em}
+.auth-brand .logo .mark{
+  width:38px; height:38px; border-radius:9px; background:var(--brand); color:var(--brand-ink);
+  display:grid; place-items:center; font-size:19px; font-weight:900; font-family:var(--mono);
+}
+.auth-brand h1{font-size:clamp(26px,2.9vw,36px); line-height:1.15; max-width:16ch; margin-top:18px; letter-spacing:-.025em}
+.auth-brand h1 em{font-style:normal; color:var(--brand)}
+.auth-brand .lede{color:var(--text-2); font-size:15px; max-width:44ch; margin-top:16px; line-height:1.65}
+.auth-foot{color:var(--text-3); font-size:12px; line-height:1.6}
+.auth-form-side{display:grid; place-items:center; padding:40px 28px; background:var(--bg)}
+.auth-card{width:100%; max-width:380px}
+.auth-card h2{font-size:22px; margin-bottom:6px}
+.auth-card .sub{color:var(--text-2); font-size:13.5px; margin-bottom:26px}
+.auth-card .btn.lg{width:100%; margin-top:4px}
+.auth-divider{display:flex; align-items:center; gap:12px; color:var(--text-3); font-size:11.5px; margin:20px 0; letter-spacing:.06em}
+.auth-divider::before,.auth-divider::after{content:""; flex:1; height:1px; background:var(--border)}
+.auth-note{margin-top:20px; font-size:11.5px; color:var(--text-3); line-height:1.6; text-align:center}
+.auth-err{background:var(--red-soft); color:var(--red); border:1px solid rgba(240,97,109,.3); padding:9px 12px; border-radius:var(--radius-sm); font-size:13px; margin-bottom:14px; display:none}
+
+/* ============ App shell ============ */
+.app{display:none; min-height:100vh}
+.app.ready{display:grid; grid-template-columns:var(--sidebar-w) minmax(0,1fr)}
+.sidebar{
+  position:sticky; top:0; height:100vh; background:var(--surface); border-right:1px solid var(--border);
+  display:flex; flex-direction:column; z-index:60;
+}
+.side-logo{display:flex; align-items:center; gap:10px; padding:20px 20px 18px; font-weight:800; letter-spacing:.14em; font-size:15px}
+.side-logo .mark{
+  width:30px; height:30px; border-radius:8px; background:var(--brand); color:var(--brand-ink);
+  display:grid; place-items:center; font-size:15px; font-weight:900; font-family:var(--mono);
+}
+.side-logo .tag{font-size:9.5px; letter-spacing:.1em; color:var(--text-3); font-weight:700; display:block; margin-top:1px}
+.nav{flex:1; overflow-y:auto; padding:6px 12px}
+.nav-label{font-size:10.5px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--text-3); padding:16px 10px 7px}
+.nav-item{
+  display:flex; align-items:center; gap:11px; width:100%; text-align:left;
+  padding:9px 11px; margin-bottom:2px; border:0; background:transparent; color:var(--text-2);
+  border-radius:8px; font-size:13.5px; font-weight:600; cursor:pointer; transition:.13s;
+}
+.nav-item svg{width:17px; height:17px; flex:none; opacity:.85}
+.nav-item:hover{background:var(--surface-2); color:var(--text)}
+.nav-item.active{background:var(--surface-3); color:var(--text); box-shadow:inset 2.5px 0 0 var(--brand)}
+.nav-item .nav-count{
+  margin-left:auto; font-size:10.5px; font-weight:800; background:var(--brand); color:var(--brand-ink);
+  min-width:18px; height:18px; padding:0 5px; border-radius:99px; display:grid; place-items:center;
+}
+.side-foot{border-top:1px solid var(--border); padding:14px 16px; display:flex; align-items:center; gap:10px}
+.avatar{
+  width:34px; height:34px; border-radius:50%; flex:none; display:grid; place-items:center;
+  background:var(--brand); color:var(--brand-ink); font-weight:800; font-size:14px;
+}
+.side-foot .who{min-width:0}
+.side-foot .who b{display:block; font-size:13px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.side-foot .who span{font-size:11px; color:var(--text-3)}
+
+.main{min-width:0; display:flex; flex-direction:column}
+.topbar{
+  position:sticky; top:0; z-index:50; display:flex; align-items:center; gap:14px;
+  padding:13px 26px; background:color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--border);
+}
+.topbar h2{font-size:16.5px; font-weight:700}
+.topbar .crumb{font-size:12px; color:var(--text-3); margin-top:1px}
+.pill{
+  display:inline-flex; align-items:center; gap:7px; padding:5px 11px; border-radius:99px;
+  border:1px solid var(--border); background:var(--surface); font-size:12px; font-weight:650; color:var(--text-2);
+}
+.icon-btn{
+  width:34px; height:34px; border-radius:8px; border:1px solid var(--border); background:var(--surface);
+  color:var(--text-2); cursor:pointer; display:grid; place-items:center; transition:.13s; flex:none;
+}
+.icon-btn:hover{color:var(--text); border-color:var(--text-3)}
+.icon-btn svg{width:16px; height:16px}
+.hamburger{display:none}
+/* ticker */
+.tickerbar{
+  border-bottom:1px solid var(--border); background:var(--surface); overflow:hidden;
+  height:40px; display:flex; align-items:center; position:relative;
+}
+.tickerbar::after{content:""; position:absolute; right:0; top:0; bottom:0; width:44px;
+  background:linear-gradient(to left, var(--surface), transparent); pointer-events:none}
+.ticker-track{display:flex; align-items:center; white-space:nowrap; animation:tick 70s linear infinite; will-change:transform}
+.tickerbar:hover .ticker-track{animation-play-state:paused}
+@keyframes tick{from{transform:translateX(0)} to{transform:translateX(-50%)}}
+.tk-item{display:inline-flex; align-items:center; gap:8px; padding:0 20px; font-size:12.5px; border-right:1px solid var(--border-soft); height:40px}
+.tk-item .s{font-weight:700; color:var(--text-2); font-family:var(--mono); font-size:11.5px}
+.tk-item .p{font-family:var(--mono); font-weight:650; font-variant-numeric:tabular-nums}
+.tk-item .c{font-family:var(--mono); font-size:11px; font-weight:700; padding:1.5px 6px; border-radius:4px}
+.tk-item .c.up{background:var(--green-soft); color:var(--green)}
+.tk-item .c.down{background:var(--red-soft); color:var(--red)}
+
+/* ============ Views ============ */
+.content{padding:24px 26px 70px; max-width:1440px; width:100%; margin:0 auto}
+.view{display:none}
+.view.active{display:block; animation:viewin .22s ease}
+@keyframes viewin{from{opacity:0; transform:translateY(5px)} to{opacity:1; transform:none}}
+.view-head{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:20px; flex-wrap:wrap}
+.view-head h1{font-size:21px; letter-spacing:-.02em}
+.view-head .sub{color:var(--text-2); font-size:13.5px; margin-top:4px}
+.section-gap{margin-top:16px}
+.toolbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:16px}
+.toolbar .input{width:auto; min-width:200px; flex:1; max-width:340px}
+</style>
+<style>
+/* ============ View-specific ============ */
+/* overview */
+.mover{display:flex; align-items:center; gap:11px; padding:9px 0; border-bottom:1px solid var(--border-soft); cursor:pointer}
+.mover:last-child{border-bottom:0}
+.mover:hover .sym-name{color:var(--brand)}
+.mover .spark{margin-left:auto}
+.mini-signal{border:1px solid var(--border); border-radius:var(--radius-sm); padding:11px 13px; margin-bottom:9px; cursor:pointer; transition:.13s; background:var(--surface-2)}
+.mini-signal:hover{border-color:var(--text-3)}
+.mini-signal:last-child{margin-bottom:0}
+.mini-signal .top{display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:5px}
+.mini-signal .meta{font-size:11.5px; color:var(--text-3); font-family:var(--mono)}
+.news-row{display:flex; gap:12px; padding:11px 0; border-bottom:1px solid var(--border-soft); cursor:pointer}
+.news-row:last-child{border-bottom:0}
+.news-row:hover .headline{color:var(--brand)}
+.news-row .time{font-size:11.5px; color:var(--text-3); font-family:var(--mono); width:52px; flex:none; padding-top:2px}
+.news-row .headline{font-size:13.5px; font-weight:600; line-height:1.45; transition:.12s}
+.news-row .src{font-size:11.5px; color:var(--text-3); margin-top:3px}
+.impact{width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:1px}
+.impact.high{background:var(--red)} .impact.med{background:var(--amber)} .impact.low{background:var(--blue)}
+.spark{display:block}
+/* markets */
+.mkt-cat{display:flex; gap:7px; flex-wrap:wrap}
+/* chart / trade */
+.chart-shell{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden}
+.chart-toolbar{display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border); flex-wrap:wrap}
+.chart-toolbar .sym-title{font-weight:750; font-size:15px; font-family:var(--mono)}
+.chart-toolbar .sym-price{font-family:var(--mono); font-weight:700; font-size:15px}
+.chart-body{position:relative; height:430px}
+.chart-body canvas{width:100%; height:100%; display:block; cursor:crosshair}
+.tv-chart-host{position:absolute; inset:0}
+.tv-widget-box{position:relative; width:100%}
+.tv-widget-box iframe{border:0; width:100%; display:block}
+.tv-notice{padding:18px; color:var(--text-3); font-size:13px; border:1px dashed var(--border-soft); border-radius:10px; margin:8px; text-align:center}
+.chart-legend{
+  position:absolute; top:10px; left:14px; display:flex; gap:14px; font-size:11.5px;
+  font-family:var(--mono); color:var(--text-2); background:color-mix(in srgb, var(--surface) 80%, transparent);
+  padding:5px 10px; border-radius:6px; border:1px solid var(--border-soft); pointer-events:none;
+}
+.chart-tip{
+  position:absolute; padding:7px 10px; border-radius:6px; background:var(--surface-3);
+  border:1px solid var(--border); font-size:11.5px; font-family:var(--mono); pointer-events:none;
+  display:none; z-index:5; line-height:1.55; box-shadow:var(--shadow); white-space:nowrap;
+}
+.ticket .side-seg{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px}
+.ticket .side-btn{
+  padding:12px; border-radius:var(--radius-sm); border:1.5px solid var(--border); background:var(--surface-2);
+  font-weight:800; font-size:14px; cursor:pointer; transition:.13s; color:var(--text-2);
+}
+.ticket .side-btn .px{display:block; font-family:var(--mono); font-size:12px; font-weight:600; margin-top:3px; opacity:.8}
+.ticket .side-btn.sel-buy{border-color:var(--green); background:var(--green-soft); color:var(--green)}
+.ticket .side-btn.sel-sell{border-color:var(--red); background:var(--red-soft); color:var(--red)}
+/* auth-card token-kind toggle (reuses side-btn look outside .ticket) */
+.auth-card .side-seg{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px}
+.auth-card .side-btn{width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--border); background:var(--surface-2); color:var(--text-2); font-weight:650; font-size:13px; cursor:pointer}
+.auth-card .side-btn.sel-buy{border-color:var(--gold); background:rgba(212,175,55,.12); color:var(--gold)}
+.ticket .hint{font-size:11.5px; color:var(--text-3); margin-top:10px; line-height:1.55}
+.quick-amts{display:flex; gap:6px; margin-top:7px}
+.quick-amts button{
+  flex:1; padding:5px 0; font-size:11.5px; font-weight:700; border:1px solid var(--border);
+  background:var(--surface-2); color:var(--text-2); border-radius:5px; cursor:pointer;
+}
+.quick-amts button:hover{border-color:var(--brand); color:var(--brand)}
+.info-list{list-style:none; margin:0; padding:0}
+.info-list li{display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid var(--border-soft); font-size:13px}
+.info-list li:last-child{border-bottom:0}
+.info-list .k{color:var(--text-3)}
+.info-list .v{font-weight:650; font-variant-numeric:tabular-nums}
+/* signals */
+.sig-card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px; transition:.15s}
+.sig-card:hover{border-color:var(--text-3); transform:translateY(-1px); box-shadow:var(--shadow)}
+.sig-card .sig-top{display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:10px}
+.conf-bar{height:5px; border-radius:99px; background:var(--surface-3); overflow:hidden; margin-top:7px}
+.conf-bar i{display:block; height:100%; border-radius:99px; background:var(--brand)}
+.sig-levels{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0}
+.sig-levels div{background:var(--surface-2); border:1px solid var(--border-soft); border-radius:6px; padding:7px 9px; text-align:center}
+.sig-levels .k{font-size:10px; text-transform:uppercase; letter-spacing:.07em; color:var(--text-3); font-weight:700}
+.sig-levels .v{font-family:var(--mono); font-size:13px; font-weight:700; margin-top:2px}
+.sig-why{font-size:12.5px; color:var(--text-2); line-height:1.55; margin-bottom:12px}
+/* news view */
+.calendar-row{display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--border-soft); font-size:13px}
+.calendar-row:last-child{border-bottom:0}
+.calendar-row .t{font-family:var(--mono); color:var(--text-3); width:64px; flex:none; font-size:12px}
+.calendar-row .ccy{font-weight:800; font-size:11px; background:var(--surface-3); border:1px solid var(--border); border-radius:5px; padding:2.5px 7px; color:var(--text-2)}
+.calendar-row .ev{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+/* portfolio */
+.pl-pos{font-family:var(--mono); font-weight:750}
+/* automation */
+.conn-card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; display:flex; flex-direction:column; gap:14px}
+.conn-head{display:flex; align-items:center; gap:12px}
+.conn-logo{
+  width:38px; height:38px; border-radius:9px; display:grid; place-items:center; flex:none;
+  font-weight:900; font-size:14px; font-family:var(--mono); border:1px solid var(--border);
+}
+.conn-head h3{font-size:14.5px}
+.conn-head .sub{font-size:11.5px; color:var(--text-3)}
+.status-line{
+  display:flex; align-items:center; gap:8px; font-size:12.5px; font-weight:650;
+  padding:8px 11px; border-radius:var(--radius-sm); background:var(--surface-2); border:1px solid var(--border-soft); color:var(--text-2);
+}
+.status-line.on{border-color:rgba(46,204,143,.35); background:var(--green-soft); color:var(--green)}
+.bot-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:12px}
+.bot-card{border:1px solid var(--border); border-radius:var(--radius); padding:14px 15px; background:var(--surface-2)}
+.bot-card h4{font-size:13.5px; margin-bottom:4px}
+.bot-card .d{font-size:12px; color:var(--text-3); line-height:1.5; margin-bottom:10px}
+.notice{
+  display:flex; gap:11px; padding:13px 15px; border-radius:var(--radius); font-size:13px; line-height:1.6;
+  background:var(--blue-soft); border:1px solid color-mix(in srgb, var(--blue) 35%, transparent); color:var(--text-2);
+}
+.notice b{color:var(--text)}
+.notice.warn{background:var(--amber-soft); border-color:color-mix(in srgb, var(--amber) 35%, transparent)}
+.notice svg{width:16px; height:16px; flex:none; margin-top:2px; color:var(--blue)}
+.notice.warn svg{color:var(--amber)}
+/* settings */
+.set-row{display:flex; align-items:center; justify-content:space-between; gap:18px; padding:15px 0; border-bottom:1px solid var(--border-soft)}
+.set-row:last-child{border-bottom:0}
+.set-row .t{font-size:13.5px; font-weight:650}
+.set-row .d{font-size:12.5px; color:var(--text-3); margin-top:3px; line-height:1.5; max-width:56ch}
+.theme-cards{display:flex; gap:10px}
+.theme-card{
+  border:1.5px solid var(--border); border-radius:var(--radius-sm); padding:10px 14px; cursor:pointer;
+  background:var(--surface-2); font-size:12.5px; font-weight:650; color:var(--text-2); display:flex; align-items:center; gap:8px;
+}
+.theme-card.active{border-color:var(--brand); color:var(--text); background:var(--surface-3)}
+.switch{position:relative; width:40px; height:22px; flex:none; cursor:pointer}
+.switch input{opacity:0; width:0; height:0; position:absolute}
+.switch i{position:absolute; inset:0; background:var(--surface-3); border:1px solid var(--border); border-radius:99px; transition:.18s}
+.switch i::after{content:""; position:absolute; left:2px; top:2px; width:16px; height:16px; border-radius:50%; background:var(--text-3); transition:.18s}
+.switch input:checked + i{background:var(--brand); border-color:var(--brand)}
+.switch input:checked + i::after{transform:translateX(18px); background:var(--brand-ink)}
+input[type=range].range{accent-color:var(--brand); width:220px}
+/* modal + toast */
+.modal-overlay{
+  position:fixed; inset:0; background:rgba(4,7,12,.72); z-index:200; display:none;
+  align-items:center; justify-content:center; padding:20px; backdrop-filter:blur(3px);
+}
+.modal-overlay.open{display:flex; animation:fadein .16s ease}
+@keyframes fadein{from{opacity:0} to{opacity:1}}
+.modal{
+  width:100%; max-width:430px; background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius-lg); padding:24px; box-shadow:var(--shadow);
+  animation:modalin .18s ease;
+}
+@keyframes modalin{from{opacity:0; transform:scale(.97) translateY(6px)} to{opacity:1; transform:none}}
+.modal h3{font-size:17px; margin-bottom:6px}
+.modal .msub{font-size:13px; color:var(--text-2); margin-bottom:20px}
+.modal-actions{display:flex; justify-content:flex-end; gap:10px; margin-top:22px}
+.toasts{position:fixed; right:20px; bottom:20px; z-index:300; display:flex; flex-direction:column; gap:10px; max-width:340px}
+.toast{
+  background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--brand);
+  border-radius: var(--radius-sm); padding:12px 15px; font-size:13.5px; box-shadow:var(--shadow);
+  animation:toastin .2s ease;
+}
+.toast.ok{border-left-color:var(--green)}
+.toast.err{border-left-color:var(--red)}
+.toast b{display:block; font-size:13px; margin-bottom:2px}
+.toast span{color:var(--text-2); font-size:12.5px}
+@keyframes toastin{from{opacity:0; transform:translateX(16px)} to{opacity:1; transform:none}}
+.scrim{position:fixed; inset:0; background:rgba(4,7,12,.6); z-index:55; display:none}
+.scrim.open{display:block}
+
+/* ============ Responsive ============ */
+@media (max-width:1100px){
+  .grid.c4{grid-template-columns:repeat(2,1fr)}
+  .split,.split.rev{grid-template-columns:1fr}
+}
+@media (max-width:960px){
+  .app.ready{grid-template-columns:1fr}
+  .sidebar{position:fixed; left:0; top:0; width:var(--sidebar-w); transform:translateX(-100%); transition:transform .2s ease}
+  .sidebar.open{transform:none}
+  .hamburger{display:grid}
+  .topbar{padding:12px 16px}
+  .content{padding:18px 16px 60px}
+  .auth{grid-template-columns:1fr}
+  .auth-brand{padding:28px 22px; border-right:0; border-bottom:1px solid var(--border)}
+  .grid.c3{grid-template-columns:1fr}
+}
+@media (max-width:640px){
+  .grid.c2,.grid.c4{grid-template-columns:1fr}
+  .kpi .value{font-size:21px}
+  .sig-levels{grid-template-columns:repeat(3,1fr)}
+  .view-head h1{font-size:18px}
+}
+/* ================= MOBILE-FIRST UX (touch) ================= */
+@media (max-width:640px){
+  html{-webkit-text-size-adjust:100%}
+  body{overscroll-behavior-y:none}
+  button,.btn,.chip,.nav-item,.side-btn,input[type="button"]{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  .btn{min-height:42px}
+  .chip{padding:8px 12px;font-size:12.5px}
+  /* iOS Safari zooms into inputs smaller than 16px — keep forms calm */
+  .input,select.input,textarea.input{font-size:16px !important}
+  .content{padding:14px 12px calc(96px + env(safe-area-inset-bottom))}
+  .topbar{padding:10px 12px;padding-top:calc(10px + env(safe-area-inset-top));flex-wrap:wrap;gap:8px}
+  .topbar .pill{font-size:11px;padding:5px 9px}
+  .view-head{margin-bottom:12px}
+  .card{padding:14px;border-radius:12px}
+  /* tables: scrollable with momentum + edge fade hints */
+  .tbl-wrap{-webkit-overflow-scrolling:touch;scrollbar-width:thin}
+  .tbl th,.tbl td{padding:9px 10px;font-size:13px}
+  /* order ticket & confirm dialogs as bottom sheets */
+  .modal-overlay{align-items:flex-end;padding:0}
+  .modal{width:100%;max-width:100%;border-radius:16px 16px 0 0;max-height:88vh;overflow:auto;padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  /* watch tiles single column on narrow phones */
+  .watch-grid{grid-template-columns:1fr}
+  .watch-tile-body{height:140px}
+  /* drawer gets thumb-friendly width + safe area */
+  .sidebar{width:min(84vw,320px);padding-bottom:env(safe-area-inset-bottom)}
+  .nav-item{padding:13px 14px;font-size:14.5px}
+  /* charts keep a usable height */
+  .tv-embed-frame,.tv-widget-box{min-height:300px}
+  /* ticker slim */
+  .ticker{height:38px}
+}
+@media (max-width:400px){
+  .btn.lg{width:100%}
+  .kpi .value{font-size:19px}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important}
+  .ticker-track{animation:none !important}
+}
+</style>
+</head>
+<body>
+<!-- ============ AUTH ============ -->
+<div class="auth" id="authScreen">
+  <div class="auth-brand">
+    <div>
+      <div class="logo"><img id="authLogo" alt="Shelricktech Investment logo" style="width:76px;height:76px;border-radius:18px;object-fit:cover;box-shadow:0 8px 28px rgba(0,0,0,.4)"> <span id="authWelcome" class="auth-welcome">Good evening, trader</span></div>
+      <h1>Shelricktech Investment <em>Trading Analysis</em> Tool</h1>
+      <div class="hint tiny faint" style="margin-top:6px">&#8482; Designed by Fredrick K under Shelricktech Investment.</div>
+      <div class="auth-oneline">Live Deriv prices &middot; TradingView charts &amp; news &middot; AI guidance &mdash; real market data only, nothing simulated.</div>
+    </div>
+    <div>
+      <div id="authMotivation" class="hint" style="margin-top:10px"></div>
+      <div class="card" style="margin-top:10px;padding:12px 14px;background:rgba(224,180,92,.06);border-color:rgba(224,180,92,.25)">
+        <div class="tiny faint">TODAY'S BEST MARKET TO FORECAST ON</div>
+        <div id="authBestBody" style="margin-top:4px"></div>
+        <div class="tiny faint" style="margin-top:6px">Live scan &middot; updates as markets move &middot; indices are analysis-only (CFD via Exness).</div>
+      </div>
+    </div>
+    <div class="auth-foot">Real market data &middot; trading activates only when you connect your own account.</div>
+  </div>
+  <div class="auth-form-side">
+    <div class="auth-card">
+      <h2>Connect</h2>
+      <div class="side-seg" style="margin:10px 0 14px">
+        <button class="side-btn sel-buy" type="button" id="authTabDeriv">Deriv</button>
+        <button class="side-btn" type="button" id="authTabMt5">MT5 / Exness</button>
+      </div>
+      <div class="auth-err" id="authErr"></div>
+
+      <div id="authPaneDeriv">
+      <form id="derivForm" autocomplete="off">
+        <div class="side-seg" style="margin-bottom:10px">
+          <button class="side-btn sel-buy" type="button" id="derivKindClassic">Classic token</button>
+          <button class="side-btn" type="button" id="derivKindPat">New API · PAT</button>
+        </div>
+        <label class="field"><span>Deriv App ID <span class="faint">(copy EXACTLY from your Deriv application — may contain letters)</span></span>
+          <input class="input" id="derivAppId" type="text" placeholder="paste exactly, e.g. 1089 or a1B2c3D4…">
+        </label>
+        <label class="field"><span id="derivPatLabel">Deriv API token (classic — Trade scope)</span>
+          <input class="input" id="derivPat" type="password" placeholder="your Deriv API token">
+        </label>
+        <div class="hint" id="rememberNote">Deriv credentials are kept in this browser tab’s session storage so refresh can reconnect. They are cleared when you disconnect or sign out; use only on a device you control.</div>
+        <button class="btn primary lg" type="submit" id="derivLoginBtn">Connect Deriv &amp; trade</button>
+        <p class="auth-note" id="derivKindNote">Classic token: <b>home.deriv.com</b> &rarr; API Tokens &rarr; <b>Trade</b> scope. Runs from your browser.</p>
+      </form>
+      <div id="patAccounts" data-pat-accounts style="margin-top:12px"></div>
+      </div>
+
+      <div id="authPaneMt5" class="hidden">
+      <form id="exnessForm" autocomplete="off">
+        <label class="field"><span>Exness MT5 account login</span>
+          <input class="input" id="exnessLogin" type="text" required placeholder="account number">
+        </label>
+        <label class="field"><span>MT5 password (investor/read-only is sufficient)</span>
+          <input class="input" id="exnessPass" type="password" autocomplete="off" required placeholder="MT5 password (investor/read-only is sufficient)">
+        </label>
+        <label class="field"><span>Exact Exness MT5 server (required)</span>
+          <input class="input" id="exnessServer" type="text" required placeholder="exact server name from Exness Personal Area">
+        </label>
+        <button class="btn lg" type="submit" id="exnessLoginBtn" style="width:100%">Connect Exness (read-only)</button>
+        <p class="auth-note">For refresh recovery, this tab keeps the Exness account login, server, MT5 password and bridge token in session storage only. They are cleared on disconnect/sign-out or when the browser tab session ends. Use only on a device you control. The local bridge and MT5 terminal must remain running.</p>
+        <button class="btn ghost sm" id="mt5ForgetAuth" type="button">Forget saved Exness details</button>
+      </form>
+
+      <details class="auth-details" id="dmt5Card">
+        <summary>Deriv MT5 terminals &amp; credentials</summary>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+          <a class="btn ghost sm" href="https://mt5-demo-web.deriv.com/terminal?lang=en" target="_blank" rel="noopener noreferrer">Open demo terminal ↗</a>
+          <a class="btn ghost sm" href="https://app.deriv.com/" target="_blank" rel="noopener noreferrer">Real account — Trader's Hub ↗</a>
+        </div>
+        <p class="hint">MT5 on Deriv uses a <b>separate MT5 password</b> (create/reset in Trader's Hub, broker code “Deriv”). For a <b>real</b> Deriv MT5, Trader's Hub shows your <b>login ID</b> + <b>server name</b>. Paste login + exact server + MT5 password into the form above, with the local bridge running next to MetaTrader 5 — never on Railway.</p>
+      </details>
+      </div>
+
+      <div class="auth-divider">OR</div>
+      <button class="btn lg" id="guestBtn" style="width:100%">Continue &mdash; live markets, no trading</button>
+      <p class="auth-note">Live prices, charts, news and AI analysis — trading locked until a broker is connected.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div class="app" id="appShell">
+  <div class="scrim" id="scrim"></div>
+  <div class="mob-order-bar" aria-hidden="true">
+    <button class="btn primary" id="mobOrderBtn" type="button">⚡ New order</button>
+    <button class="btn" id="mobPortfolioBtn" type="button">Portfolio</button>
+  </div>
+  <aside class="sidebar" id="sidebar">
+    <div class="side-logo"><span class="mark" id="brandMark">F</span>
+      <div><span id="brandName">FREDRICK</span><span class="tag" id="brandTag">TRADING</span></div>
+    </div>
+    <nav class="nav" id="mainNav" aria-label="Main">
+      <div class="nav-label">Workspace</div>
+      <button class="nav-item active" data-view="overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Overview
+      </button>
+      <button class="nav-item" data-view="markets">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-5 4 3 6-7"/><path d="M14 8h4v4"/></svg>
+        Markets
+      </button>
+      <button class="nav-item" data-view="watch">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 17.5 5.5 11l1.4-1.4L12 14.7l5.1-5.1 1.4 1.4L12 17.5Z"/><path d="M12 12.6 5.5 6.1 6.9 4.7 12 9.8l5.1-5.1 1.4 1.4L12 12.6Z" opacity=".45"/></svg>
+        <span>Watchlist</span>
+      </button>
+      <button class="nav-item" data-view="trade">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><rect x="7" y="11" width="3" height="5" rx=".6"/><rect x="12" y="8" width="3" height="8" rx=".6"/><rect x="17" y="5" width="3" height="11" rx=".6"/></svg>
+        Chart &amp; Trade
+      </button>
+      <button class="nav-item" data-view="signals">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3.4"/></svg>
+        AI Signals
+        <span class="nav-count" id="navSigCount">0</span>
+      </button>
+      <button class="nav-item" data-view="sniper" aria-label="Sniper alerts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.2"/><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4"/></svg>
+        Sniper alerts
+        <span class="nav-count" id="navSniperCount">0</span>
+      </button>
+      <button class="nav-item" data-view="gold">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18h18M5 16l4-5 3 2 6-8"/><path d="M15 5h3v3"/></svg>
+        Gold / USD
+      </button>
+      <button class="nav-item" data-view="news">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h13v14a1.5 1.5 0 0 0 1.5 1.5H5.5A1.5 1.5 0 0 1 4 19V5z"/><path d="M17 8h2.5v9.5a1.5 1.5 0 0 1-3 0V5"/><path d="M7 9h7M7 13h7M7 17h4"/></svg>
+        News
+      </button>
+      <div class="nav-label">Account</div>
+      <button class="nav-item" data-view="portfolio">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 15h2.5"/></svg>
+        Portfolio
+        <span class="nav-count" id="navPosCount" style="display:none">0</span>
+      </button>
+      <button class="nav-item" data-view="automation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="8" width="14" height="12" rx="2"/><path d="M12 8V4M9 4h6M9 13h.01M15 13h.01M9 16.5h6"/></svg>
+        Automation
+      </button>
+      <button class="nav-item" data-view="learn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 2 8l10 5 10-5-10-5Z"/><path d="M6 10.5V15c0 1.5 2.7 3 6 3s6-1.5 6-3v-4.5"/></svg>
+        <span>Calculator Lab</span>
+      </button>
+      <button class="nav-item" data-view="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+        Settings
+      </button>
+    </nav>
+    <div class="side-foot">
+      <div class="avatar" id="sideAvatar">D</div>
+      <div class="who"><b id="sideName">Guest</b><span id="sideSub">Live markets · no trading</span></div>
+      <button class="icon-btn" id="logoutBtn" title="Sign out" aria-label="Sign out" style="margin-left:auto">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn hamburger" id="hamburger" aria-label="Open menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <div class="grow">
+        <h2 id="topTitle">Overview</h2>
+        <div class="crumb" id="topCrumb">Workspace &middot; everything at a glance</div>
+      </div>
+      <span class="pill" id="feedPill"><span class="dot" id="feedDot"></span> <span id="feedText">Deriv feed · connecting…</span></span>
+      <span class="pill" id="derivPill" title="Deriv proxy (server-side token) status"><span class="dot" id="derivDot"></span> <span id="derivText">proxy · …</span></span>
+      <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle colour theme">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.8 6.8 0 0 0 9.8 9.8z"/></svg>
+      </button>
+      <button class="icon-btn hidden" id="installBtn" title="Install AURUM app" aria-label="Install AURUM as an app">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+      </button>
+      <button class="btn primary sm" data-goto="trade">New order</button>
+    </header>
+
+    <div class="tickerbar" aria-hidden="true"><div class="ticker-track" id="tickerTrack"></div></div>
+
+    <main class="content" id="content">
+
+      <!-- ======= OVERVIEW ======= -->
+      <section class="view active" id="view-overview">
+        <div class="view-head">
+          <div>
+            <h1 id="ovGreeting">Good morning</h1>
+            <p class="sub" id="ovSub">Here is what is happening in your workspace right now.</p>
+          </div>
+          <div class="row">
+            <button class="btn" data-goto="signals">View signals</button>
+            <button class="btn primary" data-goto="trade">New order</button>
+          </div>
+        </div>
+
+        <div class="grid c4" id="ovKpis">
+          <div class="kpi"><div class="label">Portfolio value</div><div class="value" id="kpiValue">Not connected</div><div class="delta"><span class="v" id="kpiValueDelta">—</span> <span id="kpiValueDeltaLabel">broker equity</span></div></div>
+          <div class="kpi"><div class="label">Open P&amp;L</div><div class="value" id="kpiPl">—</div><div class="delta"><span class="v" id="kpiPlCount">0 open positions</span></div></div>
+          <div class="kpi"><div class="label">Free margin</div><div class="value" id="kpiMargin">Not connected</div><div class="delta"><span class="v" id="kpiMarginSub">connect Deriv or Exness</span></div></div>
+          <div class="kpi"><div class="label">Win rate</div><div class="value" id="kpiWin">—</div><div class="delta"><span class="v" id="kpiWinSub">No closed trades yet</span></div></div>
+        </div>
+
+        <div class="split section-gap">
+          <div class="grid" style="gap:16px">
+            <div class="card">
+              <div class="card-head">
+                <div><h3>Top movers</h3><div class="sub">Biggest 24h changes across watched markets</div></div>
+                <button class="btn ghost sm" data-goto="markets">All markets &rarr;</button>
+              </div>
+              <div id="ovMovers"></div>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <div><h3>Open positions</h3><div class="sub">Live mark-to-market</div></div>
+                <button class="btn ghost sm" data-goto="portfolio">Portfolio &rarr;</button>
+              </div>
+              <div id="ovPositions"></div>
+            </div>
+          </div>
+          <div class="grid" style="gap:16px">
+            <div class="card">
+              <div class="card-head">
+                <div><h3>AI signals</h3><div class="sub">Highest-conviction setups right now</div></div>
+                <button class="btn ghost sm" data-goto="signals">See all &rarr;</button>
+              </div>
+              <div id="ovSignals"></div>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <div><h3>Market news</h3><div class="sub">Live feed &amp; AI expectations</div></div>
+                <button class="btn ghost sm" data-goto="news">News &rarr;</button>
+              </div>
+              <div id="ovNews"><div class="hint">Live headlines and the AI expectations brief live in the News view.</div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= MARKETS ======= -->
+      <section class="view" id="view-markets">
+        <div class="view-head">
+          <div><h1>Markets</h1><p class="sub">Browse the core mapped markets and discover additional symbols from your connected brokers; source and data availability are shown.</p></div>
+        </div>
+        <div class="toolbar">
+          <input class="input" id="mktSearch" type="search" placeholder="Search symbol or name…  (e.g. BTC, EUR/USD, Gold)" aria-label="Search markets">
+          <div class="mkt-cat" id="mktCats">
+            <button class="chip active" data-cat="all">All</button>
+            <button class="chip" data-cat="forex">Forex</button>
+            <button class="chip" data-cat="indices">Indices</button>
+            <button class="chip" data-cat="crypto">Crypto</button>
+            <button class="chip" data-cat="commodities">Commodities</button>
+            <button class="chip" data-cat="synthetics">Synthetics</button>
+          </div>
+          <select class="input" id="mktSort" style="width:auto" aria-label="Sort markets">
+            <option value="signal">Sort: signal strength</option>
+            <option value="change_desc">Change % &#9660;</option>
+            <option value="change_asc">Change % &#9650;</option>
+            <option value="name">Name A&ndash;Z</option>
+          </select>
+        </div>
+        <p class="hint" id="mktHoursNote" style="margin:-6px 0 10px"></p>
+        <div class="card flush">
+          <div class="tbl-wrap">
+            <table class="tbl" id="mktTable">
+              <thead><tr>
+                <th>Instrument</th><th class="right">Price</th><th class="right">24h</th>
+                <th class="right">Trend</th><th>Signal</th><th class="right">Action</th>
+              </tr></thead>
+              <tbody id="mktBody"></tbody>
+            </table>
+          </div>
+          <div class="empty hidden" id="mktEmpty"><b>No instruments match</b>Try a different search or category.</div>
+        </div>
+        <div class="card" id="brokerMarketsCard" style="margin-top:14px">
+          <div class="row between wrap" style="gap:10px;margin-bottom:8px">
+            <div><h3 style="margin:0">Broker-discovered markets</h3><div class="sub">Read-only catalogue from Deriv and your connected PC-local MT5 terminal. New symbols are analysis-only.</div></div>
+            <div class="row wrap" style="gap:6px">
+              <button class="btn sm" id="loadDerivMarkets">Refresh Deriv catalogue</button>
+              <button class="btn sm" id="loadMt5Markets">Load Exness / MT5 symbols</button>
+            </div>
+          </div>
+          <div class="toolbar" style="margin-bottom:8px">
+            <input class="input" id="brokerMarketSearch" type="search" placeholder="Search broker symbols or names…" aria-label="Search broker-discovered markets">
+            <select class="input" id="brokerMarketSource" style="width:auto" aria-label="Filter market source">
+              <option value="all">All sources</option><option value="Deriv">Deriv</option><option value="Exness / MT5">Exness / MT5</option>
+            </select>
+            <select class="input" id="brokerMarketCategory" style="width:auto" aria-label="Filter market category">
+              <option value="all">All categories</option><option value="forex">Forex</option><option value="commodities">Commodities</option><option value="metals">Metals</option><option value="energies">Energies</option><option value="indices">Indices</option><option value="stocks">Stocks</option><option value="etfs">ETFs</option><option value="bonds">Bonds</option><option value="crypto">Crypto</option><option value="synthetics">Synthetics</option><option value="other">Other / unclassified</option>
+            </select>
+          </div>
+          <p class="hint" id="brokerMarketsStatus" aria-live="polite">Choose a broker catalogue to load. Exness symbols and history remain on this PC.</p>
+          <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Symbol</th><th>Name / broker path</th><th>Category</th><th>Source / status</th><th class="right">Action</th></tr></thead><tbody id="brokerMarketsBody"></tbody></table></div>
+          <div class="empty hidden" id="brokerMarketsEmpty"><b>No discovered symbols match</b>Load a broker catalogue or change the search/filter.</div>
+          <div class="card hidden" id="brokerMarketAnalysis" style="margin-top:12px;background:var(--surface2)">
+            <div class="row between wrap"><div><h3 id="brokerAnalysisTitle" style="margin:0">Market analysis</h3><div class="tiny faint" id="brokerAnalysisMeta"></div></div><button class="btn sm ghost" id="brokerAnalysisClose">Close</button></div>
+            <p class="hint" id="brokerAnalysisPrice"></p>
+            <svg id="brokerAnalysisChart" viewBox="0 0 640 120" role="img" aria-label="Recent verified one-minute closing prices" style="width:100%;height:150px;border-radius:8px;background:var(--surface);margin:4px 0 10px"><polyline id="brokerAnalysisLine" points="" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+            <div class="row wrap" id="brokerAnalysisFrames" style="gap:8px"></div>
+            <div class="tiny" id="brokerAnalysisVotes" style="margin-top:8px"></div>
+            <div class="hint tiny" style="margin-top:6px">Technical indicators only — analysis-only, not a trade signal. Candle history is requested from the selected broker; Exness/MT5 data stays on this PC.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= CHART & TRADE ======= -->
+      <section class="view" id="view-watch">
+        <div class="view-head">
+          <div><h1>Watchlist</h1><p class="sub">Your pinned markets — live-streaming charts for Deriv instruments, TradingView tiles for indices.</p></div>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <div id="watchChips" class="row" style="gap:6px;flex-wrap:wrap"></div>
+          <div class="hint" style="margin-top:8px">Index quotes come from TradingView and may be delayed versus your broker's feed — they are never labelled live. <b>●</b> marks instruments streamed live from Deriv. (Note: NAS100, NASDAQ and US100 are all Nasdaq-100 products quoted by different brokers.) Pin more with the ★ in Markets.</div>
+        </div>
+        <div class="empty hidden" id="watchEmpty"><b>Nothing pinned yet</b>Go to Markets and tap the ☆ next to any instrument — live chart tiles appear here.</div>
+        <div id="watchLiveWrap" style="margin-bottom:14px">
+          <h4 style="margin:0 0 8px">● Live — streaming from Deriv <span class="hint">(session chart · builds from streamed ticks · Trade jumps straight to the ticket)</span></h4>
+          <div id="watchLiveGrid" class="watch-grid"></div>
+        </div>
+        <div id="watchTvWrap">
+          <h4 style="margin:0 0 8px">Indices — TradingView <span class="hint">(may be delayed · click a tile header for the full chart)</span></h4>
+          <div id="watchWidget" style="min-height:160px"></div>
+        </div>
+      </section>
+      <section class="view" id="view-trade">
+        <div class="view-head">
+          <div><h1>Chart &amp; Trade</h1><p class="sub">Live TradingView chart &middot; real levels &middot; orders go through your connected broker &middot; chart times follow <b>your device clock</b>.</p></div>
+        </div>
+        <div class="split">
+          <div class="chart-shell">
+            <div class="chart-toolbar">
+              <select class="input" id="chartSymbol" style="width:auto; font-weight:650" aria-label="Chart symbol"></select>
+              <span class="sym-price" id="chartPrice">—</span>
+              <span class="mono small" id="chartChg">—</span>
+              <div class="grow"></div>
+              <span class="tiny faint">TradingView &middot; live</span>
+            </div>
+            <div id="chartLevels" class="mono tiny" style="display:flex;gap:14px;flex-wrap:wrap;padding:6px 14px;border-bottom:1px solid var(--border);background:rgba(224,180,92,.05)"></div>
+            <div class="chart-body">
+              <div id="tvChart" class="tv-chart-host"></div>
+            </div>
+          </div>
+
+          <div class="grid" style="gap:16px">
+            <div class="card ticket" id="ticketCard">
+              <div class="card-head"><h3>Order ticket</h3><span class="badge gray" id="ticketMode">No broker</span></div>
+              <div class="side-seg">
+                <button class="side-btn sel-buy" id="sideBuy" type="button">BUY<span class="px" id="bidPx">—</span></button>
+                <button class="side-btn" id="sideSell" type="button">SELL<span class="px" id="askPx">—</span></button>
+              </div>
+              <label class="field"><span>Amount (USD)</span>
+                <input class="input mono" id="orderAmount" type="number" min="1" step="1" value="10">
+                <div class="quick-amts">
+                  <button type="button" data-amt="10">$10</button>
+                  <button type="button" data-amt="25">$25</button>
+                  <button type="button" data-amt="50">$50</button>
+                  <button type="button" data-amt="100">$100</button>
+                </div>
+              </label>
+              <label class="field"><span>Contract duration (Deriv paths)</span>
+                <select class="input mono" id="orderDuration">
+                  <option value="">Auto — safe default per symbol</option>
+                  <option value="5m">5 minutes</option>
+                  <option value="15m">15 minutes</option>
+                  <option value="30m">30 minutes</option>
+                  <option value="1h">1 hour</option>
+                  <option value="2h">2 hours</option>
+                  <option value="4h">4 hours</option>
+                  <option value="1d">1 day</option>
+                </select>
+                <div class="row" id="durChips" style="gap:6px;flex-wrap:wrap;margin-top:6px">
+                  <button type="button" class="chip" data-dur="15m">15m</button>
+                  <button type="button" class="chip" data-dur="30m">30m</button>
+                  <button type="button" class="chip" data-dur="1h">1h</button>
+                  <button type="button" class="chip" data-dur="4h">4h</button>
+                  <button type="button" class="chip" data-dur="1d">1d</button>
+                </div>
+                <div class="hint">Deriv rejects durations a symbol doesn’t offer (forex usually starts at 15m). The server auto-clamps to the real range.</div>
+                <div class="hint" id="durPreview" style="margin-top:6px; font-weight:600"></div>
+              </label>
+              <label class="field"><span>Stop-loss (optional)</span>
+                <input class="input mono" id="orderSL" type="number" step="any" placeholder="price level">
+              </label>
+              <label class="field"><span>Take-profit 1 (optional)</span>
+                <input class="input mono" id="orderTP" type="number" step="any" placeholder="price level">
+              </label>
+              <label class="field"><span>Take-profit 2 (optional)</span>
+                <input class="input mono" id="orderTP2" type="number" step="any" placeholder="price level">
+              </label>
+              <div class="hint" id="levelsNote">Pick a market — suggested SL/TP from its live analysis appear here automatically.</div>
+              <div class="hint" id="resaleNote" style="margin-top:6px">Early exit (resale): pick a market to see its family guidance.</div>
+              <div class="hint" style="margin-top:6px">Deriv binaries: your stake is committed to expiry and the <b>maximum loss is exactly your stake</b>. Your SL/TP levels are watched live — acted on the moment Deriv allows early exit; if the contract is locked you get one clear alert while it rides to settlement (it can still recover).</div>
+              <div class="card" id="sizePlan" style="background:var(--surface-2);margin:10px 0">
+                <div class="card-head" style="margin-bottom:6px"><h3 style="font-size:14px">Position sizer (adaptive, formula shown)</h3></div>
+                <div id="sizePlanBody" class="tiny">Pick a market and set a stop-loss — the size plan appears here. Nothing is assumed: missing inputs are listed, never invented.</div>
+              </div>
+              <button class="btn buy lg" id="placeOrderBtn" style="width:100%">Place BUY order</button>
+              <p class="hint">Deriv orders use their existing gated path. Exness is connected read-only in this local verification build; its order and close routes are disabled. Risk: <b id="riskTxt">—</b> if stop-loss is hit.</p>
+            </div>
+            <div class="card">
+              <div class="card-head"><h3>Instrument info</h3></div>
+              <ul class="info-list" id="instrInfo"></ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= SIGNAL ANALYZER ======= -->
+      <section class="view" id="view-signals">
+        <div class="view-head">
+          <div><h1>Signal Analyzer</h1><p class="sub">Multi-timeframe confluence (1m / 5m / 1h) into one validated decision with risk levels.</p>
+            <details class="tiny faint" style="margin-top:6px"><summary style="cursor:pointer">How the confidence score is computed (quality score — NOT a probability of profit)</summary>
+            <div style="margin-top:6px;max-width:640px">Technical confluence score, 0–100: <b>15</b> base + <b>7</b> per confirming timeframe (up to 5) + up to <b>25</b> for bias strength (5×|avg bias|, capped) + <b>20</b> when the multi-timeframe signal is confirmed; overall cap 93 (WAIT signals capped at 45). Index CFD reads use <b>50 + 8×|signal score|</b>, capped 90. Formula is fixed and shown here so the number is explainable and stable — it is a setup-quality/confluence score, not a calibrated chance of profit.</div>
+            </details>
+          </div>
+          <span class="pill hidden" id="azBudget">AI today —</span>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div><h3>Analyze a symbol</h3><div class="sub">Indicators + MTF votes are computed locally; Opus adds judgement only when a key and budget allow.</div></div>
+            <div class="row">
+              <select class="input" id="azSymbol" style="width:auto" aria-label="Symbol to analyze"></select>
+              <button class="btn primary" id="azRun">Analyze</button>
+            </div>
+          </div>
+          <div id="azLoading" class="hidden center" style="padding:26px 12px"><span class="muted" id="azLoadingTxt">Analyzing…</span></div>
+          <div id="azEmpty" class="empty"><b>Ready when you are</b>Pick a symbol and press Analyze — you get entry, stop, two targets, confidence, key levels and risks.</div>
+          <div id="azResult" class="hidden">
+            <div class="grid c2" style="margin-bottom:14px">
+              <div class="card" style="background:var(--surface-2)">
+                <div class="row between"><span class="faint tiny">SIGNAL</span><span id="azMode" class="badge gray">—</span></div>
+                <div class="row" style="margin-top:10px; gap:12px"><span id="azBadge" class="badge gray">—</span><h2 id="azSignal" style="font-size:30px">--</h2></div>
+                <div class="tiny faint" style="margin-top:6px" id="azMtf">—</div>
+                <div class="tiny faint" style="margin-top:5px" id="azSignalTiming">Analysis timeframe and review guidance appear here.</div>
+              </div>
+              <div class="card" style="background:var(--surface-2)">
+                <div class="row between"><span class="faint tiny">CONFIDENCE</span><span class="muted tiny" id="azConfTxt">--</span></div>
+                <div class="conf-bar" style="margin-top:14px"><i id="azConfBar" style="width:0%"></i></div>
+                <h2 id="azConf" style="font-size:30px; margin-top:8px">--</h2>
+              </div>
+            </div>
+            <div class="az-tiles">
+              <div class="az-tile"><div class="k">ENTRY</div><div class="v" id="azEntry">--</div></div>
+              <div class="az-tile"><div class="k">STOP LOSS</div><div class="v down" id="azSl">--</div></div>
+              <div class="az-tile"><div class="k">TP 1</div><div class="v up" id="azTp1">--</div></div>
+              <div class="az-tile"><div class="k">TP 2</div><div class="v up" id="azTp2">--</div></div>
+            </div>
+            <div class="grid c2" style="margin-bottom:14px">
+              <div class="card"><span class="faint tiny">RISK : REWARD (TP1)</span><h3 class="mono" style="margin-top:8px" id="azRrr">--</h3></div>
+              <div class="card"><span class="faint tiny">SENTIMENT</span><div style="margin-top:8px"><span class="badge neutral" id="azSentiment">50 / 100</span> <span class="tiny faint">no news feed configured</span></div></div>
+            </div>
+            <div class="card" style="margin-bottom:14px">
+              <h4 class="az-h">RATIONALE</h4>
+              <p class="muted" style="line-height:1.65" id="azRationale">—</p>
+            </div>
+            <div class="card" style="margin-bottom:14px">
+              <h4 class="az-h">TECHNICAL SUMMARY</h4>
+              <p class="muted small mono" style="line-height:1.7" id="azTech">—</p>
+            </div>
+            <div class="grid c2" style="margin-bottom:14px">
+              <div class="card"><h4 class="az-h">SUPPORT</h4><div id="azSupport"></div></div>
+              <div class="card"><h4 class="az-h">RESISTANCE</h4><div id="azResistance"></div></div>
+            </div>
+            <div class="card risk-card" style="margin-bottom:14px">
+              <h4 class="az-h" style="color:var(--red)">RISKS</h4>
+              <ul class="az-risks" id="azRisks"></ul>
+            </div>
+            <div class="card">
+              <div class="row between wrap" style="gap:12px">
+                <div class="grow"><h4 class="az-h">NEXT WATCH</h4><p class="muted small" id="azWatch">—</p></div>
+                <button class="btn primary" id="azUse">Use setup in ticket</button>
+              </div>
+            </div>
+            <div id="azWhy" class="card" style="margin-top:12px; border-left:3px solid var(--amber); padding:10px 12px"></div>
+          </div>
+        </div>
+
+        <div class="card section-gap">
+          <div class="card-head"><div><h3>This session</h3><div class="sub">Every analysis you run, newest first</div></div></div>
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead><tr><th>Time</th><th>Symbol</th><th>Signal</th><th class="right">Confidence</th><th class="right">Entry</th><th>Engine</th></tr></thead>
+              <tbody id="azHistBody"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="azHistEmpty"><b>No analyses yet</b>Results are kept for this session.</div>
+        </div>
+
+        <div class="card section-gap">
+          <div class="card-head">
+            <div><h3>Market scanner</h3><div class="sub">Quick top-6 confluence scan across all watched instruments</div></div>
+            <div class="row"><span class="pill" id="sigStamp">Updated —</span><button class="btn" id="refreshSigs">Refresh</button></div>
+          </div>
+          <div class="grid c3" id="sigGrid"></div>
+        </div>
+
+        <div class="card section-gap" id="backtestCard">
+          <div class="card-head">
+            <div><h3>Backtest — walk-forward on real Deriv candles</h3>
+              <div class="sub">Runs the same indicator engine bar-by-bar over historical candles (EMA/SMA/RSI/MACD/BB/ATR/Fib · risk 1.5×ATR · TP1/TP2). No simulated prices — only real history.</div></div>
+            <div class="row wrap" style="gap:8px">
+              <select class="input" id="btGran" style="width:auto" aria-label="Backtest timeframe">
+                <option value="300" selected>5m candles</option>
+                <option value="900">15m candles</option>
+                <option value="3600">1h candles</option>
+                <option value="14400">4h candles</option>
+                <option value="86400">1d candles</option>
+              </select>
+              <select class="input" id="btBars" style="width:auto" aria-label="History length">
+                <option value="300">300 bars</option>
+                <option value="500" selected>500 bars</option>
+                <option value="800">800 bars</option>
+                <option value="1200">1200 bars</option>
+              </select>
+              <button class="btn primary" id="btRun">Run backtest</button>
+            </div>
+          </div>
+          <div id="btEmpty" class="empty"><b>Same symbol as the analyzer above</b>Press Run backtest — results use the symbol selected in “Analyze a symbol”.</div>
+          <div id="btResult" class="hidden">
+            <div class="az-tiles" id="btStats"></div>
+            <div class="tbl-wrap" style="margin-top:12px">
+              <table class="tbl">
+                <thead><tr><th>#</th><th>Side</th><th class="right">Entry</th><th class="right">Exit</th><th class="right">Bars</th><th>Result</th><th class="right">R</th></tr></thead>
+                <tbody id="btTrades"></tbody>
+              </table>
+            </div>
+            <p class="hint" id="btNote" style="margin-top:10px"></p>
+          </div>
+        </div>
+
+        <!-- ========================= RULE-BASED SETUPS (ANALYSIS-ONLY) ========================= -->
+        <div class="card section-gap" id="setupsCard">
+          <div class="card-head">
+            <div>
+              <h3>Rule-based setups — analysis only</h3>
+              <div class="sub">Four transparent rules (EMA trend-pullback · VWAP mean-reversion · Opening-range breakout · RSI mean-reversion) evaluated on real candles. Every condition is shown pass or fail — nothing hidden, no auto-trading. Server flag: <span class="mono">AURUM_SETUPS_ENABLED</span>.</div>
+            </div>
+            <div class="row wrap" style="gap:8px">
+              <label class="faint tiny" for="suSymbol" style="display:block">SYMBOL</label>
+              <input class="input" id="suSymbol" style="width:130px" placeholder="e.g. EURUSD" aria-label="Setups symbol" autocomplete="off">
+              <select class="input" id="suGran" style="width:auto" aria-label="Setups timeframe">
+                <option value="300" selected>5m</option>
+                <option value="900">15m</option>
+                <option value="3600">1h</option>
+              </select>
+              <button class="btn primary" id="suRun">Check setups</button>
+              <button class="btn" id="suBacktest">Backtest setups</button>
+            </div>
+          </div>
+          <div id="suEmpty" class="empty"><b>Rule engine, not a black box</b>Type a symbol (defaults to the analyzer symbol) and press <b>Check setups</b> — each setup lists its conditions with pass/fail and values. Or run the walk-forward <b>Backtest</b> for out-of-sample stats with honest small-sample warnings.</div>
+          <div id="suResult" class="hidden"></div>
+        </div>
+
+        <!-- ========================= CHART PATTERNS ========================= -->
+        <div class="card section-gap" id="patternsCard">
+          <div class="card-head">
+            <div>
+              <span class="title">Chart pattern recognition</span>
+              <span class="tag">12 classic patterns · real Deriv candles</span>
+            </div>
+            <div class="row" style="gap:8px">
+              <select id="patGran" class="input" aria-label="Pattern timeframe">
+                <option value="60">1m</option>
+                <option value="300" selected>5m</option>
+                <option value="900">15m</option>
+                <option value="3600">1h</option>
+                <option value="14400">4h</option>
+                <option value="86400">1D</option>
+              </select>
+              <button class="btn" id="patRun" type="button">Detect patterns</button>
+              <button class="btn" id="patStudy" type="button">Success rates</button>
+            </div>
+          </div>
+          <div id="patEmpty" class="empty">
+            <b>Classic technical analysis, automated</b>
+            Picks a timeframe (1m → 1D), scans the last 120 candles for head &amp; shoulders, double tops/bottoms,
+            flags, triangles, wedges &amp; more — then draws the geometry on the chart with entry / stop / target
+            and a suggested action. Uses the pair selected in the Analyzer above. “Success rates” replays every
+            historical signal bar-by-bar (walk-forward, stop first) so the numbers stay honest.
+          </div>
+          <div id="patResults" hidden>
+            <div id="patDetections" class="sig-grid"></div>
+            <div id="patChartWrap" style="margin-top:12px">
+              <div id="patMeta" class="hint"></div>
+              <div id="patChart" style="margin-top:6px"></div>
+              <div id="patLevels" class="hint" style="margin-top:6px"></div>
+            </div>
+          </div>
+          <div id="patPerfWrap" hidden style="margin-top:14px">
+            <div class="sub" style="margin-bottom:8px">Historical success rates per pattern — walk-forward on real candles</div>
+            <div id="patPerf"></div>
+          </div>
+        </div>
+
+        <!-- ========================= PATTERN PLAYBOOK ========================= -->
+        <div class="card section-gap" id="playbookCard">
+          <div class="card-head">
+            <div>
+              <span class="title">Pattern playbook</span>
+              <span class="tag">learn what the scanner is looking for</span>
+            </div>
+          </div>
+          <div id="playbook"></div>
+        </div>
+
+        <!-- ========================= ONLINE HISTORY (Supabase) ========================= -->
+        <div class="card section-gap" id="historyCard">
+          <div class="card-head">
+            <div>
+              <span class="title">Online history</span>
+              <span class="tag">Supabase cloud · same rows on phone &amp; desktop</span>
+            </div>
+            <button class="btn" id="cldLoad" type="button">Load history</button>
+          </div>
+          <div id="cldEmpty" class="empty">
+            <b>Connect Supabase in Settings to go online</b>
+            Pattern scans, success-rate studies and pattern alerts can be stored in your own
+            Supabase project — then this panel shows the same history on every device you open
+            AURUM from. Nothing is sent anywhere else.
+          </div>
+            <div id="cldBody" hidden>
+            <div class="sub" style="margin:6px 0">Signals</div>
+            <div class="tbl-wrap"><table class="tbl"><thead><tr><th>#</th><th>Signal</th><th>Symbol</th><th class="right">Conf</th><th class="right">Entry</th><th class="right">SL</th><th class="right">TP1</th><th>Engine</th><th class="right">When (UTC)</th></tr></thead><tbody id="cldSignals"></tbody></table></div>
+            <div class="sub" style="margin:12px 0 6px">Analyses</div>
+            <div class="tbl-wrap"><table class="tbl"><thead><tr><th>#</th><th>Kind</th><th>Symbol</th><th>TF</th><th class="right">When (UTC)</th></tr></thead><tbody id="cldAnalyses"></tbody></table></div>
+            <div class="sub" style="margin:12px 0 6px">Pattern events</div>
+            <div class="tbl-wrap"><table class="tbl"><thead><tr><th>#</th><th>Pattern</th><th>Dir</th><th>Suggest</th><th class="right">Conf</th><th>Status</th><th class="right">When (UTC)</th></tr></thead><tbody id="cldPatterns"></tbody></table></div>
+            <div class="sub" style="margin:12px 0 6px">Alerts</div>
+            <div class="tbl-wrap"><table class="tbl"><thead><tr><th>#</th><th>Title</th><th>Body</th><th class="right">When (UTC)</th></tr></thead><tbody id="cldAlerts"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= SNIPER ALERTS ======= -->
+      <section class="view" id="view-sniper">
+        <div class="view-head">
+          <div><h1>Sniper alerts</h1><p class="sub">Choose markets to monitor. Selected markets can alert on a qualifying entry setup and on TP1, TP2/exit, or SL price touches. Analysis only — no orders are placed.</p></div>
+          <span class="badge gray" id="sniperMonitorState">Monitoring off</span>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <div class="card-head wrap">
+            <div><h3>Choose markets</h3><div class="sub">Only checked markets receive Sniper entry/exit alerts. Preferences are saved on this device.</div></div>
+            <div class="row wrap">
+              <input class="input" id="sniperMarketSearch" type="search" placeholder="Find a market…" aria-label="Search Sniper markets">
+              <button class="btn" id="sniperRefreshMarkets" type="button">Refresh signals</button>
+              <button class="btn primary" id="sniperMonitorToggle" type="button">Start monitoring</button>
+            </div>
+          </div>
+          <div class="hint">Exit-touch alerts use the latest available scan price; they are not guaranteed fills. Daily index fallback has no intraday exit-touch alerts. “—” means no level was supplied; none are invented.</div>
+          <div class="tbl-wrap" style="margin-top:8px">
+            <table class="tbl"><thead><tr><th>Notify</th><th>Market</th><th>Current signal</th><th>Source</th><th>View</th></tr></thead><tbody id="sniperWatchList"><tr><td colspan="5" class="faint">Loading market signals…</td></tr></tbody></table>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <div class="card-head"><div><h3>Selected market details</h3><div class="sub">Use the eye icon in the market list to inspect entry, exit, TP and SL references.</div></div></div>
+          <div id="sniperSelectedDetail" class="empty"><b>No market selected</b>Choose the eye icon beside a market to view its current signal details.</div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h3>Live Sniper setups</h3><div class="sub">The same source-labelled setups shown in alerts and the Automation panel.</div></div></div>
+          <div id="sniperSignalList"><div class="tiny faint">Start monitoring to populate Sniper setups.</div></div>
+        </div>
+      </section>
+
+      <!-- ======= GOLD / USD MONITOR ======= -->
+      <section class="view" id="view-gold">
+        <div class="view-head">
+          <div><h1>Gold / US Dollar</h1><p class="sub">Dedicated XAU/USD monitor · live source shown on each update · analysis-only, no orders.</p></div>
+          <span class="pill" id="goldFeedStatus">Waiting for data</span>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <div class="card-head wrap">
+            <div><h3>Gold signal monitor</h3><div class="sub">M1 / M5 / H1 confirmation · cost-free refresh every minute. Analysis source is separate from the order broker; no silent source switching.</div></div>
+            <div class="row wrap" style="gap:10px">
+              <label class="row tiny" style="gap:6px">Analysis source <select class="input sm" id="goldSourceSelect" style="width:auto;min-width:190px"><option value="auto">Follow connected broker</option><option value="deriv">Deriv public candles</option><option value="mt5">Exness MT5 local bridge</option></select></label>
+              <label class="row tiny" style="gap:6px"><input type="checkbox" id="goldAuto" checked> Auto-refresh</label>
+              <button class="btn primary sm" id="goldAnalyzeBtn">Analyze now</button>
+              <button class="btn ghost sm" id="goldShareBtn">Share signal</button>
+              <button class="btn ghost sm" id="goldNotifyBtn">Enable browser alerts</button>
+            </div>
+          </div>
+          <div class="notice hidden" id="goldAnalysisNotice" style="margin:0 0 14px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+            <div><b id="goldAnalysisNoticeTitle">Gold analysis status</b><div class="tiny" id="goldAnalysisNoticeText" style="margin-top:3px"></div></div>
+            <button class="btn ghost sm hidden" id="goldConnectBtn" type="button">Connect Exness (read-only)</button>
+          </div>
+          <div class="grid c2" style="margin-bottom:14px">
+            <div class="card" style="background:var(--surface-2)">
+              <div class="row between"><span class="faint tiny">TECHNICAL SIGNAL</span><span id="goldSignalBadge" class="badge gray">WAITING</span></div>
+              <h2 id="goldSignal" style="font-size:32px;margin-top:10px">—</h2>
+              <div class="tiny faint" id="goldVotes">No verified timeframe votes yet.</div>
+              <div class="tiny faint" id="goldSignalUpdated" style="margin-top:6px">Last analysis: —</div>
+            </div>
+            <div class="card" style="background:var(--surface-2)">
+              <div class="row between"><span class="faint tiny">LATEST MARKET PRICE</span><span class="badge gray" id="goldQuoteState">UNAVAILABLE</span></div>
+              <h2 class="mono" id="goldPrice" style="font-size:28px;margin-top:10px">—</h2>
+              <div class="tiny faint" id="goldSource">Source not connected.</div>
+              <div class="tiny faint" id="goldQuoteTime" style="margin-top:4px">Quote time: —</div>
+            </div>
+          </div>
+          <div class="az-tiles">
+            <div class="az-tile"><div class="k">ENTRY GUIDE</div><div class="v" id="goldEntry">—</div></div>
+            <div class="az-tile"><div class="k">STOP LOSS</div><div class="v down" id="goldSL">—</div></div>
+            <div class="az-tile"><div class="k">TP 1</div><div class="v up" id="goldTP1">—</div></div>
+            <div class="az-tile"><div class="k">TP 2</div><div class="v up" id="goldTP2">—</div></div>
+          </div>
+          <div class="grid c2" style="margin-top:14px">
+            <div class="card"><h4 class="az-h">BUY / SELL PRESSURE</h4><p class="muted small" id="goldPressure">Waiting for M1/M5/H1 votes.</p><p class="hint tiny">This is indicator/timeframe confluence, not exchange order-book or actual buyer/seller volume.</p></div>
+            <div class="card"><h4 class="az-h">READOUT &amp; RISKS</h4><p class="muted small" id="goldRationale">No signal yet. If data is unavailable or timeframes disagree, the monitor stands aside.</p><ul class="az-risks" id="goldRisks"></ul></div>
+          </div>
+          <div class="hint tiny" style="margin-top:12px">Levels are technical reference values, not instructions or guaranteed fills. A BUY/SELL is shown only with confirmation; otherwise the result is WAIT. Review after the next M5 candle close; this is not a fixed expiry or holding-time guarantee. The monitor runs while AURUM is open and reachable after you open this Gold/USD panel; it cannot alert when the app/browser is closed.</div>
+        </div>
+        <div class="grid c2">
+          <div class="card">
+            <div class="card-head"><div><h3>Upcoming USD news</h3><div class="sub">Verified calendar entries only · UTC + Nairobi EAT countdowns</div></div><button class="btn ghost sm" id="goldNewsRefresh">Refresh</button></div>
+            <div id="goldEvents"><div class="hint">Calendar not loaded.</div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><h3>Gold / USD headlines</h3><div class="sub">Best-effort public headlines; not exhaustive or guaranteed real-time · no direction inferred from a headline alone</div></div></div>
+            <div id="goldHeadlines"><div class="hint">Headlines not loaded.</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= NEWS ======= -->
+      <section class="view" id="view-news">
+        <div class="view-head">
+          <div><h1>News</h1><p class="sub">Live headlines and economic calendar (TradingView) &middot; AI expectations brief via Perplexity.</p></div>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <div class="card-head">
+            <div><h3>Market-moving news</h3><div class="sub">Public keyless feeds &middot; direction chip is a labelled keyword heuristic — not AI, not advice</div></div>
+            <button class="btn sm" id="newsFeedBtn">Refresh</button>
+          </div>
+          <div id="newsFeed"><p class="hint">Loading market-moving headlines…</p></div>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <div class="card-head">
+            <div><h3>Economic calendar — Today (UTC)</h3><div class="sub">Guest sample access &middot; may be rate-limited &middot; TradingView widget below as fallback</div></div>
+            <button class="btn sm" id="newsCalBtn">Refresh</button>
+            <button class="btn sm primary" id="newsCalShare">↗ Share today's brief</button>
+          </div>
+          <div id="newsCal"><p class="hint">Loading today's events…</p></div>
+        </div>
+        <div class="split">
+          <div class="card">
+            <div class="card-head">
+              <div><h3>Live headlines</h3><div class="sub">TradingView timeline &middot; real-time</div></div>
+            </div>
+            <div id="tvNews" class="tv-widget-box" style="min-height:420px"></div>
+          </div>
+          <div class="grid" style="gap:16px">
+            <div class="card" id="newsAiCard">
+              <div class="card-head">
+                <div><h3>AI news brief</h3><div class="sub">What's moving &amp; what's expected</div></div>
+                <button class="btn primary sm" id="newsBriefBtn">Get brief</button>
+              </div>
+              <div id="newsAiBody"><p class="hint">Uses Perplexity when a key is set in Settings. Covers current drivers, expected event outcomes and risk warnings for the selected symbol.</p></div>
+            </div>
+            <div class="card">
+              <div class="card-head"><div><h3>Economic calendar</h3><div class="sub">TradingView &middot; live</div></div></div>
+              <div id="tvCalendar" class="tv-widget-box" style="min-height:340px"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= PORTFOLIO ======= -->
+      <section class="view" id="view-portfolio">
+        <div class="view-head">
+          <div><h1>Portfolio</h1><p class="sub">Balance, open risk and trade history — all in one place.</p></div>
+          <button class="btn primary" data-goto="trade">New order</button>
+        </div>
+        <div id="pfAccounts" data-pat-accounts style="margin-bottom:14px"></div>
+        <div class="grid c4">
+          <div class="kpi"><div class="label">Balance</div><div class="value" id="pfBalance">Not connected</div><div class="delta">Broker balance</div></div>
+          <div class="kpi"><div class="label">Equity</div><div class="value" id="pfEquity">Not connected</div><div class="delta"><span class="v" id="pfEquityDelta">—</span> floating</div></div>
+          <div class="kpi"><div class="label">Open P&amp;L</div><div class="value" id="pfPl">$0.00</div><div class="delta"><span class="v" id="pfPlCount">0 positions</span></div></div>
+          <div class="kpi"><div class="label">Closed trades</div><div class="value" id="pfClosed">0</div><div class="delta"><span class="v" id="pfClosedSub">—</span></div></div>
+        </div>
+
+        <div class="card section-gap" id="mt5PositionsCard" style="display:none">
+          <div class="card-head">
+            <div><h3>Live MT5 positions</h3><div class="sub">Read-only snapshot from the connected terminal; includes trades opened on MT5 mobile or desktop.</div></div>
+            <button class="btn ghost sm" id="mt5RefreshBtn">Refresh MT5</button>
+          </div>
+          <div class="sub" id="mt5PositionsMeta">Waiting for the first live MT5 snapshot.</div>
+          <div class="tbl-wrap hidden" id="mt5PositionsWrap" style="margin-top:10px">
+            <table class="tbl"><thead><tr><th>Ticket</th><th>Symbol</th><th>Side</th><th>Lots</th><th>Open price</th><th>Floating P&amp;L</th><th>Stop loss</th><th>Take profit</th></tr></thead><tbody id="mt5PositionsBody"></tbody></table>
+          </div>
+          <div class="hint hidden" id="mt5PositionsEmpty" style="margin-top:10px"></div>
+        </div>
+
+        <div class="card section-gap">
+          <div class="card-head">
+            <div><h3>App-recorded positions</h3><div class="sub">Positions saved by this workspace; live broker positions are listed above.</div></div>
+            <button class="btn danger sm" id="closeAllBtn">Close all</button>
+          </div>
+          <div class="tbl-wrap" id="posWrap">
+            <table class="tbl" id="posTable">
+              <thead><tr>
+                <th>Instrument</th><th>Side</th><th class="right">Amount</th><th class="right">Entry</th>
+                <th class="right">Current</th><th class="right">P&amp;L</th><th class="right">SL / TP</th><th class="right"> </th>
+              </tr></thead>
+              <tbody id="posBody"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="posEmpty"><b>No app-recorded positions</b>Live MT5 positions are shown in the broker snapshot above.</div>
+        </div>
+
+        <div class="card section-gap">
+          <div class="card-head"><div><h3>History</h3><div class="sub">Closed trades, newest first</div></div></div>
+          <div class="tbl-wrap" id="histWrap">
+            <table class="tbl">
+              <thead><tr>
+                <th>Closed</th><th>Instrument</th><th>Side</th><th class="right">Amount</th>
+                <th class="right">Entry</th><th class="right">Exit</th><th class="right">P&amp;L</th>
+              </tr></thead>
+              <tbody id="histBody"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="histEmpty"><b>No history yet</b>Closed trades will appear here.</div>
+        </div>
+      </section>
+
+      <!-- ======= AUTOMATION ======= -->
+      <section class="view" id="view-automation">
+        <div class="view-head">
+          <div><h1>Automation</h1><p class="sub">Broker bridges and XML bots — connect once, keep everything within reach.</p></div>
+        </div>
+        <div class="notice warn" style="margin-bottom:16px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+          <div><b>Exness verification is read-only in this build.</b> The local MT5 bridge reads account data, positions, quotes, symbols, and history; order sends and closes are disabled at both the app and bridge. Exness credentials stay between this local app and your PC terminal. The bridge must run beside MT5 and uses the same exact account/server for PC and phone.</div>
+        </div>
+
+        <div class="grid c3" id="connGrid">
+          <div class="conn-card" data-conn="deriv">
+            <div class="conn-head">
+              <div class="conn-logo" style="color:#f0616d">DX</div>
+              <div><h3>Deriv</h3><div class="sub">Live account &middot; PAT &middot; server-held session</div></div>
+            </div>
+            <div class="status-line" id="derivStatus"><span class="dot off"></span> Not connected</div>
+            <label class="field" style="margin:0"><span>Deriv PAT (Trade scope)</span><input class="input" type="password" id="derivToken" placeholder="your PAT — kept on our server only"></label>
+            <label class="field" style="margin:0"><span>Deriv-App-ID <span class="faint">(copy EXACTLY — may contain letters)</span></span><input class="input" id="derivApp" placeholder="paste exactly from your Deriv application"></label>
+            <button class="btn primary conn-btn" data-conn="deriv">Connect Deriv</button>
+          </div>
+          <div class="conn-card" data-conn="mt5">
+            <div class="conn-head">
+              <div class="conn-logo" style="color:#5b9cf8">M5</div>
+              <div><h3>Exness / MT5 bridge</h3><div class="sub">Local bridge &middot; run next to MT5</div></div>
+            </div>
+            <div class="status-line" id="mt5Status"><span class="dot off"></span> Not connected</div>
+            <label class="field" style="margin:0"><span>Bridge URL</span><input class="input" id="mt5Url" placeholder="ws://127.0.0.1:8787" title="From a phone/tablet: use the PC address the bridge window prints, e.g. ws://192.168.1.10:8787">
+              <div class="hint">If it says unreachable: (1) is the black bridge window open with "listening"? (2) the cloud page may be blocked from reaching your PC — the guaranteed path is the bridge's own app: <a id="openLocalMode" href="http://127.0.0.1:8788/app" target="_blank" rel="noopener" style="color:var(--brand);font-weight:700">Open the local trading app (Exness works there) ↗</a>. To allow the cloud page instead: padlock → Site settings → Insecure content → Allow, and allow Local-network access, then reload.</div></label>
+            <label class="field" style="margin:0"><span>Account login</span><input class="input" id="mt5Login" required placeholder="account number"></label>
+            <label class="field" style="margin:0"><span>MT5 server (enter exact server for this account)</span><input class="input" id="mt5Server" required placeholder="copy the exact server from Exness Personal Area"></label>
+            <label class="field" style="margin:0"><span>MT5 password</span><input class="input" type="password" autocomplete="off" id="mt5Pass" required placeholder="investor/read-only password is sufficient"></label>
+            <label class="field" style="margin:0"><span>Bridge token <span class="faint">(required from phone/LAN)</span></span><input class="input" type="password" autocomplete="off" id="mt5Token" placeholder="shared secret — use local bridge_token.txt"><div class="hint">On the PC this is optional. From a phone, use the token from the PC's local bridge_token.txt; it stays in this browser tab only and is also required for phone access to the local analysis API.</div></label>
+            <button class="btn primary conn-btn" data-conn="mt5">Connect Exness (read-only)</button>
+            <div class="hint">This browser tab keeps the Exness login, server, password and bridge token in session storage for refresh recovery. They clear on disconnect, sign-out, or tab-session end.</div>
+            <button class="btn ghost sm" id="mt5ForgetSettings" type="button" style="margin-top:6px">Forget saved Exness details</button>
+            <button class="btn ghost" id="bridgeTestBtn" type="button" style="margin-top:8px;width:100%">Test bridge (step-by-step)</button>
+            <div id="bridgeDoctor" class="hidden" style="margin-top:8px"></div>
+          </div>
+          <div class="conn-card" data-conn="live">
+            <div class="conn-head">
+              <div class="conn-logo" style="color:#2ecc8f">LM</div>
+              <div><h3>Live markets only</h3><div class="sub">Browse &amp; analyse &middot; trading locked</div></div>
+            </div>
+            <div class="status-line" id="liveStatus"><span class="dot live"></span> Active — no broker</div>
+            <p class="hint" style="margin-top:10px">Real prices, TradingView charts, news and AI analysis all work. Deriv keeps its existing gated route; Exness remains read-only in this verification build.</p>
+            <button class="btn conn-btn" data-conn="live" disabled>Always on without a broker</button>
+          </div>
+        </div>
+
+        <div class="card section-gap">
+          <div class="card-head">
+            <div><h3>XML bot library</h3><div class="sub">Uploaded Deriv strategies — reviewed before use</div></div>
+            <button class="btn sm" id="importBotBtn">Import XML</button>
+            <input type="file" id="botFile" accept=".xml,.txt" hidden>
+          </div>
+          <div class="bot-grid" id="botGrid"></div>
+          <div class="notice" style="margin-top:14px">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+            <div><b>Risk first.</b> Recovery-style bots (Martingale) can drain a balance quickly. Every imported bot is scanned for stake progression and rated — and no bot can arm without a connected broker.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= SETTINGS ======= -->
+      <section class="view" id="view-learn">
+        <div class="card" style="border-left:3px solid var(--brand);margin-bottom:14px">
+          <b>Calculator Lab — risk education</b>
+          <div class="hint" style="margin-top:4px">Every tool here is <b>educational and hypothetical</b>: you supply the assumptions, the math is shown, nothing is sent to any broker, and nothing here predicts or guarantees anything. Market history comes from the <b>live Deriv public feed</b> and is labelled per panel. Past behaviour of a market never guarantees its future.</div>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <b>1 · Percentage change</b>
+          <div class="hint">How much did a value move, and what does it take to move back? Notice the asymmetry: a −50% move needs +100% to recover.</div>
+          <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+            <label class="field" style="flex:1;min-width:110px"><span>From</span><input class="input mono" id="pctFrom" type="number" step="any" placeholder="100"></label>
+            <label class="field" style="flex:1;min-width:110px"><span>To</span><input class="input mono" id="pctTo" type="number" step="any" placeholder="92"></label>
+            <button class="btn sm primary" id="pctBtn" style="align-self:flex-end">Compute</button>
+          </div>
+          <div id="pctOut" class="mono" style="margin-top:8px"></div>
+          <div class="hint">Method: (to − from) ÷ |from| × 100. Recovery % = what the “to” value needs to return to “from”.</div>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <b>2 · Hypothetical profit &amp; loss</b>
+          <div class="hint">Your assumptions only — enter an imagined entry/exit and costs. This is arithmetic on <b>your numbers</b>, not a forecast, and it never places an order.</div>
+          <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+            <label class="field" style="min-width:96px"><span>Direction</span><select class="input" id="plDir"><option value="long">Long (buy)</option><option value="short">Short (sell)</option></select></label>
+            <label class="field" style="min-width:96px"><span>Entry price</span><input class="input mono" id="plEntry" type="number" step="any" placeholder="1.1000"></label>
+            <label class="field" style="min-width:96px"><span>Exit price</span><input class="input mono" id="plExit" type="number" step="any" placeholder="1.1050"></label>
+            <label class="field" style="min-width:88px"><span>Units</span><input class="input mono" id="plUnits" type="number" step="any" value="10000"></label>
+            <label class="field" style="min-width:88px"><span>Leverage</span><input class="input mono" id="plLev" type="number" step="any" value="1" min="1"></label>
+            <label class="field" style="min-width:88px"><span>Fee % / side</span><input class="input mono" id="plFee" type="number" step="any" value="0"></label>
+            <label class="field" style="min-width:88px"><span>Slippage / side</span><input class="input mono" id="plSlip" type="number" step="any" value="0"></label>
+            <button class="btn sm primary" id="plBtn" style="align-self:flex-end">Compute</button>
+          </div>
+          <div id="plOut" class="mono" style="margin-top:8px"></div>
+          <div class="hint">Method: gross = (exit − entry) × units × direction; costs = fees on both sides' notionals + slippage × 2 sides; margin = notional ÷ leverage. Leverage multiplies gains <b>and</b> losses alike.</div>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <b>3 · Historical drawdown (real market history)</b>
+          <div class="hint">Buy-and-hold drawdown from actual candles: how far the price fell below its running peak, and for how long. <b>Limitations:</b> one instrument, one period, one granularity — past drawdown does not bound future drawdown.</div>
+          <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+            <label class="field" style="min-width:120px"><span>Instrument</span><select class="input mono" id="ddSym"></select></label>
+            <label class="field" style="min-width:100px"><span>Interval</span><select class="input mono" id="ddGran">
+              <option value="900">15 min</option><option value="3600">1 hour</option><option value="14400">4 hours</option><option value="86400" selected>1 day</option>
+            </select></label>
+            <button class="btn sm primary" id="ddBtn" style="align-self:flex-end">Load history</button>
+          </div>
+          <div id="ddStatus" class="hint" style="margin-top:6px">No history loaded yet.</div>
+          <div style="position:relative;margin-top:8px"><canvas id="ddChart" height="180" style="width:100%;height:180px;display:none"></canvas><div id="ddTip" style="position:absolute;display:none;pointer-events:none;background:var(--surface-3);border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:4px 8px;font-size:11px;white-space:nowrap;z-index:2"></div></div>
+          <div id="ddStats" class="mono" style="margin-top:8px"></div>
+          <div class="hint" id="ddSrc">Source: —</div>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <b>4 · Volatility comparison (real market history)</b>
+          <div class="hint">Realized (statistical) volatility from actual candle returns, annualized so different instruments are comparable. <b>Limitations:</b> a statistical description of the past — not a prediction, and it changes with every new candle.</div>
+          <div id="volPick" class="row" style="gap:10px;flex-wrap:wrap;margin:8px 0"></div>
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <label class="field" style="min-width:100px"><span>Interval</span><select class="input mono" id="volGran">
+              <option value="900" selected>15 min</option><option value="3600">1 hour</option><option value="86400">1 day</option>
+            </select></label>
+            <button class="btn sm primary" id="volBtn" style="align-self:flex-end">Compare</button>
+          </div>
+          <div id="volOut" style="margin-top:10px"></div>
+          <div class="hint" id="volSrc">Method: stdev of log returns × √(periods/year). Data: Deriv public feed, last 400 candles per instrument.</div>
+        </div>
+        <div class="card">
+          <b>What leverage, fees and slippage really do</b>
+          <ul class="hint" style="margin:8px 0 0;padding-left:18px;line-height:1.7">
+            <li><b>Leverage</b> borrows buying power: 20× turns a 1% market move into a 20% move on your margin — in either direction. Losses can exceed the margin you posted.</li>
+            <li><b>Fees</b> are charged on every side of every trade whether the idea worked or not; high-frequency plans must first overcome their own costs.</li>
+            <li><b>Slippage</b> is the gap between the price you wanted and the price you got — it widens in fast markets and around news.</li>
+            <li><b>Losses are part of trading</b>: no calculator, signal, or system eliminates them. Anyone promising otherwise is not being honest with you.</li>
+          </ul>
+        </div>
+      </section>
+      <section class="view" id="view-settings">
+        <div class="view-head">
+          <div><h1>Settings</h1><p class="sub">Appearance, trading defaults, security and data.</p></div>
+        </div>
+        <div class="split rev">
+          <div class="grid" style="gap:16px">
+            <div class="card">
+              <div class="card-head"><h3>Brand &amp; logo</h3></div>
+              <div class="set-row">
+                <div><div class="t">Workspace name</div><div class="d">Shown in the sidebar and browser tab.</div></div>
+                <input class="input" id="brandNameInput" maxlength="24" style="width:180px">
+              </div>
+              <div class="set-row">
+                <div><div class="t">Tagline</div><div class="d">Small text under the name.</div></div>
+                <input class="input" id="brandTagInput" maxlength="24" style="width:180px">
+              </div>
+              <div class="set-row">
+                <div><div class="t">Logo</div><div class="d">Any picture on this computer (square works best, max ~150&nbsp;KB). Stored on this device only.</div></div>
+                <div class="row">
+                  <input type="file" id="brandLogo" accept="image/*" class="input" style="width:210px">
+                  <button class="btn ghost sm" id="brandReset" type="button">Reset</button>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h3>Appearance</h3></div>
+              <div class="set-row">
+                <div><div class="t">Theme</div><div class="d">Choose how the workspace looks. System follows your OS setting.</div></div>
+                <div class="theme-cards" id="themePick">
+                  <button class="theme-card active" data-theme-pick="dark">Dark</button>
+                  <button class="theme-card" data-theme-pick="light">Light</button>
+                  <button class="theme-card" data-theme-pick="system">System</button>
+                </div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Compact tables</div><div class="d">Tighter row padding in markets and portfolio tables.</div></div>
+                <label class="switch"><input type="checkbox" id="compactChk"><i></i></label>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h3>Trading defaults</h3></div>
+              <div class="set-row">
+                <div><div class="t">Default order size</div><div class="d">Pre-filled amount in the order ticket.</div></div>
+                <input class="input mono" id="defAmt" type="number" min="1" value="100" style="width:110px">
+              </div>
+              <div class="set-row">
+                <div><div class="t">Max risk per trade</div><div class="d">Warns when a stop-loss risks more than this share of equity.</div></div>
+                <div class="row"><input class="range" id="riskRange" type="range" min="1" max="10" step="0.5" value="2"><b class="mono" id="riskVal">2.0%</b></div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Confirm before closing positions</div><div class="d">Ask for confirmation when closing or flattening.</div></div>
+                <label class="switch"><input type="checkbox" id="confirmChk" checked><i></i></label>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Kill switch — halt ALL new orders</div><div class="d">Server-side: every buy/confirm route returns 503 while on. Closing positions stays allowed. Re-enabling asks for the diagnostics key if one is set.</div></div>
+                <div class="row"><button class="btn" id="killSwitchBtn">Toggle</button><b class="tiny" id="killSwitchState">—</b></div>
+              </div>
+            </div>
+
+            <div class="card" id="cloudCard">
+              <div class="card-head">
+                <div><h3>Cloud sync — Supabase</h3>
+                  <div class="sub">Share analysis history, pattern scans and alerts across devices by signing in with the same Supabase account on each. Use the project&rsquo;s <b>publishable/anon key only</b>; RLS restricts rows to your signed-in account. Password is never saved.</div></div>
+                <span class="pill" id="cloudStatus" title="Cloud connection status">cloud · off</span>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Project URL</div><div class="d">Supabase Dashboard → Project Settings → API → Project URL</div></div>
+                <input class="input mono" id="cloudUrl" placeholder="https://xxxx.supabase.co" style="width:min(280px,100%)" spellcheck="false" autocomplete="url">
+              </div>
+              <div class="set-row">
+                <div><div class="t">Publishable / anon key</div><div class="d">Use “Publishable” (sb_publishable_…) or legacy “anon public” — never secret/service_role.</div></div>
+                <input class="input mono" id="cloudKey" type="password" placeholder="sb_publishable_…" style="width:min(280px,100%)" spellcheck="false" autocomplete="off">
+              </div>
+              <div class="set-row">
+                <div><div class="t">Supabase account</div><div class="d">Create or sign in to the same account on each device. Confirm your email if Supabase asks.</div></div>
+                <div class="row" style="flex-wrap:wrap;justify-content:flex-end">
+                  <input class="input" id="cloudEmail" type="email" placeholder="Email" style="width:min(190px,100%)" autocomplete="username">
+                  <input class="input" id="cloudPassword" type="password" placeholder="Password (8+ characters)" style="width:min(210px,100%)" autocomplete="current-password">
+                  <button class="btn primary sm" id="cloudSignIn" type="button">Sign in</button>
+                  <button class="btn ghost sm" id="cloudSignUp" type="button">Create account</button>
+                  <button class="btn ghost sm" id="cloudSignOut" type="button" hidden>Sign out</button>
+                </div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Connection</div><div class="d" id="cloudMsg">Not connected — history stays on this device only.</div></div>
+                <div class="row"><button class="btn primary sm" id="cloudSave" type="button">Save &amp; test</button><button class="btn ghost sm" id="cloudClear" type="button">Disconnect</button></div>
+              </div>
+            </div>
+
+            <div class="card" id="autoTradeCard">
+              <div class="card-head">
+                <div><h3>Sniper — analysis only</h3>
+                  <div class="sub">Scans Exness-first MTF signals and labels any fallback source. <b>Entries are blocked; no broker orders are placed.</b> The switch starts or stops read-only scanning.</div>
+                  <button type="button" class="btn ghost sm" data-goto="sniper" style="margin-top:7px">View Sniper alerts ↗</button></div>
+                <label class="switch" title="Enable read-only Sniper scanning"><input type="checkbox" id="atChk"><i></i></label>
+              </div>
+              <div class="set-row" id="atSignalPanel">
+                <div style="width:100%">
+                  <div class="t">Sniper signal alerts · entry / exit levels</div>
+                  <div class="hint">Markets, direction, entry reference, stop loss, TP1 and TP2/exit target. “—” means no level was supplied; none are invented. Confidence/direction filters only rank alerts; execution settings below are inactive. Analysis only — these are not orders and the Sniper will not enter.</div>
+                  <div id="atSignalAlerts" style="margin-top:8px"><div class="tiny faint">Start read-only scanning to populate current market signals.</div></div>
+                </div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Sniper mode</div>
+                  <div class="row" id="atModeRow" style="gap:6px;flex-wrap:wrap">
+                    <button type="button" class="chip active" data-mode="active">⚡ Active — 30s scans · 10 markets · manual trades don't block it</button>
+                    <button type="button" class="chip" data-mode="careful">🔒 Careful — waits until everything is flat</button>
+                  </div>
+                  <div class="hint">Either way the sniper never stacks on itself (max 1 sniper position). Server-side stake/trade/daily-loss caps always apply.</div>
+                </div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Exit strategy</div>
+                  <div class="row" id="atExitRow" style="gap:6px;flex-wrap:wrap">
+                    <button type="button" class="chip active" data-exit="fast">⏱ Fast expiry — 15m forex · 5m synthetics</button>
+                    <button type="button" class="chip" data-exit="target">🎯 Target exit — 1h forex · 15m synthetics</button>
+                  </div>
+                  <div class="hint">Deriv locks short forex binaries — they always run to expiry. <b>Target exit</b> buys 1h contracts, whose resale typically unlocks mid-life, so the sniper can genuinely close at your target. With Fast expiry you get the earliest possible result; with Target exit you get real early closes.</div>
+                </div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Prefer early-exit markets</div>
+                  <label class="switch" title="Hunt only on synthetics (Deriv usually allows resale there)"><input type="checkbox" id="atResale"><i></i></label>
+                  <div class="hint" id="atResaleHint" style="margin-top:4px">OFF (default): the sniper hunts the normal universe. ON: it hunts only early-exit-friendly markets (synthetics — where Deriv usually allows resale and Close genuinely stops the trade). Guidance only: Deriv decides per contract and it's verified live after each buy.</div>
+                </div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Daily loss guard (all trades — manual, news, sniper)</div>
+                  <div class="row" style="align-items:flex-start"><input class="input mono" id="lossGuardAmt" type="number" min="0" step="1" style="width:110px"><span class="hint">Stopped-out $ of closed losses per day (default 25, 0 = off). When today's closed P&amp;L reaches −this, manual orders, news Execute and the sniper all stand down until tomorrow. The server-side caps remain the hard backstop.</span></div>
+                  <div id="guardStatus" style="margin-top:6px"></div>
+                </div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Auto profit target (% of stake)</div>
+                  <div class="row"><input class="input mono" id="atTargetPct" type="number" min="20" max="90" step="5" value="50" style="width:110px"><span class="hint">e.g. $10 stake → closes (or alerts, if locked) at +$5 live profit</span></div>
+                </div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Sniper record (this device)</div><div class="d" id="atRecord">No sniper trades booked yet.</div></div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Sniper positions at once</div>
+                  <select class="input" id="atConc" style="width:auto">
+                    <option value="1">1 — one sniper position at a time</option>
+                    <option value="2">2 — two concurrent (different symbols)</option>
+                    <option value="3">3 — three concurrent (different symbols)</option>
+                  </select>
+                  <div class="hint">Each entry lands on a different symbol — never two positions on the same market. The server-side open-trades cap stays the hard backstop.</div>
+                </div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Risk brakes</div>
+                  <select class="input" id="atBrakes" style="width:auto">
+                    <option value="run">Keep running until I stop it (notify me at targets/guards)</option>
+                    <option value="stop">Stop itself at session target / loss guard / 3 straight losses</option>
+                  </select>
+                  <div class="hint">Server-side caps (max stake, max open trades, daily loss limit) apply on every path either way — those are the hard backstop, set in Railway env vars.</div>
+                </div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Min confidence (sniper filter)</div><div class="d">Ignore setups below this score. Entries also require reward:risk ≥ 1.0.</div></div>
+                <div class="row"><input class="range" id="atConf" type="range" min="50" max="90" step="5" value="70"><b class="mono" id="atConfVal">70%</b></div>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Stake per trade</div><div class="d">Server-side cap still applies (default $50).</div></div>
+                <input class="input mono" id="atStake" type="number" min="1" step="1" value="10" style="width:110px">
+              </div>
+              <div class="set-row">
+                <div><div class="t">Session profit target (USD)</div><div class="d">Auto-trade stops the moment realized P&amp;L reaches this — win or loss guard.</div></div>
+                <input class="input mono" id="atTarget" type="number" min="1" step="1" value="25" style="width:110px">
+              </div>
+              <div class="set-row">
+                <div><div class="t">Max entries per session</div><div class="d">Hard stop after this many auto entries.</div></div>
+                <input class="input mono" id="atMax" type="number" min="1" max="50" value="10" style="width:110px">
+              </div>
+              <div class="set-row">
+                <div><div class="t">Direction</div><div class="d">Restrict the sniper to one side.</div></div>
+                <select class="input" id="atDir" style="width:auto" aria-label="Auto-trade direction">
+                  <option value="both" selected>Buy &amp; Sell</option>
+                  <option value="BUY">Buy only</option>
+                  <option value="SELL">Sell only</option>
+                </select>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Status</div><div class="d">One position at a time · exits handled by the SL/TP watcher.</div></div>
+                <span class="badge gray" id="atStatus">off</span>
+              </div>
+              <p class="hint" id="atHint" style="margin-top:10px">OFF by default. Enabling it is your consent to place orders <b>without</b> the per-trade confirm dialog — server-side limits (max stake, max open trades, daily loss) and the broker gate still apply. Needs a connected broker; start on a Deriv <b>demo</b> account first.</p>
+            </div>
+          </div>
+          <div class="grid" style="gap:16px">
+            <div class="card">
+              <div class="card-head">
+                <div><h3>AI engines</h3><div class="sub">Keys stay in this browser</div></div>
+                <span class="badge gray" id="aiKeyStatus">no keys</span>
+              </div>
+              <label class="field"><span>Claude API key (Anthropic)</span>
+                <input class="input" id="aiClaudeKey" type="password" placeholder="sk-ant-…">
+              </label>
+              <label class="field" style="flex-direction:row;align-items:center;gap:8px;margin-top:8px">
+                <input type="checkbox" id="atSynth" style="width:auto">
+                <span style="font-weight:400">Include synthetics in auto-trade (VOL/BOOM/CRASH are random-walks \u2014 signals have no edge there; default OFF)</span>
+              </label>
+              <div id="atHealth" style="margin-top:8px"></div>
+              <label class="field"><span>ChatGPT API key (OpenAI)</span>
+                <input class="input" id="aiOpenaiKey" type="password" placeholder="sk-…">
+              </label>
+              <label class="field"><span>Perplexity API key (news &amp; research)</span>
+                <input class="input" id="aiPerpKey" type="password" placeholder="pplx-…">
+              </label>
+              <details style="margin-top:8px">
+                <summary class="hint" style="cursor:pointer">No keys yet? Get them in ~3 minutes (no Gmail login exists for APIs — every provider requires a key)</summary>
+                <div class="hint" style="margin-top:6px">
+                  1. <b>Anthropic</b> — console.anthropic.com → API Keys → Create key (add a small credit; pay-per-use, our default budget caps it at $5/day).<br>
+                  2. <b>OpenAI</b> — platform.openai.com → API keys → Create new secret key.<br>
+                  3. <b>Perplexity</b> — perplexity.ai/settings/api → Generate.<br>
+                  Keys stay in YOUR vault. Without any keys the app still gives full technical analysis (labelled “technical”) — AI is optional sugar.
+                </div>
+              </details>
+              <div class="row" style="margin-top:10px">
+                <button class="btn primary sm" id="aiKeysSave">Save keys</button>
+                <div id="sessLogCard" style="margin-top:14px;border-top:1px solid rgba(255,255,255,.07);padding-top:12px;width:100%">
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+                    <div><b>Session activity</b><div class="hint">Auto sign-ins, restores and expiries on this computer.</div></div>
+                    <button class="btn ghost sm" id="forgetDeviceBtn">Clear saved broker details</button>
+                  </div>
+                  <ul id="sessLog" class="hint" style="margin:8px 0 0;padding-left:18px"></ul>
+                </div>
+                <button class="btn ghost sm" id="aiKeysClear">Clear</button>
+                <span class="tiny faint" id="aiBudgetTxt"></span>
+              </div>
+              <p class="hint">Without keys the workspace still runs deterministic technical analysis on live candles (labelled <b>technical</b>, never as AI). Shared budget: <b>$5/day</b> across all engines.</p>
+            </div>
+            <div class="card">
+              <div class="card-head"><h3>Notifications</h3></div>
+              <div class="set-row">
+                <div><div class="t">Browser notifications</div><div class="d">News briefs, trade opened/closed, SL/TP1/TP2 guidance.</div></div>
+                <button class="btn sm" id="notifBtn">Enable</button>
+              </div>
+              <div class="set-row">
+                <div><div class="t">WhatsApp signal number</div><div class="d">International format, digits only (e.g. 2547XXXXXXXX). News signals get a one-tap WhatsApp share; auto-send requires Meta's paid Cloud API (bring credentials and I'll wire it).</div></div>
+                <input class="input mono" id="waNumber" inputmode="numeric" placeholder="2547…" style="width:180px">
+              </div>
+              <div class="set-row">
+                <div><div class="t">Auto-send to WhatsApp</div><div class="d" id="waAutoStatus">Checking server…</div></div>
+                <label class="switch" title="Auto-send signals and briefs"><input type="checkbox" id="waAuto"><i></i></label>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Session</div><div class="d" id="sessionInfo">Live markets · no trading.</div></div>
+                <button class="btn danger sm" id="signOutBtn">Sign out</button>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h3>Data</h3></div>
+              <div class="set-row">
+                <div><div class="t">Export trade journal</div><div class="d">Download positions and history as JSON.</div></div>
+                <button class="btn sm" id="exportBtn">Export</button>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Reset workspace data</div><div class="d">Clear local positions, history and connections.</div></div>
+                <button class="btn danger sm" id="resetBtn">Reset</button>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h3>About</h3></div>
+              <ul class="info-list">
+                <li><span class="k">Workspace</span><span class="v">AURUM 2.0 · live</span></li>
+                <li><span class="k">Market data</span><span class="v" id="aboutFeed">Deriv live feed</span></li>
+                <li><span class="k">Charts / news</span><span class="v">TradingView official widgets</span></li>
+                <li><span class="k">Storage</span><span class="v">Browser localStorage</span></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- ============ TOASTS ============ -->
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<style>
+body.compact .tbl td{padding:6px 12px}
+body.compact .tbl th{padding:7px 12px}
+.az-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+.az-tile{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;text-align:center}
+.az-tile .k{font-size:10px;letter-spacing:.07em;color:var(--text-3);font-weight:700}
+.az-tile .v{font-size:16px;font-family:var(--mono);font-weight:750;margin-top:4px;font-variant-numeric:tabular-nums}
+.az-h{font-size:11.5px;letter-spacing:.06em;color:var(--text-2);margin-bottom:8px;text-transform:uppercase;font-weight:700}
+.risk-card{border-left:3px solid var(--red)}
+.az-risks{margin:0;padding-left:18px;color:var(--text-2);font-size:13px;line-height:1.7}
+.az-level-row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border-soft);font-size:13px}
+.az-level-row:last-child{border-bottom:0}
+@media(max-width:640px){.az-tiles{grid-template-columns:repeat(2,1fr)}}
+</style>
+<!-- ============ TRADE CONFIRMATION (spec: trading is OFF until confirmed) ============ -->
+<div class="modal-overlay" id="tmModal">
+  <div class="modal">
+    <div class="row between" style="align-items:flex-start">
+      <h3>Confirm trade</h3>
+      <span class="badge gray" id="tmEnv">—</span>
+    </div>
+    <p class="msub" id="tmSub">Review the order before it is sent. Nothing is bought until you press Confirm.</p>
+    <div id="tmGate" class="hidden" style="padding:12px 14px; border:1px solid var(--border); border-radius:10px; background:var(--surface-2); margin-bottom:14px; font-size:13px"></div>
+    <div class="tm-rows" id="tmRows">
+      <div class="tm-row"><span>Symbol</span><b id="tmSymbol">—</b></div>
+      <div class="tm-row"><span>Direction</span><b id="tmSide">—</b></div>
+      <div class="tm-row"><span>Stake</span><b id="tmStake">—</b></div>
+      <div class="tm-row"><span>Account</span><b id="tmAccount">—</b></div>
+      <div class="tm-row"><span>Duration</span><b id="tmDuration">—</b></div>
+      <div class="tm-row"><span>Expected payout</span><b id="tmPayout">—</b></div>
+      <div class="tm-row"><span>Break-even win rate</span><b id="tmBE">—</b></div>
+      <div class="tm-row"><span>Live price</span><b id="tmLive">—</b></div>
+      <div class="tm-row" id="tmLimitRow"><span>Server limits</span><b id="tmLimits">—</b></div>
+    </div>
+    <p class="hint" id="tmHint" style="margin-top:12px"></p>
+    <div class="modal-actions">
+      <button class="btn ghost" id="tmCancel">Cancel</button>
+      <button class="btn primary" id="tmConfirm">Confirm trade</button>
+    </div>
+  </div>
+</div>
+<style>
+.tm-rows{display:flex;flex-direction:column;gap:0;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.tm-row{display:flex;justify-content:space-between;align-items:center;padding:11px 14px;font-size:13.5px;background:var(--surface-2)}
+.tm-row:nth-child(even){background:transparent}
+.tm-row span{color:var(--text-2)}
+.tm-row b{font-weight:650}
+#tmEnv.badge.demo{background:rgba(245,158,11,.16);color:#f59e0b;border:1px solid rgba(245,158,11,.4)}
+#tmEnv.badge.live{background:rgba(239,68,68,.14);color:#ef4444;border:1px solid rgba(239,68,68,.4)}
+#tmSide.b-buy{color:var(--green)} #tmSide.b-sell{color:var(--red)}
+</style>
+
+    <style>
+      /* chart pattern scanner */
+      .pb-item{border-top:1px solid var(--border);padding:8px 4px}
+      .pb-item summary{cursor:pointer;display:flex;gap:10px;align-items:center;font-size:14px}
+      .pb-body{padding:8px 6px 6px 8px;color:var(--text-2);font-size:13px;line-height:1.55}
+      .pb-body .k{display:inline-block;min-width:150px;color:var(--text);font-weight:700}
+      .pb-body p{margin:6px 0}
+      .perf-row{display:grid;grid-template-columns:150px 1fr 64px auto;gap:10px;align-items:center;padding:6px 0;border-bottom:1px dashed var(--border)}
+      .perf-name{font-size:13px}
+      .perf-track{height:14px;background:var(--surface-2);border-radius:7px;overflow:hidden;border:1px solid var(--border)}
+      .perf-track i{display:block;height:100%;background:linear-gradient(90deg,#f59e0b,#22c55e);border-radius:7px}
+      .perf-track i.down{background:linear-gradient(90deg,#ef4444,#f59e0b)}
+      .perf-val{font-family:var(--font-mono);font-size:13px;text-align:right}
+      .perf-val.up{color:#22c55e}.perf-val.down{color:#ef4444}
+      @media (max-width:760px){.perf-row{grid-template-columns:110px 1fr 54px}.perf-row .tiny{display:none}}
+      .pat-card{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface-2);cursor:pointer;transition:.15s}
+      .pat-card:hover{border-color:var(--accent)}
+      .pat-card.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
+      .pat-card .hd{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .pat-card .cs{font-family:var(--font-mono);color:var(--text-2);font-size:12px;margin-top:6px}
+      .pat-card .lb{display:flex;justify-content:space-between;gap:8px;font-family:var(--font-mono);font-size:12px;margin-top:4px;color:var(--text-2)}
+      .pat-card .pat-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+      .pat-card .pat-actions .btn.ghost{padding:5px 10px;font-size:12px}
+    .watch-pin{background:none;border:0;color:#8b93a3;cursor:pointer;font-size:15px;padding:0 8px 0 0;line-height:1}
+.watch-pin.on{color:var(--brand)}
+.watch-del{background:none;border:0;color:inherit;cursor:pointer;padding:0 0 0 2px;font-size:12px;line-height:1}
+.chip.idx{border-style:dashed}
+.watch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.watch-tile{border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;background:var(--surface-2)}
+.watch-tile-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:8px 10px;font-size:12.5px;cursor:pointer}
+.watch-tile-head:hover{background:var(--surface-3)}
+.watch-tile-name{opacity:.55;font-size:10.5px;text-align:right}
+.watch-tile-body{position:relative;height:150px;background:rgba(0,0,0,.25)}
+.watch-tile-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;color:#8b93a3;padding:8px;text-align:center}
+/* mobile quick-order bar */
+.mob-order-bar{display:none}
+@media (max-width:640px){
+  .mob-order-bar{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:60;display:flex;gap:8px}
+  .mob-order-bar .btn{flex:1;min-height:48px;font-size:15px;box-shadow:0 6px 24px rgba(0,0,0,.45)}
+  body[data-view="trade"] .mob-order-bar{display:flex}
+  body:not([data-view="trade"]) .mob-order-bar{display:none}
+}
+/* MT5-style live P&L pulse */
+@keyframes flashUp{0%{background:rgba(47,191,113,.30)}100%{background:transparent}}
+@keyframes flashDown{0%{background:rgba(229,72,77,.30)}100%{background:transparent}}
+.flash-up{animation:flashUp .7s ease-out}
+.flash-down{animation:flashDown .7s ease-out}
+</style>
+<script type="module" src="/src/main.js"></script>
+
+</body>
+</html>
