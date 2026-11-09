@@ -194,6 +194,18 @@ function isPrivateBridgePage(){
     return local&&String(location.port||'')==='8788';
   }catch(e){return false;}
 }
+let cloudflareReadonlyCheck=null;
+async function isCloudflareHostedApp(){
+  try{
+    const h=String(location.hostname||'').toLowerCase();
+    if(h.endsWith('.workers.dev')||h.endsWith('.pages.dev'))return true;
+    if(!cloudflareReadonlyCheck)cloudflareReadonlyCheck=api('/api/health').then(async r=>{
+      if(!r||!r.ok)return false;
+      const j=await r.json().catch(()=>null);return !!(j&&j.runtime==='cloudflare-readonly');
+    }).catch(()=>false);
+    return await cloudflareReadonlyCheck;
+  }catch(e){return false;}
+}
 function localApiProxyToken(){
   let t='';
   try{const el=document.getElementById('mt5Token');t=String(el&&el.value||'').trim();}catch(e){}
@@ -3012,14 +3024,30 @@ async function azAnalyze() {
     let data,meta;
     try{
       const bundle=await exnessSignalFor(bySym[sym],true);
-      try{
-        const res=await api('/api/signals/analyze',{
-          method:'POST',headers:Object.assign({'x-aurum-user':state.user||'local'},keyHeaders()),
-          body:{symbol:sym,force:true,withNews:hasAnyKey(),candleSets:bundle.candle_sets,dataSource:'Exness MT5 local candles'}
+      if(await isCloudflareHostedApp()){
+        /* Cloudflare staging is public-facing. Keep Exness candles entirely in
+           this browser: never POST local MT5 history to the hosted Worker. */
+        const sets=bundle.candle_sets,det=runDeterministicAnalysis(sym,sets),last=sets.m1&&sets.m1[sets.m1.length-1],decision=localDecision(det);
+        const wr=decision.signal==='WAIT'?waitReason(det,{maxAgeSec:3*3600+300}):null;
+        data=Object.assign({},decision,{
+          symbol:sym,price:det.analyses.m1&&det.analyses.m1.currentPrice,
+          mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),
+          data_ok:det.ok,data_source:'Exness MT5 local candles · analyzed in this browser',
+          latest_candle_time:last&&last.time,
+          sentiment_score:50,sentiment_source:'derived',news:{available:false,reason:'exness_local_only'},
+          wait_reason:wr&&wr.code||null,wait_detail:wr&&wr.detail||null
         });
-        if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.detail||e.error||('API '+res.status));}
-        data=await res.json();
-      }catch(apiError){data=Object.assign({},bundle,{candle_sets:undefined,ai_note:'AI service unavailable; displaying Exness technical analysis.'});meta={mode:'technical',reason:'exness_local_fallback',engines:[]};}
+        meta={mode:'technical',reason:'exness_local_only_cloudflare',engines:[],spent:0,cap:0};
+      }else{
+        try{
+          const res=await api('/api/signals/analyze',{
+            method:'POST',headers:Object.assign({'x-aurum-user':state.user||'local'},keyHeaders()),
+            body:{symbol:sym,force:true,withNews:hasAnyKey(),candleSets:bundle.candle_sets,dataSource:'Exness MT5 local candles'}
+          });
+          if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.detail||e.error||('API '+res.status));}
+          data=await res.json();
+        }catch(apiError){data=Object.assign({},bundle,{candle_sets:undefined,ai_note:'AI service unavailable; displaying Exness technical analysis.'});meta={mode:'technical',reason:'exness_local_fallback',engines:[]};}
+      }
     }catch(exnessError){
       const fallback=(await scanSignalsPreferred([sym]))[0];
       if(!fallback||fallback.error)throw new Error((fallback&&fallback.detail)||String(exnessError&&exnessError.message||exnessError));
@@ -4892,6 +4920,10 @@ async function loadPipelineFlow(){
   const div=document.createElement('div'); div.id='pipelineFlow'; div.style.marginTop='12px';
   div.innerHTML='<div class="tiny faint">Six-role pipeline (SCOUT \u2192 NEWS \u2192 CHARTS \u2192 STRATEGY \u2192 RISK \u2192 BOSS) running\u2026</div>';
   box.appendChild(div);
+  if(await isCloudflareHostedApp()){
+    div.innerHTML='<div class="tiny faint">Cloudflare staging is technical-only. The AI / six-role pipeline is not migrated; Exness candles remain in this browser and are not sent to Cloudflare.</div>';
+    return;
+  }
   try{
     let body={symbol:sym,newsItems:Array.isArray(state.newsItems)?state.newsItems.slice(0,20):null},sourceLabel='';
     try{
