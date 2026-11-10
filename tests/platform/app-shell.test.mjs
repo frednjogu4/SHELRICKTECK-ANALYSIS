@@ -192,7 +192,11 @@ before(async () => {
   bundleCode = bundle.outputFiles[0].text;
 });
 
-async function bootHostedApp() {
+/* Boots the real application bundle in jsdom. By default the page is served
+   from a Cloudflare host and its same-origin requests are answered by the real
+   Worker code; { origin, offlineApi: true } boots it as the PC-local app with
+   no API server reachable. */
+async function bootHostedApp({ origin = HOSTED_ORIGIN, offlineApi = false } = {}) {
   const worker = createReadOnlyWorker({
     requestImpl: async () => { throw new Error('stub provider is offline'); },
     fetchImpl: async () => { throw new Error('stub provider is offline'); },
@@ -204,6 +208,7 @@ async function bootHostedApp() {
   const problems = [];
   const requests = [];
   const sockets = [];
+  const socketLog = [];
   let closing = false;
   const consoleLines = new VirtualConsole();
   consoleLines.on('jsdomError', (error) => problems.push('jsdomError: ' + ((error.detail && error.detail.stack) || error.message)));
@@ -214,30 +219,34 @@ async function bootHostedApp() {
   assert.ok(!html.includes(MODULE_TAG), 'module tag replaced by the bundle');
 
   const dom = new JSDOM(html, {
-    runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: consoleLines, url: HOSTED_ORIGIN + '/',
+    runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: consoleLines, url: origin + '/',
     beforeParse(window) {
       window.matchMedia = (query) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
       window.Element.prototype.scrollIntoView = function () {};
       window.scrollTo = function () {};
       window.localStorage.setItem('aurum_aikeys', JSON.stringify(TEST_KEYS));
-      /* A socket that never connects: no feed, no ticks, no authorisation. */
+      /* A socket that never connects by itself: no feed, no ticks, no
+         authorisation. A test may open it and hand it a message through
+         socketLog to exercise the page's own handlers. */
       window.WebSocket = function (url) {
         sockets.push(String(url));
+        const entry = { url: String(url), socket: this, sent: [] };
+        socketLog.push(entry);
         this.readyState = 0;
-        this.send = () => {};
+        this.send = (data) => { entry.sent.push(String(data)); };
         this.close = () => { this.readyState = 3; };
         this.addEventListener = () => {};
         this.removeEventListener = () => {};
       };
       /* Same-origin requests are answered by the real Worker code; anything else has no network. */
       window.fetch = async (input, init = {}) => {
-        const url = new URL(String(input), HOSTED_ORIGIN);
+        const url = new URL(String(input), origin);
         const headers = {};
         for (const [name, value] of Object.entries(init.headers || {})) headers[name.toLowerCase()] = String(value);
         const record = { path: url.pathname, origin: url.origin, method: init.method || 'GET', headers, status: null };
         requests.push(record);
-        if (url.origin !== HOSTED_ORIGIN) throw new TypeError('network is disabled in tests');
-        const response = await worker.fetch(new Request(url, { method: record.method, headers: { ...headers, origin: HOSTED_ORIGIN }, body: init.body }), env);
+        if (offlineApi || url.origin !== origin) throw new TypeError('network is disabled in tests');
+        const response = await worker.fetch(new Request(url, { method: record.method, headers: { ...headers, origin }, body: init.body }), env);
         record.status = response.status;
         /* Once the test is tearing the page down, leave late requests pending
            so application code never resumes against a closed document. */
@@ -265,7 +274,7 @@ async function bootHostedApp() {
     await new Promise((r) => setTimeout(r, 50));
     window.close();
   };
-  return { window, doc, click, waitFor, close, requests, sockets, problems };
+  return { window, doc, click, waitFor, close, requests, sockets, socketLog, problems };
 }
 
 test('hosted mode: the app starts cleanly against the Worker even when every upstream provider is down', async () => {
@@ -361,6 +370,128 @@ test('hosted mode: losing and regaining the network connection is announced in t
     app.window.dispatchEvent(new app.window.Event('online'));
     assert.match(region.textContent, /Network connection restored/);
     assert.deepEqual(app.problems, []);
+  } finally {
+    await app.close();
+  }
+});
+
+/* ------------------------------------------------------------ hosted live prices */
+
+const PUBLIC_FEED = 'wss://api.derivws.com/trading/v1/options/ws/public';
+/* The only request fields a read-only price subscription may carry. */
+const PUBLIC_TICK_FIELDS = ['count', 'end', 'passthrough', 'req_id', 'style', 'subscribe', 'ticks_history'];
+
+test('hosted mode: the viewer subscribes the built-in watchlist on the public feed and says "live" only after a real tick', async () => {
+  const { INSTRUMENTS } = await import('../../server/lib/symbols.js');
+  const expectedCodes = INSTRUMENTS.filter((instrument) => instrument.deriv).map((instrument) => instrument.deriv).sort();
+  assert.ok(expectedCodes.length > 0);
+
+  const app = await bootHostedApp();
+  try {
+    await app.waitFor(() => app.window.__aurumAppStarted === true, 'application start marker');
+    app.click(app.doc.querySelector('#guestBtn'));
+    await app.waitFor(() => app.socketLog.length === 1, 'the public price socket');
+    const feed = app.socketLog[0];
+    const label = () => app.doc.querySelector('#feedText').textContent;
+    const dot = () => app.doc.querySelector('#feedDot').className;
+
+    assert.equal(feed.url, PUBLIC_FEED);
+    assert.match(label(), /connecting/);
+    assert.equal(feed.sent.length, 0, 'nothing is sent before the socket is open');
+
+    /* The socket opens: the page subscribes, but an open socket is not data. */
+    feed.socket.readyState = 1;
+    feed.socket.onopen();
+    const sent = feed.sent.map((raw) => JSON.parse(raw));
+    assert.deepEqual(sent.map((message) => message.ticks_history).sort(), expectedCodes, 'one subscription per built-in instrument that has a public feed');
+    for (const message of sent) {
+      assert.equal(message.subscribe, 1);
+      for (const field of Object.keys(message)) assert.ok(PUBLIC_TICK_FIELDS.includes(field), `unexpected field "${field}" in a public price subscription`);
+    }
+    assert.equal(label(), 'Deriv feed · connecting…', 'an open socket alone is not reported as live');
+    assert.equal(dot(), 'dot off', 'not shown as live before any tick');
+
+    /* One tick message (placeholder value: this checks wiring, not prices). */
+    const instrument = INSTRUMENTS.find((entry) => entry.deriv);
+    const placeholder = 1.23456;
+    const visibleText = () => {
+      const copy = app.doc.body.cloneNode(true);
+      copy.querySelectorAll('script, style, noscript').forEach((el) => el.remove());
+      return copy.textContent;
+    };
+    const shown = placeholder.toFixed(instrument.d);
+    assert.ok(!visibleText().includes(shown), 'no price on screen before a tick arrives');
+    feed.socket.onmessage({ data: JSON.stringify({ tick: { symbol: instrument.deriv, quote: placeholder, epoch: Math.floor(Date.now() / 1000) } }) });
+    assert.equal(label(), 'Deriv public feed · receiving ticks');
+    assert.equal(dot(), 'dot live');
+    assert.ok(visibleText().includes(shown), `the quote for ${instrument.s} is rendered on screen`);
+
+    assert.equal(app.socketLog.length, 1, 'one shared socket');
+    assert.deepEqual(app.problems, []);
+  } finally {
+    await app.close();
+  }
+});
+
+test('hosted mode: the top bar names the cloud viewer and the disabled broker proxy is not probed', async () => {
+  const app = await bootHostedApp();
+  try {
+    await app.waitFor(() => app.window.__aurumAppStarted === true, 'application start marker');
+    await app.waitFor(() => app.requests.some((r) => r.path === '/api/health' && r.status === 200), 'health check');
+    assert.equal(app.doc.querySelector('#derivText').textContent, 'Cloud · view only');
+    assert.match(app.doc.querySelector('#derivPill').title, /only in the PC app/);
+    assert.equal(app.doc.querySelector('#aboutMode').textContent, 'Cloud viewer · read-only');
+    assert.equal(app.doc.querySelector('#aboutTrading').textContent, 'Not available here · use the PC app');
+    assert.deepEqual(app.requests.filter((r) => r.path.startsWith('/api/deriv')), [], 'no request to the broker proxy namespace');
+    assert.deepEqual(app.problems, []);
+  } finally {
+    await app.close();
+  }
+});
+
+test('hosted mode: nothing on screen tells the cloud user to start a local server or connect a bridge in this tab', async () => {
+  const app = await bootHostedApp();
+  try {
+    await app.waitFor(() => app.window.__aurumAppStarted === true, 'application start marker');
+    app.click(app.doc.querySelector('#guestBtn'));
+    await app.waitFor(() => app.requests.some((r) => r.path === '/api/signals/scan' && r.status !== null), 'a scan request answered by the Worker');
+    await new Promise((r) => setTimeout(r, 100));
+    /* Visible text only: the inlined bundle itself contains the PC wording. */
+    const visible = app.doc.body.cloneNode(true);
+    visible.querySelectorAll('script, style, noscript').forEach((el) => el.remove());
+    const text = visible.textContent;
+    assert.ok(!text.includes('npm run api'), 'no "npm run api" instruction');
+    assert.ok(!text.includes('not connected in this tab'), 'no "bridge is not connected in this tab" message');
+    assert.deepEqual(app.problems, []);
+  } finally {
+    await app.close();
+  }
+});
+
+/* ------------------------------------------------------------ PC-local app */
+
+test('PC-local mode: same watchlist subscriptions as the cloud viewer, the proxy pill still reports the proxy, full-workspace labels', async () => {
+  const { INSTRUMENTS } = await import('../../server/lib/symbols.js');
+  const expectedCodes = INSTRUMENTS.filter((instrument) => instrument.deriv).map((instrument) => instrument.deriv).sort();
+
+  const app = await bootHostedApp({ origin: 'http://127.0.0.1:8788', offlineApi: true });
+  try {
+    await app.waitFor(() => app.window.__aurumAppStarted === true, 'application start marker');
+    await app.waitFor(() => app.doc.querySelector('#derivText').textContent === 'proxy · offline', 'proxy pill (no API server in this test, and the pill says so)');
+    assert.equal(app.doc.querySelector('#aboutMode').textContent, 'Full workspace');
+    assert.equal(app.doc.querySelector('#aboutTrading').textContent, 'Through the broker you connect in this app');
+
+    app.click(app.doc.querySelector('#guestBtn'));
+    await app.waitFor(() => app.socketLog.length === 1, 'the public price socket');
+    const feed = app.socketLog[0];
+    assert.equal(feed.url, PUBLIC_FEED);
+    feed.socket.readyState = 1;
+    feed.socket.onopen();
+    assert.deepEqual(feed.sent.map((raw) => JSON.parse(raw).ticks_history).sort(), expectedCodes, 'the same subscriptions as the cloud viewer');
+    assert.equal(app.doc.querySelector('#feedText').textContent, 'Deriv feed · connecting…', 'an open socket alone is not reported as live');
+    const instrument = INSTRUMENTS.find((entry) => entry.deriv);
+    feed.socket.onmessage({ data: JSON.stringify({ tick: { symbol: instrument.deriv, quote: 1.23456, epoch: Math.floor(Date.now() / 1000) } }) });
+    assert.equal(app.doc.querySelector('#feedText').textContent, 'Deriv live feed', 'live once a valid tick has arrived');
   } finally {
     await app.close();
   }

@@ -865,6 +865,7 @@ const signOutBtn=$('#signOutBtn'); if(signOutBtn) signOutBtn.onclick=signOut;
    LIVE FEED (Deriv public WebSocket) + ticker
    ================================================================ */
 let feedWired=false, tickN=0, feedLiveAnnounced=false;
+let feedStatusDetail='', feedDownExplained=false;
 function updateFeedPill(s){
   const txt=$('#feedText'), dot=$('#feedDot');
   const map={
@@ -885,15 +886,26 @@ function updateFeedPill(s){
   if(txt)txt.textContent=label;
   if(dot)dot.className='dot '+(cls==='live'?'live':'off');
   const about=$('#aboutFeed'); if(about)about.textContent=label;
+  const pill=$('#feedPill');
+  if(pill){
+    if(s==='unavailable')pill.title='This browser could not open the public Deriv price feed'+(feedStatusDetail?' ('+feedStatusDetail.slice(0,140)+')':'')+'. Prices show “—”; nothing is estimated.';
+    else pill.removeAttribute('title');
+  }
 }
 function wireFeed(){
   if(feedWired)return; feedWired=true;
-  feed.onStatus(s=>{
+  feed.onStatus((s,detail)=>{
+    feedStatusDetail=s==='unavailable'?String(detail||''):'';
     updateFeedPill(s);
     if(s==='live'){
       if(!isCloudflareReadonlyMode()&&!feedLiveAnnounced){ feedLiveAnnounced=true; notify('Live feed connected','Deriv real-time prices are streaming.','ok',{tag:'feed'}); }
+      /* Cloud viewer: the feed reports 'live' only after a valid tick, so this is never a connection-only notice. */
+      else if(isCloudflareReadonlyMode()&&!feedLiveAnnounced){ feedLiveAnnounced=true; notify('Live prices streaming','Public Deriv quotes are streaming directly in this browser. View only: no account is connected.','ok',{tag:'feed'}); }
     }else if(s==='unavailable'&&feedLiveAnnounced){
       notify('Feed unavailable','Live Deriv prices unreachable — quotes show “—”.','err',{tag:'feed'});
+    }else if(s==='unavailable'&&isCloudflareReadonlyMode()&&!feedDownExplained){
+      feedDownExplained=true;
+      toast('Live prices unavailable','This browser could not open the public Deriv price feed, so prices show “—”. Nothing is estimated. Try reloading, another browser or another network.','warn');
     }
   });
   feed.onTick((sym,q)=>{
@@ -1091,6 +1103,11 @@ function renderOvDaily(){
 /* ================================================================
    SIGNAL SCANNER (real technical scan on live candles, $0 AI)
    ================================================================ */
+/* Cloud viewer: there is no local API to start, so a failed request is explained as what it is. */
+function cloudAnalysisDownHtml(e){
+  const msg=String(e&&e.message||e||'').slice(0,160);
+  return 'The AURUM cloud analysis service did not return live data'+(msg&&msg!=='fetch unavailable'?' ('+escHtml(msg)+')':'')+'. Nothing is estimated. Try again in a minute.';
+}
 async function scanSignals(){
   const grid=$('#sigGrid');
   if(!grid)return;
@@ -1112,7 +1129,7 @@ async function scanSignals(){
     if(state.view==='overview') renderOverview();
   }catch(e){
     state.scanStatus='error';
-    grid.innerHTML='<div class="empty"><b>Live scan unavailable</b>'+(String(e.message||e)==='fetch unavailable'?'The API server is not running.':'Could not reach the local API. Start it with <code>npm run api</code>.')+'</div>';
+    grid.innerHTML='<div class="empty"><b>Live scan unavailable</b>'+(isCloudflareReadonlyMode()?cloudAnalysisDownHtml(e):(String(e.message||e)==='fetch unavailable'?'The API server is not running.':'Could not reach the local API. Start it with <code>npm run api</code>.'))+'</div>';
     $('#sigStamp').textContent='Scan failed '+timeStr(Date.now());
     const c=$('#navSigCount'); if(c)c.textContent='0';
   }
@@ -1265,7 +1282,8 @@ async function fallbackSignalBatch(symbols,reason){
     const j=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(j.detail||j.error||('fallback scan HTTP '+res.status));
     for(const r of j.results||[]){
-      const source=fallbackSourceFor(r), label=source+' · fallback (Exness unavailable: '+reason+')';
+      /* In the cloud viewer the public source is the normal source, not a fallback from a bridge that is PC-only by design. */
+      const source=fallbackSourceFor(r), label=isCloudflareReadonlyMode()?source+' · AURUM cloud analysis':source+' · fallback (Exness unavailable: '+reason+')';
       found.set(r.symbol,Object.assign({},r,{source:label,data_source:label,fallback:true,fallback_reason:reason}));
     }
   }
@@ -1284,7 +1302,7 @@ async function scanSignalsPreferred(symbols){
         catch(e){missed.push({symbol,reason:String(e&&e.message||e).slice(0,120)});}
       }));
     }
-  }else unique.forEach(symbol=>missed.push({symbol,reason:'Exness bridge is not connected in this tab.'}));
+  }else unique.forEach(symbol=>missed.push({symbol,reason:isCloudflareReadonlyMode()?'Exness is available only in the PC app.':'Exness bridge is not connected in this tab.'}));
   let fallback=[];
   if(missed.length){
     try{fallback=await fallbackSignalBatch(missed.map(x=>x.symbol),missed.length===unique.length?missed[0].reason:'one or more Exness symbols had no fresh data');}
@@ -2187,7 +2205,20 @@ $('#tmConfirm').onclick=async ()=>{
 };
 
 /* ---------- Deriv proxy health pill (topbar) ---------- */
+/* Cloud + PC are one workspace in two places. The cloud viewer has no broker
+   proxy, so the same pill names the place instead of asking a route that is
+   disabled by design (and reporting it as "offline"). */
+function showCloudViewerMode(){
+  state.derivHealth={state:'offline'};
+  const dot=$('#derivDot'), txt=$('#derivText'), pill=$('#derivPill');
+  if(dot)dot.style.background='var(--text-3,#666)';
+  if(txt)txt.textContent='Cloud · view only';
+  if(pill)pill.title='AURUM cloud viewer: live public prices and analysis, viewable anywhere. Orders, accounts and Exness/MT5 are available only in the PC app.';
+  const mode=$('#aboutMode'); if(mode)mode.textContent='Cloud viewer · read-only';
+  const trading=$('#aboutTrading'); if(trading)trading.textContent='Not available here · use the PC app';
+}
 async function refreshDerivPill(){
+  if(isCloudflareReadonlyMode()){ showCloudViewerMode(); return; }
   const h=await derivHealth();
   state.derivHealth=h;
   const dot=$('#derivDot'), txt=$('#derivText');
@@ -3221,7 +3252,7 @@ async function azAnalyze() {
     $('#azLoading').classList.add('hidden');
     $('#azEmpty').classList.remove('hidden');
     const msg=String(e.message||e);
-    $('#azEmpty').innerHTML='<b>Analysis unavailable</b>'+(msg==='fetch unavailable'?'The API server is not running (<code>npm run api</code>). Live-candle analysis needs the local server.':msg);
+    $('#azEmpty').innerHTML='<b>Analysis unavailable</b>'+(isCloudflareReadonlyMode()?cloudAnalysisDownHtml(e):(msg==='fetch unavailable'?'The API server is not running (<code>npm run api</code>). Live-candle analysis needs the local server.':escHtml(msg)));
     toast('Analysis failed',msg,'err');
   } finally {
     btn.disabled = false;
