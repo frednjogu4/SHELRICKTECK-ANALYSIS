@@ -1,0 +1,16 @@
+FREDRICK AURUM PC-LOCAL PACKAGE — START HERE
+
+This is the COMPLETE local package, not the small patch ZIP.
+
+1. Extract the full ZIP to a normal folder, such as Downloads\FREDRICK_AURUM_LOCAL_READY. Do not run anything from inside the ZIP preview.
+2. Open the extracted FREDRICK_AURUM_LOCAL_READY folder. Confirm you see START_ALL_LOCAL.bat, package.json, server\server.js, and bridge\requirements.txt together.
+3. Keep Exness MetaTrader 5 open and logged in.
+4. Double-click START_ALL_LOCAL.bat once. It installs/checks local requirements, starts the API and bridge, and writes logs under logs\. Keep the console open.
+5. When the console reports the local app server and bridge are listening, visit http://127.0.0.1:8788/app in Chrome or Edge. If the app was already open, close it and reopen/hard-refresh.
+6. For Sniper alerts: the list starts with selected markets only. Click Add markets to search/select more; click Hide unselected when done.
+
+Privacy and safety
+- The Exness bridge and API run on this PC/private LAN only. Do not port-forward them or expose them to the public internet.
+- No bridge token, MT5 password, environment file, node_modules, or prior server/data store is included. The setup creates the bridge token locally; never send it in chat.
+- Sniper remains analysis-only and no real-money order execution is enabled.
+- If setup fails, share a reviewed/redacted log from logs\local-startup-*.log or logs\local-api.log. Redact account identifiers and never share passwords or bridge_token.txt.

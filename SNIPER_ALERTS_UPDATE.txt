@@ -1,0 +1,16 @@
+SNIPER ALERTS UI UPDATE
+
+Changes
+- Sniper's market table defaults to the markets you selected, instead of listing the full market universe.
+- Use Add markets to expand the picker; Hide unselected returns to the compact selected-only view. Search can find an unselected market to add.
+- The selected-market list and live Sniper setups show Signal, Timeframe, Entry, SL, TP1 and a clearly labelled data source. Missing levels remain —; none are fabricated.
+- Live setup rows are filtered to the selected markets only. Entry notifications include timeframe and the Entry/SL/TP1 levels.
+- Sniper remains analysis-only. No trade orders are enabled or sent.
+
+Install for the PC-local app
+1. Close the local app tab/window.
+2. Extract this ZIP into the same app/project folder (the one containing bridge\). Replace the included files only; keep all local data and bridge_token.txt.
+3. Start the local app/bridge as usual, reopen http://127.0.0.1:8788/app, and hard-refresh (Ctrl+Shift+R) if an older cached page appears.
+4. In Sniper alerts, click Add markets to choose markets. After choosing, click Hide unselected to keep the display compact.
+
+For the package shown in the Windows screenshot, bridge\app.html is the runtime page file. index.html and src\main.js are the editable source; tests\smoke.mjs contains the regression check.

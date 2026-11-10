@@ -1,0 +1,19 @@
+AURUM LOCAL STARTUP FIX
+
+What this patch changes
+- Adds one top-level launcher: START_ALL_LOCAL.bat. It sequences the local API + bridge setup and writes a timestamped console transcript under logs\. The detached local API also appends its output to logs\local-api.log.
+- SETUP_AND_RUN_LOCAL.bat now forwards to the one-click launcher.
+- The desktop shortcut created by setup points to START_ALL_LOCAL.bat.
+- Updates the local app bundle to turn a saved local http:// bridge address into the correct WebSocket scheme (ws:// on this PC); the default is ws://127.0.0.1:8787.
+- Does not expose ports publicly, change the local-only API, or enable order execution.
+
+Install into the EXISTING extracted package folder
+1. Keep your current package folder. Do not delete it, bridge_token.txt, or server\data\.
+2. Extract this ZIP into the top folder that already contains bridge\, server\, and package.json. Allow replacement of the listed files only.
+3. Keep MetaTrader 5 open and logged in.
+4. Run START_ALL_LOCAL.bat in the package's top folder (or SETUP_AND_RUN_LOCAL.bat). Do not double-click app.html or use the old blank AutoStart window for this first repair.
+5. Leave the launcher/bridge console open. When it reports listening, use http://127.0.0.1:8788/app.
+6. If startup fails, send only the newest logs\local-startup-*.log after reviewing and redacting it. Never send bridge_token.txt, MT5 passwords, or unredacted account details.
+
+Evidence / limits
+The supplied screenshots show connection refused at 127.0.0.1:8788 (the local app service was not listening at that moment) and one saved Bridge URL using http:// instead of ws://. The screenshots are not a Windows console log, and this patch has not been run on the user's PC. Verification was performed on source tests/build only.

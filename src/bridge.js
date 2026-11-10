@@ -51,8 +51,24 @@ const isLocalHost = (u) => {
     return h === 'localhost' || h === '::1' || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || h.endsWith('.local');
   } catch (e) { return false; }
 };
+export function normalizeBridgeUrl(value) {
+  const raw = String(value || '').trim();
+  try {
+    const u = new URL(raw);
+    // Accept the common copy/paste mistake from the HTTP health-check URL,
+    // but only rewrite private/local bridge hosts. A bridge still uses WS.
+    if ((u.protocol === 'http:' || u.protocol === 'https:') && isLocalHost(raw)) {
+      u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+      return u.href.replace(/\/$/, '');
+    }
+  } catch (e) { /* leave validation to assertBridgeSafety */ }
+  return raw;
+}
 function assertBridgeSafety(url, token) {
   let u; try { u = new URL(url); } catch (e) { throw new Error('Bridge URL is not valid: ' + url); }
+  if (u.protocol !== 'ws:' && u.protocol !== 'wss:') {
+    throw new Error('Bridge URL must use WebSocket: ws://127.0.0.1:8787 on this PC (not http://).');
+  }
   if (u.protocol === 'ws:' && !isLocalHost(url)) {
     throw new Error('Refusing unencrypted bridge to a public host (' + u.host + '). Use wss:// with TLS, or run the bridge on your home network (ws://<PC-IP>:8787 — the bridge window prints the address).');
   }
@@ -113,6 +129,7 @@ function healthOnce(url, token) {
     setups route one of the two names around the loopback. Returns the URL
     that actually answered so connect uses the same one. */
 export function healthBridge(url, token) {
+  url = normalizeBridgeUrl(url);
   const cands = [url];
   try {
     const u = new URL(url);
@@ -202,6 +219,7 @@ function frame(msg) {
  * @param {{login:string,password:string,server:string}} creds
  */
 export function connectBridge(url, creds) {
+  url = normalizeBridgeUrl(url);
   return new Promise((resolve, reject) => {
     disconnectBridge('switching');
     if (typeof WebSocket === 'undefined') { setStatus('error', 'no WebSocket support'); reject(new Error('no WebSocket support')); return; }
@@ -320,6 +338,7 @@ export function bridgeHistory(symbol, timeframe, count = 120) { return frame({ t
  * reports which link is broken with its exact fix. No guessing.
  * ================================================================ */
 export async function diagnoseBridge(url, token, creds) {
+  url = normalizeBridgeUrl(url);
   const steps = [];
   const add = (name, ok, detail) => { steps.push({ name, ok: ok === true ? true : ok === false ? false : null, detail }); };
   let pageHttps = false;

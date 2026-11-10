@@ -1,0 +1,22 @@
+AURUM CLOUDFLARE STAGING UPDATE
+
+This archive includes the latest static UI build (dist/index.html) with the Sniper alerts update, plus the separate read-only Cloudflare Worker source/configuration.
+
+Sniper UI update
+- Selected markets are shown by default; Add markets opens the full search/selection list.
+- Selected and live setup views show timeframe, entry, SL, TP1, and clearly labelled data source.
+- Sniper remains analysis-only. No trade execution is enabled.
+
+Cloudflare deployment scope
+- This archive is a source/build package for the existing cloudflare-staging Worker; it is not a direct browser-upload HTML file.
+- Worker API remains separate from Express. It only serves read-only signals and public market data; no broker PAT/account/order routes or Exness candle uploads are added.
+- No deployment, repository push, production change, database write, or secret change was performed.
+
+Build / verify before any deployment
+1. Extract this ZIP, preserving the `aurum/` folder layout.
+2. Use Node.js 22, then run `npm ci`, `npm test`, and `npm run build`.
+3. Review `CLOUDFLARE_WORKER_MIGRATION.md` and `wrangler.jsonc`.
+4. Run a Wrangler dry-run first: `npx --yes wrangler@4.137.0 deploy --dry-run --config wrangler.jsonc`.
+5. Deploy only to the `cloudflare-staging` Worker after review and explicit approval. Do not use production credentials/domains.
+
+The archive omits `.git`, node_modules, dist caches, local server/data, logs, bridge_token.txt, and local Python runtime paths. No credentials or broker tokens are included.

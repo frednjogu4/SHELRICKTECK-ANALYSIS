@@ -181,7 +181,9 @@ function restoreBrokerCredentialFields(){
   ['derivPat','derivToken'].forEach(id=>{const e=document.getElementById(id);if(e&&pat)e.value=pat;});
   const m=readMt5Session(); if(!m)return;
   [['exnessLogin','mt5Login','login'],['exnessServer','mt5Server','server'],['exnessPass','mt5Pass','password'],['mt5Token','mt5Token','token'],['mt5Url','mt5Url','url']].forEach(([a,b,key])=>{
-    const value=String(m[key]||''); [a,b].forEach(id=>{const e=document.getElementById(id);if(e&&value)e.value=value;});
+    let value=String(m[key]||'');
+    if(key==='url'&&value)value=bridge.normalizeBridgeUrl(value);
+    [a,b].forEach(id=>{const e=document.getElementById(id);if(e&&value)e.value=value;});
   });
 }
 restoreBrokerCredentialFields();
@@ -4033,17 +4035,20 @@ const AT_INTERVAL=30000; /* Active preset cadence — careful users just get fas
 let atTimer=null, atBusy=false, atFails=0;
 let atScanInfo={ at:0, checked:0, best:null };
 const sniperWatchSymbols=new Set((()=>{const v=store.get('sniperWatchSymbols',[]);return Array.isArray(v)?v:[];})());
-let sniperSelectedSymbol='';
+let sniperSelectedSymbol='',sniperPickerOpen=false;
 function saveSniperWatchSymbols(){store.set('sniperWatchSymbols',[...sniperWatchSymbols]);renderNavCounts();}
 function setSniperWatch(symbol,on){
   if(on)sniperWatchSymbols.add(symbol);else sniperWatchSymbols.delete(symbol);
   saveSniperWatchSymbols();
   const active=store.get('sniperActiveSetups',{});if(!on&&active&&active[symbol]){delete active[symbol];store.set('sniperActiveSetups',active);}
-  renderSniperMarketList();if(on&&atTimer)autoTradeCycle();
+  renderSniperMarketList();
+  renderSniperSignalAlerts(Object.values(state.mktScan||{}),new Set());
+  if(on&&atTimer)autoTradeCycle();
 }
 function renderSniperView(){
   renderSniperMarketList();
   const search=$('#sniperMarketSearch');if(search)search.oninput=renderSniperMarketList;
+  const picker=$('#sniperPickerToggle');if(picker)picker.onclick=()=>{sniperPickerOpen=!sniperPickerOpen;picker.textContent=sniperPickerOpen?'Hide unselected':'Add markets';picker.setAttribute('aria-expanded',String(sniperPickerOpen));renderSniperMarketList();};
   const refresh=$('#sniperRefreshMarkets');if(refresh)refresh.onclick=async()=>{refresh.disabled=true;refresh.textContent='Refreshing…';try{await mktScanRefresh(true);renderSniperMarketList();}finally{refresh.disabled=false;refresh.textContent='Refresh signals';}};
   const toggle=$('#sniperMonitorToggle');if(toggle)toggle.onclick=()=>{const c=$('#atChk');if(!c)return;if(!atTimer&&!sniperWatchSymbols.size){toast('Select a market first','Check at least one market for Sniper entry/exit alerts.','warn');return;}c.checked=!atTimer;c.dispatchEvent(new Event('change',{bubbles:true}));renderSniperMonitorUi();};
   const body=$('#sniperWatchList');if(body){body.onchange=e=>{const c=e.target.closest('[data-sniper-watch]');if(c)setSniperWatch(c.dataset.sniperWatch,c.checked);};body.onclick=e=>{const b=e.target.closest('[data-sniper-view]');if(b){sniperSelectedSymbol=b.dataset.sniperView;renderSniperSelectedDetail();}};}
@@ -4058,12 +4063,18 @@ function renderSniperMonitorUi(){
 function renderSniperMarketList(){
   const body=$('#sniperWatchList');if(!body)return;
   const q=String(($('#sniperMarketSearch')||{}).value||'').trim().toLowerCase();
-  const rows=INSTR.filter(I=>!q||I.s.toLowerCase().includes(q)||I.n.toLowerCase().includes(q));
-  if(!rows.length){body.innerHTML='<tr><td colspan="5" class="faint">No markets match that search.</td></tr>';return;}
+  const matches=INSTR.filter(I=>!q||I.s.toLowerCase().includes(q)||I.n.toLowerCase().includes(q));
+  const rows=(sniperPickerOpen||q)?matches:matches.filter(I=>sniperWatchSymbols.has(I.s));
+  if(!rows.length){
+    const message=q?'No markets match that search.':(sniperWatchSymbols.size?'No selected markets.':'No markets selected yet — choose Add markets to pick what to monitor.');
+    body.innerHTML='<tr><td colspan="9" class="faint">'+escHtml(message)+'</td></tr>';return;
+  }
+  const price=(r,key,digits)=>{const n=Number(r&&r[key]);return Number.isFinite(n)&&n>0?fmtPx(n,digits):'—';};
   body.innerHTML=rows.map(I=>{
-    const r=state.mktScan[I.s],checked=sniperWatchSymbols.has(I.s),signal=r&&!r.error?'<span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span>':'<span class="badge gray">'+(r?'UNAVAILABLE':'WAITING')+'</span>';
-    const source=r&&(!r.error)?(r.data_source||r.source||'source unavailable'):(r&&r.data_source||'');
-    return '<tr><td><input type="checkbox" data-sniper-watch="'+escHtml(I.s)+'" aria-label="Notify on entry and exit for '+escHtml(I.s)+'" '+(checked?'checked':'')+'></td><td><b>'+escHtml(I.s)+'</b><div class="tiny faint">'+escHtml(I.n)+'</div></td><td>'+signal+(r&&!r.error?'<div class="tiny faint">'+escHtml(String(r.confidence||0))+'% · '+escHtml(r.tf||'')+'</div>':'')+'</td><td class="tiny">'+escHtml(source)+'</td><td><button class="btn ghost sm" type="button" data-sniper-view="'+escHtml(I.s)+'" title="View '+escHtml(I.s)+' signal details" aria-label="View '+escHtml(I.s)+' signal details"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button></td></tr>';
+    const r=state.mktScan[I.s],checked=sniperWatchSymbols.has(I.s),available=r&&!r.error;
+    const signal=available?'<span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span>':'<span class="badge gray">'+(r?'UNAVAILABLE':'WAITING')+'</span>';
+    const source=available?(r.data_source||r.source||'source unavailable'):(r&&r.data_source||'—'),digits=I.d||2;
+    return '<tr><td><input type="checkbox" data-sniper-watch="'+escHtml(I.s)+'" aria-label="Notify on entry and exit for '+escHtml(I.s)+'" '+(checked?'checked':'')+'></td><td><b>'+escHtml(I.s)+'</b><div class="tiny faint">'+escHtml(I.n)+'</div></td><td>'+signal+'</td><td class="tiny">'+escHtml(available?(r.tf||'—'):'—')+'</td><td class="mono">'+(available?price(r,'entry',digits):'—')+'</td><td class="mono down">'+(available?price(r,'stop_loss',digits):'—')+'</td><td class="mono up">'+(available?price(r,'tp1',digits):'—')+'</td><td class="tiny">'+escHtml(source)+'</td><td><button class="btn ghost sm" type="button" data-sniper-view="'+escHtml(I.s)+'" title="View '+escHtml(I.s)+' signal details" aria-label="View '+escHtml(I.s)+' signal details"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button></td></tr>';
   }).join('');
 }
 function renderSniperSelectedDetail(){
@@ -4077,14 +4088,15 @@ function renderSniperSelectedDetail(){
 }
 function renderSniperSignalAlerts(results,qualifiedSymbols=new Set()){
   const targets=[$('#atSignalAlerts'),$('#sniperSignalList')].filter(Boolean);if(!targets.length)return;
-  const rows=(results||[]).filter(r=>r&&!r.error&&(r.signal==='BUY'||r.signal==='SELL'))
-    .sort((a,b)=>(Number(b.confidence)||0)-(Number(a.confidence)||0)).slice(0,8);
-  if(!rows.length){targets.forEach(el=>el.innerHTML='<div class="tiny faint">No directional setups in the latest scan. Waiting for fresh, source-labelled market data.</div>');return;}
+  if(!sniperWatchSymbols.size){targets.forEach(el=>el.innerHTML='<div class="tiny faint">No markets selected. Choose markets above to show only the alerts you want.</div>');return;}
+  const rows=(results||[]).filter(r=>r&&!r.error&&sniperWatchSymbols.has(r.symbol)&&(r.signal==='BUY'||r.signal==='SELL'))
+    .sort((a,b)=>(Number(b.confidence)||0)-(Number(a.confidence)||0));
+  if(!rows.length){targets.forEach(el=>el.innerHTML='<div class="tiny faint">No directional setup in your selected markets yet. Waiting for fresh, source-labelled data.</div>');return;}
   const level=(r,key)=>{const n=Number(r[key]);if(!Number.isFinite(n)||n<=0)return '—';const digits=(bySym[r.symbol]&&bySym[r.symbol].d)||2;return fmtPx(n,digits);};
-  const html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Market</th><th>Signal</th><th>Entry</th><th>SL</th><th>TP1</th><th>TP2 / exit</th><th>Score</th><th>Source</th></tr></thead><tbody>'+rows.map(r=>{
+  const html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Market</th><th>Signal</th><th>Timeframe</th><th>Entry</th><th>SL</th><th>TP1</th><th>Source</th></tr></thead><tbody>'+rows.map(r=>{
     const qualified=qualifiedSymbols.has(r.symbol), cls=r.signal==='BUY'?'buy':'sell';
-    return '<tr><td><b>'+escHtml(r.symbol)+'</b><div class="tiny faint">'+escHtml(r.tf||'MTF scan')+'</div></td><td><span class="badge '+cls+'">'+escHtml(r.signal)+'</span><div class="tiny faint">'+(qualified?'filter match':'watch')+'</div></td><td class="mono">'+level(r,'entry')+'</td><td class="mono">'+level(r,'stop_loss')+'</td><td class="mono">'+level(r,'tp1')+'</td><td class="mono">'+level(r,'tp2')+'</td><td>'+escHtml(String(r.confidence||0))+'%</td><td class="tiny">'+escHtml(r.data_source||r.source||'unavailable')+'</td></tr>';
-  }).join('')+'</tbody></table></div><div class="tiny faint" style="margin-top:5px">Updated '+new Date().toLocaleTimeString()+' · levels are technical references only; no order was placed.</div>';
+    return '<tr><td><b>'+escHtml(r.symbol)+'</b></td><td><span class="badge '+cls+'">'+escHtml(r.signal)+'</span><div class="tiny faint">'+(qualified?'filter match':'selected market')+'</div></td><td class="tiny">'+escHtml(r.tf||'—')+'</td><td class="mono">'+level(r,'entry')+'</td><td class="mono down">'+level(r,'stop_loss')+'</td><td class="mono up">'+level(r,'tp1')+'</td><td class="tiny">'+escHtml(r.data_source||r.source||'unavailable')+'</td></tr>';
+  }).join('')+'</tbody></table></div><div class="tiny faint" style="margin-top:5px">Updated '+new Date().toLocaleTimeString()+' · technical references only; no order was placed.</div>';
   targets.forEach(el=>el.innerHTML=html);
 }
 function emitSniperSignalAlerts(qualified,allResults){
@@ -4095,9 +4107,9 @@ function emitSniperSignalAlerts(qualified,allResults){
     const source=String(r.data_source||r.source||'source unavailable'),old=active[r.symbol];
     if(old&&old.signal===r.signal&&old.source===source)continue;
     const fingerprint=[r.signal,source,'levels-v1'].join('|');
-    const details='Market: '+r.symbol+' · '+r.signal+' '+(Number(r.confidence)||0)+'%\nEntry reference: '+level(r.symbol,r.entry)+' · SL: '+level(r.symbol,r.stop_loss)+' · TP1: '+level(r.symbol,r.tp1)+' · TP2 / exit reference: '+level(r.symbol,r.tp2)+'\nSource: '+source+'\nSignal alert only — no order was placed.';
+    const details='Market: '+r.symbol+' · '+r.signal+' '+(Number(r.confidence)||0)+'%\nTimeframe: '+String(r.tf||'—')+'\nEntry: '+level(r.symbol,r.entry)+' · SL: '+level(r.symbol,r.stop_loss)+' · TP1: '+level(r.symbol,r.tp1)+' · TP2 / exit: '+level(r.symbol,r.tp2)+'\nSource: '+source+'\nSignal alert only — no order was placed.';
     notify('Sniper entry setup · '+r.symbol,details,{tag:'sniper-'+r.symbol+'-entry',kind:r.signal==='BUY'?'ok':'warn'});
-    active[r.symbol]={signal:r.signal,source,entry:r.entry,stop_loss:r.stop_loss,tp1:r.tp1,tp2:r.tp2,stage:0,startedAt:Date.now(),fingerprint};
+    active[r.symbol]={signal:r.signal,source,entry:r.entry,stop_loss:r.stop_loss,tp1:r.tp1,tp2:r.tp2,tf:r.tf||'',stage:0,startedAt:Date.now(),fingerprint};
     started.add(r.symbol);
   }
   for(const symbol of Object.keys(active)){

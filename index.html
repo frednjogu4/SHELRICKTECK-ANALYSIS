@@ -1208,16 +1208,17 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
         <div class="card" style="margin-bottom:14px">
           <div class="card-head wrap">
-            <div><h3>Choose markets</h3><div class="sub">Only checked markets receive Sniper entry/exit alerts. Preferences are saved on this device.</div></div>
+            <div><h3>Selected markets</h3><div class="sub">Only selected markets are shown here and in Sniper alerts. Use Add markets to search or change your selection; preferences stay on this device.</div></div>
             <div class="row wrap">
-              <input class="input" id="sniperMarketSearch" type="search" placeholder="Find a market…" aria-label="Search Sniper markets">
+              <input class="input" id="sniperMarketSearch" type="search" placeholder="Search markets to add…" aria-label="Search Sniper markets">
+              <button class="btn" id="sniperPickerToggle" type="button" aria-expanded="false">Add markets</button>
               <button class="btn" id="sniperRefreshMarkets" type="button">Refresh signals</button>
               <button class="btn primary" id="sniperMonitorToggle" type="button">Start monitoring</button>
             </div>
           </div>
-          <div class="hint">Exit-touch alerts use the latest available scan price; they are not guaranteed fills. Daily index fallback has no intraday exit-touch alerts. “—” means no level was supplied; none are invented.</div>
+          <div class="hint">Selected markets only. Entry, SL, TP1 and timeframe are references from the displayed data source; “—” means no verified level was supplied. Exit-touch alerts are not guaranteed fills, and daily index fallback has no intraday exit-touch alerts.</div>
           <div class="tbl-wrap" style="margin-top:8px">
-            <table class="tbl"><thead><tr><th>Notify</th><th>Market</th><th>Current signal</th><th>Source</th><th>View</th></tr></thead><tbody id="sniperWatchList"><tr><td colspan="5" class="faint">Loading market signals…</td></tr></tbody></table>
+            <table class="tbl"><thead><tr><th>Notify</th><th>Market</th><th>Signal</th><th>Timeframe</th><th>Entry</th><th>SL</th><th>TP1</th><th>Source</th><th>View</th></tr></thead><tbody id="sniperWatchList"><tr><td colspan="9" class="faint">Loading selected markets…</td></tr></tbody></table>
           </div>
         </div>
         <div class="card" style="margin-bottom:14px">

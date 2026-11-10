@@ -3,7 +3,7 @@
 ## What this migration implements
 
 - A separate Cloudflare Worker entry point at `cloudflare/worker.js`; the existing Express server remains unchanged.
-- Static UI assets served from `dist/`, with `/api/*` routed through the Worker.
+- Static UI assets served from `dist/`, with `/api/*` routed through the Worker. The refreshed Sniper UI is included in the current build: selected markets are the default view and setup rows show timeframe, entry, SL, TP1, and labelled source.
 - Read-only endpoints for deterministic signal scans/analysis, Deriv public active-symbols/ticks/candles, health, and basic signal history/usage compatibility.
 - Source labels: `Deriv public candles` for Deriv instruments and `Yahoo Finance public daily data` for the supported index daily read.
 - Cloudflare Rate Limiting bindings are required for provider-backed endpoints (8 signal requests/min/IP; 60 market/history requests/min/IP); missing bindings fail closed.
