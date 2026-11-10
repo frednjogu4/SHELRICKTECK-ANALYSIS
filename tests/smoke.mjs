@@ -1034,6 +1034,18 @@ async function run() {
     check('20v: Exness candles are analyzed in the browser; no Exness history is sent to a cloud analysis route', main.includes('bridge.bridgeHistory(m.code,mt5tf,120)') && main.includes('analyzeTimeframe(m.code') && html.includes('Exness/MT5 data stays on this PC'));
   }
 
+  /* ---------- round 20w: Cloudflare browser-only Deriv read-only session and selected live catalogue ---------- */
+  {
+    const main = readFileSync(join(root, 'src', 'main.js'), 'utf8');
+    const marketdata = readFileSync(join(root, 'src', 'marketdata.js'), 'utf8');
+    const html = readFileSync(join(root, 'index.html'), 'utf8');
+    check('20w: Cloudflare Deriv authorization is direct from this tab and accepts Read-only scope only', main.includes("if(await isCloudflareHostedApp()){") && main.includes("mode:'cloud_readonly'") && main.includes("scopes.includes('read')") && main.includes("scope!=='read'") && main.includes('not to Cloudflare'));
+    check('20w: Cloudflare blocks PAT server routes and all trade/close confirmation paths', main.includes('New-API PAT/server sessions are disabled on Cloudflare staging') && main.includes('Cloudflare staging is analysis-only') && main.includes('Cloudflare staging cannot close or manage Deriv contracts'));
+    check('20w: Exness form and saved bridge restore are blocked on Cloudflare; local-only notice is explicit', main.includes('No Exness credential or bridge request is permitted from Cloudflare') && main.includes('Cloudflare staging does not read saved Exness credentials or contact the PC bridge') && main.includes('Exness credentials, quotes, and candles remain PC-local'));
+    check('20w: hosted live feed disables the built-in symbol universe and subscribes selected catalogue codes only', main.includes('feed.setDefaultSubscriptionsEnabled(false)') && main.includes('LIVE_DERIV_MARKET_CAP=20') && marketdata.includes('export function subscribeDerivCode') && marketdata.includes('dynamicTickSubs.forEach((sub, code) => sendDynamicSubscription(code, sub))') && marketdata.includes('if(defaultSubscriptionsEnabled)INSTRUMENTS.forEach'));
+    check('20w: full public catalogue offers Follow live, live freshness, and selection-only status', main.includes('Follow live') && main.includes('only selected Deriv markets') && html.includes('Live quote · selected only') && html.includes('Full Deriv active-market catalogue'));
+  }
+
   /* ---------- report ---------- */
   console.log('\n=== PASS (' + ok.length + ') ===');
   if (bad.length) { console.log('=== FAIL (' + bad.length + ') ==='); bad.forEach(b => console.log('  x ' + b)); }

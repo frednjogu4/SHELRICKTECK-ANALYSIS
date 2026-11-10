@@ -147,7 +147,10 @@ test('Cloudflare market catalogue and candle endpoints preserve provider labels'
 
 test('Cloudflare-hosted Exness analysis is computed in-browser without posting the local candle bundle', () => {
   const source = readFileSync(new URL('../../src/main.js', import.meta.url), 'utf8');
-  const match = source.match(/if\(await isCloudflareHostedApp\(\)\)\{([\s\S]*?)\}else\{/);
+  const analyzeStart = source.indexOf('async function azAnalyze()');
+  const analyzeEnd = source.indexOf('\nasync function ', analyzeStart + 1);
+  const analyzeSource = source.slice(analyzeStart, analyzeEnd > analyzeStart ? analyzeEnd : undefined);
+  const match = analyzeSource.match(/if\(await isCloudflareHostedApp\(\)\)\{([\s\S]*?)\}else\{/);
   assert.ok(match, 'Cloudflare-hosted branch should exist in Exness analysis');
   assert.match(match[1], /analyzed in this browser/);
   assert.doesNotMatch(match[1], /api\(/, 'the Cloudflare branch must not send local candles to an API');

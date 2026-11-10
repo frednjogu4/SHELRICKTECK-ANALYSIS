@@ -68,6 +68,65 @@ let reconnectT = null;
 let backoff = 1000;
 let watchdog = null;
 let openReqId = 1;
+let defaultSubscriptionsEnabled = true;
+const dynamicTickSubs = new Map(); // Deriv catalogue code -> { callbacks:Set, subscriptionId, reqId, requested }
+const dynamicReqToCode = new Map();
+let dynamicReqId = 500000;
+const DERIV_CODE_RE = /^[A-Za-z0-9_]{2,32}$/;
+
+function sendDynamicSubscription(code, sub) {
+  if (!ws || ws.readyState !== 1 || sub.requested || (defaultSubscriptionsEnabled&&Object.keys(DERIV_CODE_MAP).some((sym) => DERIV_CODE_MAP[sym] === code))) return;
+  const reqId = ++dynamicReqId;
+  sub.reqId = reqId;
+  sub.requested = true;
+  dynamicReqToCode.set(reqId, code);
+  try {
+    ws.send(JSON.stringify({ ticks_history: code, style: 'ticks', count: 1, end: 'latest', subscribe: 1, req_id: reqId, passthrough: { catalog_code: code } }));
+  } catch (_e) {
+    sub.requested = false;
+    dynamicReqToCode.delete(reqId);
+  }
+}
+
+function deliverDynamicTick(code, tick, subscription) {
+  const sub = dynamicTickSubs.get(code);
+  if (!sub) return;
+  if (subscription && subscription.id != null) sub.subscriptionId = subscription.id;
+  const quoteValue = Number(tick && tick.quote);
+  if (!Number.isFinite(quoteValue)) return;
+  const epoch = Number(tick.epoch) || 0;
+  const data = { code, quote: quoteValue, epoch, time: epoch * 1000, status: 'live' };
+  sub.callbacks.forEach((cb) => { try { cb(data); } catch (_e) { /* noop */ } });
+}
+
+/** Follow one public Deriv catalogue symbol on the shared read-only WebSocket.
+ * Returns an unsubscribe function. Only explicitly selected codes are requested. */
+export function subscribeDerivCode(code, onQuote) {
+  const symbol = String(code || '').trim();
+  if (!DERIV_CODE_RE.test(symbol)) throw new Error('Invalid Deriv market code.');
+  if (typeof onQuote !== 'function') throw new Error('A live-quote callback is required.');
+  let sub = dynamicTickSubs.get(symbol);
+  if (!sub) {
+    sub = { callbacks: new Set(), subscriptionId: null, reqId: null, requested: false };
+    dynamicTickSubs.set(symbol, sub);
+  }
+  sub.callbacks.add(onQuote);
+  const currentStatus=startFeed();
+  if(currentStatus==='unavailable')onQuote({code:symbol,status:'error',error:'Deriv public WebSocket is unavailable in this browser.'});
+  sendDynamicSubscription(symbol, sub);
+  return () => {
+    const current = dynamicTickSubs.get(symbol);
+    if (!current) return;
+    current.callbacks.delete(onQuote);
+    if (!current.callbacks.size) {
+      dynamicTickSubs.delete(symbol);
+      if (current.reqId != null) dynamicReqToCode.delete(current.reqId);
+      if (current.subscriptionId != null && ws && ws.readyState === 1 && (!defaultSubscriptionsEnabled||!Object.keys(DERIV_CODE_MAP).some((sym) => DERIV_CODE_MAP[sym] === symbol))) {
+        try { ws.send(JSON.stringify({ forget: current.subscriptionId })); } catch (_e) { /* noop */ }
+      }
+    }
+  };
+}
 
 function setStatus(s, detail) {
   status = s;
@@ -75,6 +134,14 @@ function setStatus(s, detail) {
 }
 
 export function feedStatus() { return status; }
+/** Hosted read-only deployments can opt out of the built-in watchlist stream;
+ * only catalogue symbols explicitly selected by the user will be subscribed. */
+export function setDefaultSubscriptionsEnabled(enabled) {
+  const next=!!enabled;
+  if(defaultSubscriptionsEnabled===next)return;
+  defaultSubscriptionsEnabled=next;
+  if(started)scheduleReconnect('subscription policy changed');
+}
 export function onStatus(cb) { statusCbs.add(cb); cb(status); return () => statusCbs.delete(cb); }
 export function onTick(cb) { tickCbs.add(cb); return () => tickCbs.delete(cb); }
 
@@ -104,6 +171,8 @@ function close(code) {
     try { ws.onclose = null; ws.close(); } catch (e) { /* noop */ }
     ws = null;
   }
+  dynamicReqToCode.clear();
+  dynamicTickSubs.forEach((sub) => { sub.requested = false; sub.subscriptionId = null; sub.reqId = null; });
 }
 
 function scheduleReconnect(reason) {
@@ -130,24 +199,45 @@ function connect() {
     backoff = 1000;
     /* one subscribe message per symbol — batch tick requests with any
        invalid symbol poison the whole message (lesson from testing) */
-    INSTRUMENTS.forEach((I) => {
+    if(defaultSubscriptionsEnabled)INSTRUMENTS.forEach((I) => {
       if (!I.deriv) return; /* index CFDs have no Deriv feed — quoted via the local Exness MT5 bridge */
       try {
         ws.send(JSON.stringify({ ticks_history: I.deriv, style: 'ticks', count: 120, end: 'latest', subscribe: 1, req_id: openReqId, passthrough: { sym: I.s } }));
         openReqId++;
       } catch (e) { /* noop */ }
     });
+    dynamicTickSubs.forEach((sub, code) => sendDynamicSubscription(code, sub));
     /* watchdog: no message for 30s -> reconnect */
     let lastMsg = Date.now();
     ws.onmessage = (ev) => {
       lastMsg = Date.now();
       let m;
       try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.error) return; // bad symbol or transient — skip, keep socket
+      const reqCode = m.req_id != null ? dynamicReqToCode.get(Number(m.req_id)) : null;
+      const code = String((m.tick && m.tick.symbol) || (m.history && m.history.times && reqCode) || (m.passthrough && m.passthrough.catalog_code) || reqCode || '');
+      if (m.subscription && m.subscription.id != null) {
+        const subscribedCode=String(reqCode||(m.passthrough&&m.passthrough.catalog_code)||'');
+        const reqSub=dynamicTickSubs.get(subscribedCode);
+        if(reqSub)reqSub.subscriptionId=m.subscription.id;
+        else if(subscribedCode&&ws&&ws.readyState===1){try{ws.send(JSON.stringify({forget:m.subscription.id}));}catch(_e){}}
+      }
+      if (m.error) {
+        if (reqCode) {
+          const reqSub = dynamicTickSubs.get(reqCode);
+          if (reqSub) reqSub.callbacks.forEach((cb) => { try { cb({ code: reqCode, status: 'error', error: String(m.error.message || 'Deriv live subscription failed').slice(0, 180) }); } catch (_e) {} });
+          if (reqSub) reqSub.requested = false;
+          dynamicReqToCode.delete(Number(m.req_id));
+        }
+        return; // bad symbol or transient — skip, keep socket
+      }
       if (m.tick && m.tick.symbol) {
-        /* map Deriv code back to internal symbol */
-        const entry = Object.entries(DERIV_CODE_MAP).find(([, code]) => code === m.tick.symbol);
+        /* map Deriv code back to internal symbol; arbitrary catalogue codes
+           are dispatched only to explicitly selected live listeners. */
+        const entry = Object.entries(DERIV_CODE_MAP).find(([, mapped]) => mapped === m.tick.symbol);
         if (entry) handleTick(entry[0], +m.tick.quote, (m.tick.epoch || 0) * 1000);
+        deliverDynamicTick(String(m.tick.symbol), m.tick, m.subscription);
+      } else if (reqCode && m.subscription && dynamicTickSubs.has(reqCode)) {
+        dynamicTickSubs.get(reqCode).subscriptionId = m.subscription.id;
       }
     };
     if (watchdog) clearInterval(watchdog);

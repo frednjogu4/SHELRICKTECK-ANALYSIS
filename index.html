@@ -587,7 +587,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         <div class="tiny faint" style="margin-top:6px">Live scan &middot; updates as markets move &middot; indices are analysis-only (CFD via Exness).</div>
       </div>
     </div>
-    <div class="auth-foot">Real market data &middot; trading activates only when you connect your own account.</div>
+    <div class="auth-foot" id="authFoot">Real market data &middot; trading activates only when you connect your own account.</div>
   </div>
   <div class="auth-form-side">
     <div class="auth-card">
@@ -842,7 +842,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
         <div class="card" id="brokerMarketsCard" style="margin-top:14px">
           <div class="row between wrap" style="gap:10px;margin-bottom:8px">
-            <div><h3 style="margin:0">Broker-discovered markets</h3><div class="sub">Read-only catalogue from Deriv and your connected PC-local MT5 terminal. New symbols are analysis-only.</div></div>
+            <div><h3 style="margin:0">Broker-discovered markets</h3><div class="sub">Full Deriv active-market catalogue. Live quotes stream only for markets you explicitly follow (maximum 20 at once); the public feed connects directly from this browser. Exness symbols and history stay PC-local.</div></div>
             <div class="row wrap" style="gap:6px">
               <button class="btn sm" id="loadDerivMarkets">Refresh Deriv catalogue</button>
               <button class="btn sm" id="loadMt5Markets">Load Exness / MT5 symbols</button>
@@ -858,7 +858,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
             </select>
           </div>
           <p class="hint" id="brokerMarketsStatus" aria-live="polite">Choose a broker catalogue to load. Exness symbols and history remain on this PC.</p>
-          <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Symbol</th><th>Name / broker path</th><th>Category</th><th>Source / status</th><th class="right">Action</th></tr></thead><tbody id="brokerMarketsBody"></tbody></table></div>
+          <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Symbol</th><th>Name / broker path</th><th>Category</th><th>Source / status</th><th>Live quote · selected only</th><th class="right">Actions</th></tr></thead><tbody id="brokerMarketsBody"></tbody></table></div>
           <div class="empty hidden" id="brokerMarketsEmpty"><b>No discovered symbols match</b>Load a broker catalogue or change the search/filter.</div>
           <div class="card hidden" id="brokerMarketAnalysis" style="margin-top:12px;background:var(--surface2)">
             <div class="row between wrap"><div><h3 id="brokerAnalysisTitle" style="margin:0">Market analysis</h3><div class="tiny faint" id="brokerAnalysisMeta"></div></div><button class="btn sm ghost" id="brokerAnalysisClose">Close</button></div>

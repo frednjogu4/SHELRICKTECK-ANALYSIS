@@ -10,7 +10,7 @@
     "build": "vite build && cp dist/index.html dist/AURUM_Workspace.html",
     "website": "node server/websiteserver.js",
     "preview": "vite preview",
-    "test": "node tests/smoke.mjs && node --test server/tests/ tests/mt5Risk.test.mjs tests/mt5Execution.test.mjs tests/cloud.test.mjs tests/localHosting.test.mjs tests/goldMonitor.test.mjs tests/pwaInstall.test.mjs",
+    "test": "node tests/smoke.mjs && node --test server/tests/ tests/mt5Risk.test.mjs tests/mt5Execution.test.mjs tests/cloud.test.mjs tests/localHosting.test.mjs tests/goldMonitor.test.mjs tests/pwaInstall.test.mjs tests/derivLiveCatalog.test.mjs",
     "test:server": "node --test server/tests/",
     "start": "node server/server.js"
   },

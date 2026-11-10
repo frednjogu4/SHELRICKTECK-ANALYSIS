@@ -1,15 +1,27 @@
 AURUM CLOUDFLARE STAGING UPDATE
 
-This archive includes the latest static UI build (dist/index.html) with the Sniper alerts update, plus the separate read-only Cloudflare Worker source/configuration.
+This staging package includes the refreshed Sniper UI, a browser-only Deriv read-only session, and the full public Deriv active-market catalogue with selected-only live quote subscriptions. It remains analysis-only; Exness stays PC-local.
 
-Sniper UI update
+Sniper UI
 - Selected markets are shown by default; Add markets opens the full search/selection list.
 - Selected and live setup views show timeframe, entry, SL, TP1, and clearly labelled data source.
 - Sniper remains analysis-only. No trade execution is enabled.
 
+Deriv browser-only read-only session
+- Cloudflare staging accepts a Deriv Classic API token with Read scope only (no Trade, Payments, or Admin scopes). The app checks the authorization scopes and fails closed otherwise.
+- Authorization is sent directly from the browser tab to Deriv. The token is held in tab session storage and never posted to or stored by the Cloudflare Worker. Hosted `/api/deriv/*` calls and new-API PAT/server sessions are blocked.
+- Deriv order proposals, confirmations, buys, closes, and trading automation are blocked in hosted mode. This is account read-only and analysis-only.
+- Exness login/restore is hidden and blocked in hosted mode. Exness credentials, symbols, quotes, and candles stay on the PC-local app/bridge; the Worker cannot reach the PC bridge.
+
+Deriv catalogue and selected live feed
+- The full active-symbol catalogue is loaded from the public `/api/markets/deriv` endpoint.
+- Cloudflare mode disables default all-watchlist tick subscriptions. Click “Follow live” on a Deriv catalogue row to stream that symbol directly from Deriv in this browser; maximum 20 followed markets concurrently.
+- Unselected catalogue rows are not streamed. Catalogue availability does not guarantee a current/live quote; the UI reports waiting, live, stale, or unavailable status.
+- Exness catalogue rows remain local and have no Cloudflare live feed.
+
 Cloudflare deployment scope
 - This archive is a source/build package for the existing cloudflare-staging Worker; it is not a direct browser-upload HTML file.
-- Worker API remains separate from Express. It only serves read-only signals and public market data; no broker PAT/account/order routes or Exness candle uploads are added.
+- Worker API remains separate from Express. It serves read-only signals and public market data; it does not receive broker credentials or account data and does not expose Exness bridge routes.
 - No deployment, repository push, production change, database write, or secret change was performed.
 
 Build / verify before any deployment

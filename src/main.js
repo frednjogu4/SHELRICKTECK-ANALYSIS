@@ -197,6 +197,10 @@ function isPrivateBridgePage(){
   }catch(e){return false;}
 }
 let cloudflareReadonlyCheck=null;
+let cloudflareReadonlyUi=false;
+function isCloudflareReadonlyMode(){
+  try{const h=String(location.hostname||'').toLowerCase();return cloudflareReadonlyUi||h.endsWith('.workers.dev')||h.endsWith('.pages.dev');}catch(_e){return cloudflareReadonlyUi;}
+}
 async function isCloudflareHostedApp(){
   try{
     const h=String(location.hostname||'').toLowerCase();
@@ -216,18 +220,22 @@ function localApiProxyToken(){
 try{document.addEventListener('input',(e)=>{if(e.target&&e.target.id==='mt5Token'&&isPrivateBridgePage()){const t=String(e.target.value||'').trim();try{t?sessionStorage.setItem('aurum_local_api_token',t):sessionStorage.removeItem('aurum_local_api_token');}catch(_){}}});}catch(e){}
 function api(path,{method='GET',body,headers={},timeoutMs=0}={}){
   if(typeof fetch!=='function')return Promise.reject(new Error('fetch unavailable'));
-  const sig=(timeoutMs&&typeof AbortSignal!=='undefined'&&AbortSignal.timeout)?AbortSignal.timeout(timeoutMs):undefined;
-  const reqHeaders=Object.assign({'content-type':'application/json'},headers);
-  if(String(path||'').startsWith('/api/')&&isPrivateBridgePage()){
-    const proxyToken=localApiProxyToken();
-    if(proxyToken)reqHeaders['x-aurum-local-api-token']=proxyToken;
+  const request=()=>{
+    const sig=(timeoutMs&&typeof AbortSignal!=='undefined'&&AbortSignal.timeout)?AbortSignal.timeout(timeoutMs):undefined;
+    const reqHeaders=Object.assign({'content-type':'application/json'},headers);
+    if(String(path||'').startsWith('/api/')&&isPrivateBridgePage()){
+      const proxyToken=localApiProxyToken();
+      if(proxyToken)reqHeaders['x-aurum-local-api-token']=proxyToken;
+    }
+    return fetch(path,{method,headers:reqHeaders,body:body?JSON.stringify(body):undefined,signal:sig});
+  };
+  if(/^\/api\/deriv(?:\/|$)/.test(String(path||''))){
+    return isCloudflareHostedApp().then((hosted)=>{
+      if(hosted)throw new Error('Deriv account and trade API routes are disabled on Cloudflare staging. The browser-only Deriv session never sends credentials to this Worker.');
+      return request();
+    });
   }
-  return fetch(path,{
-    method,
-    headers:reqHeaders,
-    body:body?JSON.stringify(body):undefined,
-    signal:sig
-  });
+  return request();
 }
 
 /* ---------- toasts ---------- */
@@ -328,7 +336,7 @@ function showApp(name,mode){
   $('#appShell').classList.add('ready');
   $('#sideName').textContent=name;
   $('#sideAvatar').textContent=(name[0]||'L').toUpperCase();
-  const sub={deriv:'Deriv account',mt5:'Exness via bridge',live:'Live markets · no trading'}[state.mode];
+  const sub=state.mode==='deriv'?(state.broker?.mode==='cloud_readonly'?'Deriv · read-only':'Deriv account'):{mt5:'Exness via bridge',live:'Live markets · no trading'}[state.mode];
   $('#sideSub').textContent=sub;
   const h=new Date().getHours();
   $('#ovGreeting').textContent=(h<12?'Good morning':h<18?'Good afternoon':'Good evening')+', '+name.charAt(0).toUpperCase()+name.slice(1);
@@ -339,7 +347,9 @@ function updateSessionInfo(){
   const el=$('#sessionInfo'); if(!el)return;
   if(state.broker?.type==='deriv'){
     const a=state.broker.account||{};
-    el.textContent='Deriv '+a.loginid+(a.fullname?' · '+a.fullname:'')+' · balance '+(a.balance!=null?a.balance+' '+a.currency:'—')+'. PAT held for this session only.';
+    el.textContent=state.broker.mode==='cloud_readonly'
+      ?'Deriv '+a.loginid+(a.fullname?' · '+a.fullname:'')+' · balance '+(a.balance!=null?a.balance+' '+a.currency:'—')+'. Read-only; token is held in this tab and sent directly to Deriv only — not to Cloudflare.'
+      :'Deriv '+a.loginid+(a.fullname?' · '+a.fullname:'')+' · balance '+(a.balance!=null?a.balance+' '+a.currency:'—')+'. PAT held for this session only.';
   }else if(state.broker?.type==='mt5'){
     const a=state.broker.account||{};
     const refreshed=state.mt5LastSnapshotAt?new Date(state.mt5LastSnapshotAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):(state.mt5SnapshotFailed?'refresh failed':'sync pending');
@@ -366,6 +376,22 @@ function signOut(){
        datacenter IPs, home/mobile networks are fine). PAT stays
        session-only. --- */
 async function connectDeriv(appId,pat){
+  if(await isCloudflareHostedApp()){
+    /* Cloudflare staging authorizes directly with Deriv from this tab. The
+       credential and account response are never sent to the Worker. */
+    const info=await derivWsAuthorize(appId,pat);
+    const scopes=Array.isArray(info.scopes)?info.scopes.map((s)=>String(s).toLowerCase()):[];
+    if(!scopes.includes('read')||scopes.some((scope)=>scope!=='read')){
+      throw new Error('Cloudflare staging accepts only a Deriv Classic API token with the Read scope and no other scopes. Create a read-only token; Trade, Payments, and Admin scopes are rejected.');
+    }
+    patStore.set(pat);
+    patStore.setAppId(appId);
+    state.broker={type:'deriv',pat,appId,account:info,mode:'cloud_readonly',limits:null};
+    state.balance=info.balance!=null?Number(info.balance):null;
+    state.connections.deriv=true; save();
+    store.set('session',{name:'Deriv',mode:'deriv',brokerMode:'cloud_readonly'});
+    return info;
+  }
   const res=await api('/api/deriv/connect',{method:'POST',body:{appId},headers:{'x-deriv-pat':pat,'x-deriv-appid':appId||''}});
   if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.detail||('Deriv connect failed ('+res.status+')')); }
   const gate=await res.json();
@@ -380,6 +406,7 @@ async function connectDeriv(appId,pat){
 }
 /* --- NEW-API PAT client (server-side session; browser only holds sid) --- */
 async function patConnect(appId,pat){
+  if(await isCloudflareHostedApp())throw new Error('New-API PAT/server sessions are disabled on Cloudflare staging. Use a Deriv Classic token with Read-only scope; it is authorized directly by Deriv from this browser tab.');
   const res=await api('/api/deriv/pat/session',{method:'POST',body:{appId},headers:{'x-deriv-pat':pat,'x-deriv-appid':appId||''}});
   const j=await res.json().catch(()=>({}));
   if(!res.ok)throw new Error(j.detail||j.error||('PAT connect failed ('+res.status+')'));
@@ -672,15 +699,35 @@ if(mt5RefreshBtn)mt5RefreshBtn.onclick=()=>void refreshMt5Snapshot(true);
 
 /* token kind toggle: classic (browser WS) vs new-API PAT (server session) */
 let derivKind='classic';
+function connectDerivButtonLabel(){return cloudflareReadonlyUi?'Connect Deriv (read-only)':'Connect Deriv & trade';}
 function syncDerivKind(){
   const cl=$('#derivKindClassic'), pt=$('#derivKindPat');
   if(!cl||!pt)return;
   cl.className='side-btn'+(derivKind==='classic'?' sel-buy':'');
   pt.className='side-btn'+(derivKind==='pat'?' sel-buy':'');
+  if(cloudflareReadonlyUi){
+    $('#derivPatLabel').textContent='Deriv Classic API token (Read-only scope)';
+    $('#derivKindNote').innerHTML='Create a Classic API token with <b>Read only</b> scope in Deriv API Management. The browser authorizes directly with Deriv. This staging page does not upload the token or account response to Cloudflare; trading is disabled.';
+    return;
+  }
   $('#derivPatLabel').textContent=derivKind==='classic'?'Deriv API token (classic — Trade scope)':'Deriv PAT (new API — Trade scope)';
   $('#derivKindNote').innerHTML=derivKind==='classic'
     ?'Classic token: <b>home.deriv.com</b> → profile → API Management → API Tokens → create with <b>Trade</b> scope. Executes from your browser (Deriv blocks datacenter servers). Token stays in this browser session only. A new-API <i>PAT</i> will NOT work here — use the PAT tab.'
     :'PAT: generate in your Deriv dashboard with <b>Trade + Read</b> scopes. It is verified over Deriv\'s REST API and kept <b>on our server only</b> — this browser stores just a session id. A <i>Classic</i> token will always be rejected here — use the Classic tab for those.';
+}
+async function configureCloudflareReadonlyUi(){
+  if(!(await isCloudflareHostedApp()))return;
+  cloudflareReadonlyUi=true; derivKind='classic'; syncDerivKind();
+  feed.setDefaultSubscriptionsEnabled(false); /* staging streams no built-in universe; catalogue selections alone subscribe */
+  const patTab=$('#derivKindPat'); if(patTab)patTab.hidden=true;
+  const mt5Tab=$('#authTabMt5'); if(mt5Tab){mt5Tab.hidden=true;mt5Tab.disabled=true;mt5Tab.title='Exness is available only in the PC-local app; Cloudflare cannot connect to its bridge.';}
+  $('#exnessForm')?.querySelectorAll('input,button').forEach((el)=>{el.disabled=true;});
+  const btn=$('#derivLoginBtn'); if(btn){btn.dataset.cloudflareReadonly='1';btn.textContent=connectDerivButtonLabel();}
+  const remember=$('#rememberNote'); if(remember)remember.textContent='Read-only token is kept in this browser tab session only and sent directly to Deriv for authorization. It is never sent to or stored by Cloudflare. Disconnect/sign out to clear it.';
+  const foot=$('#authFoot');if(foot)foot.textContent='Cloudflare staging is analysis-only: Deriv read-only account connection, no trade execution. Exness remains available only from the PC-local app.';
+  const note=document.createElement('p'); note.className='hint'; note.id='cloudflareLocalOnlyNotice';
+  note.textContent='Exness credentials, quotes, and candles remain PC-local. Connect Exness only from the local app at http://127.0.0.1:8788/app; this Cloudflare page cannot reach your PC bridge.';
+  const tabs=$('#authTabDeriv')?.parentElement; if(tabs&&!$('#cloudflareLocalOnlyNotice'))tabs.insertAdjacentElement('afterend',note);
 }
 $('#derivKindClassic').onclick=()=>{derivKind='classic';syncDerivKind();};
 /* auth connect tabs: Deriv <-> MT5/Exness (keeps the login screen to one viewport) */
@@ -695,6 +742,7 @@ $('#derivKindClassic').onclick=()=>{derivKind='classic';syncDerivKind();};
     td.onclick=()=>setTab('deriv'); tm.onclick=()=>setTab('mt5'); } }
 $('#derivKindPat').onclick=()=>{derivKind='pat';syncDerivKind();};
 syncDerivKind();
+void configureCloudflareReadonlyUi();
 
 $('#derivForm').onsubmit=async e=>{
   e.preventDefault();
@@ -703,6 +751,9 @@ $('#derivForm').onsubmit=async e=>{
   /* NOTE: Deriv App IDs are copied EXACTLY and may contain letters — no
      shape-based swapping. Labels below explain which value goes where. */
   if(!pat){ err.textContent='Paste your PAT in the token field. The App ID goes in its own box, copied exactly from your Deriv application.'; err.style.display='block'; return; }
+  if(await isCloudflareHostedApp()&&derivKind==='pat'){
+    err.textContent='New-API PAT sessions are server-side and are not enabled on Cloudflare. Use a Classic Deriv API token with Read-only scope.';err.style.display='block';return;
+  }
   const btn=$('#derivLoginBtn'); btn.disabled=true; btn.textContent='Connecting…';
   try{
     if(derivKind==='pat'){
@@ -735,9 +786,9 @@ $('#derivForm').onsubmit=async e=>{
             await patAfterConnect(sess,appId,pat);
             err.style.display='none';
           }catch(ex2){ err.textContent=String(ex2.message||ex2); err.style.display='block'; }
-          finally{ btn.disabled=false; btn.textContent='Connect Deriv & trade'; }
+finally{ btn.disabled=false; btn.textContent=connectDerivButtonLabel(); }
         };
-        btn.disabled=false; btn.textContent='Connect Deriv & trade';
+btn.disabled=false; btn.textContent=connectDerivButtonLabel();
         return;
       }
       const sess=await patConnect(appId,pat);
@@ -748,13 +799,15 @@ $('#derivForm').onsubmit=async e=>{
     await connectDeriv(appId,pat);
     err.style.display='none';
     showApp('Deriv','deriv');
-    notify('Deriv connected','Live account linked — trading enabled.','ok');
+    if(state.broker?.mode==='cloud_readonly')notify('Deriv connected · read-only','This tab is authorized directly with Deriv. Token/account data were not sent to Cloudflare; trading stays disabled.','ok');
+    else notify('Deriv connected','Live account linked — trading enabled.','ok');
   }catch(ex){
     err.textContent=String(ex.message||ex); err.style.display='block';
-  }finally{ btn.disabled=false; btn.textContent='Connect Deriv & trade'; }
+  }finally{ btn.disabled=false; btn.textContent=connectDerivButtonLabel(); }
 };
 $('#exnessForm').onsubmit=async e=>{
   e.preventDefault();
+  if(await isCloudflareHostedApp()){const err=$('#authErr');err.textContent='Exness is PC-local only. No Exness credential or bridge request is permitted from Cloudflare; open the local app at http://127.0.0.1:8788/app.';err.style.display='block';return;}
   const login=$('#exnessLogin').value.trim(), password=$('#exnessPass').value, server=$('#exnessServer').value.trim();
   saveMt5Identity(login,server);
   const err=$('#authErr');
@@ -814,6 +867,10 @@ function updateFeedPill(s){
     unavailable:['Deriv feed · unavailable','off'],
     stopped:['Deriv feed · stopped','off']
   };
+  if(isCloudflareReadonlyMode()&&s==='live'){
+    const fresh=[...liveDerivQuotes.values()].some((q)=>q&&q.status==='live'&&Date.now()-Number(q.time||0)<30000);
+    map.live=fresh?['Deriv live feed · selected quotes','live']:(liveDerivCodes.size?['Deriv feed · waiting for selected tick','off']:['Deriv feed · ready · no markets selected','off']);
+  }
   const [label,cls]=map[s]||map.idle;
   if(txt)txt.textContent=label;
   if(dot)dot.className='dot '+(cls==='live'?'live':'off');
@@ -824,12 +881,13 @@ function wireFeed(){
   feed.onStatus(s=>{
     updateFeedPill(s);
     if(s==='live'){
-      if(!feedLiveAnnounced){ feedLiveAnnounced=true; notify('Live feed connected','Deriv real-time prices are streaming.','ok',{tag:'feed'}); }
+      if(!isCloudflareReadonlyMode()&&!feedLiveAnnounced){ feedLiveAnnounced=true; notify('Live feed connected','Deriv real-time prices are streaming.','ok',{tag:'feed'}); }
     }else if(s==='unavailable'&&feedLiveAnnounced){
       notify('Feed unavailable','Live Deriv prices unreachable — quotes show “—”.','err',{tag:'feed'});
     }
   });
   feed.onTick((sym,q)=>{
+    if(isCloudflareReadonlyMode())updateFeedPill(feed.feedStatus());
     const I=bySym[sym]; if(!I)return;
     I.p=q.px; I.open=q.open; I.hist=q.hist||I.hist; I.t=q.time;
     tickN++;
@@ -1420,6 +1478,64 @@ $$('#mktCats .chip').forEach(c=>c.onclick=()=>{
 /* ---------- broker-discovered, analysis-only catalogue ---------- */
 let discoveredMarkets=[];
 let brokerAnalysisSeq=0;
+const LIVE_DERIV_MARKET_CAP=20;
+const liveDerivCodes=new Set((Array.isArray(store.get('liveDerivCatalogCodes',[]))?store.get('liveDerivCatalogCodes',[]):[]).filter((code)=>/^[A-Za-z0-9_]{2,32}$/.test(String(code))).slice(0,LIVE_DERIV_MARKET_CAP));
+const liveDerivUnsubs=new Map();
+const liveDerivQuotes=new Map();
+function liveDerivQuoteText(code){
+  if(!liveDerivCodes.has(code))return 'Not subscribed';
+  const q=liveDerivQuotes.get(code);
+  if(!q)return 'CONNECTING · waiting for first tick';
+  if(q.status==='error')return 'UNAVAILABLE · '+q.error;
+  if(!Number.isFinite(Number(q.quote)))return 'CONNECTING · waiting for first tick';
+  const age=Date.now()-Number(q.time||0), freshness=age>=0&&age<30000?'LIVE':age<120000?'STALE':'STALE';
+  return freshness+' · '+Number(q.quote).toLocaleString(undefined,{maximumFractionDigits:8})+(q.time?' · '+new Date(q.time).toLocaleTimeString():'');
+}
+function refreshLiveMarketCells(code){
+  document.querySelectorAll('[data-live-code]').forEach((el)=>{if(el.dataset.liveCode===code)el.textContent=liveDerivQuoteText(code);});
+}
+setInterval(()=>{for(const code of liveDerivCodes)refreshLiveMarketCells(code);if(isCloudflareReadonlyMode())updateFeedPill(feed.feedStatus());},10000);
+function updateSelectedDerivQuote(code,q){
+  liveDerivQuotes.set(code,q);refreshLiveMarketCells(code);
+  if(isCloudflareReadonlyMode()){
+    updateFeedPill(feed.feedStatus());
+    if(q.status==='live'&&!feedLiveAnnounced){feedLiveAnnounced=true;notify('Selected Deriv quotes live',code+' is receiving public ticks directly in this browser. Unselected catalogue markets are not streamed.','ok',{tag:'feed'});}
+  }
+  const status=$('#brokerMarketsStatus');if(status)status.textContent='Deriv public feed · '+liveDerivCodes.size+'/'+LIVE_DERIV_MARKET_CAP+' selected market(s) subscribed in this browser. Quotes are live only after a tick arrives; catalogue availability is not a promise of a current quote.';
+}
+function followDerivMarket(m){
+  if(m.source!=='Deriv')return;
+  const code=String(m.code||'');
+  if(liveDerivCodes.has(code)){
+    const stop=liveDerivUnsubs.get(code);if(stop)stop();
+    liveDerivUnsubs.delete(code);liveDerivCodes.delete(code);liveDerivQuotes.delete(code);
+    store.set('liveDerivCatalogCodes',[...liveDerivCodes]);
+    renderBrokerMarkets();
+    const status=$('#brokerMarketsStatus');if(status)status.textContent='Live subscriptions: '+liveDerivCodes.size+'/'+LIVE_DERIV_MARKET_CAP+'. Removed '+code+'; only selected Deriv markets stream quotes.';
+    return;
+  }
+  if(liveDerivCodes.size>=LIVE_DERIV_MARKET_CAP){toast('Live-feed limit','Select up to '+LIVE_DERIV_MARKET_CAP+' Deriv catalogue markets at once. Unfollow one first; the full catalogue remains available.','warn');return;}
+  liveDerivCodes.add(code);liveDerivQuotes.set(code,{status:'connecting'});
+  store.set('liveDerivCatalogCodes',[...liveDerivCodes]);
+  try{
+    const stop=feed.subscribeDerivCode(code,(q)=>updateSelectedDerivQuote(code,q));
+    liveDerivUnsubs.set(code,stop);
+  }catch(e){liveDerivQuotes.set(code,{status:'error',error:String(e.message||e)});}
+  renderBrokerMarkets();
+}
+function resumeLiveDerivSelections(rows){
+  const available=new Set(rows.filter((row)=>row.source==='Deriv').map((row)=>row.code));
+  for(const code of [...liveDerivCodes])if(!available.has(code)){const stop=liveDerivUnsubs.get(code);if(stop)stop();liveDerivUnsubs.delete(code);liveDerivCodes.delete(code);liveDerivQuotes.delete(code);}
+  store.set('liveDerivCatalogCodes',[...liveDerivCodes]);
+  for(const code of liveDerivCodes){
+    const m=rows.find((row)=>row.source==='Deriv'&&row.code===code);
+    if(m&&!liveDerivUnsubs.has(code)){
+      liveDerivQuotes.set(code,{status:'connecting'});
+      try{liveDerivUnsubs.set(code,feed.subscribeDerivCode(code,(q)=>updateSelectedDerivQuote(code,q)));}
+      catch(e){liveDerivQuotes.set(code,{status:'error',error:String(e.message||e)});}
+    }
+  }
+}
 const brokerCatLabels={forex:'Forex',commodities:'Commodities',metals:'Metals',energies:'Energies',indices:'Indices',stocks:'Stocks',etfs:'ETFs',bonds:'Bonds',crypto:'Crypto',synthetics:'Synthetics',other:'Other / unclassified'};
 function derivCatalogCategory(m){
   const market=String(m.market||'').toLowerCase(), sub=String(m.submarket||'').toLowerCase();
@@ -1447,7 +1563,15 @@ function renderBrokerMarkets(){
     add(m.name+(m.path?' · '+m.path:(m.submarket?' · '+m.submarket:'')),'tiny');
     add(brokerCatLabels[m.category]||m.category,'tiny');
     add(m.source+' · '+m.status,'tiny');
-    const action=add('','num');const b=document.createElement('button');b.type='button';b.className='btn sm';b.textContent='Analyze';b.onclick=()=>analyzeBrokerMarket(m);action.appendChild(b);
+    const live=add(m.source==='Deriv'?liveDerivQuoteText(m.code):'PC-local only · no Cloudflare feed','tiny mono');
+    if(m.source==='Deriv')live.dataset.liveCode=m.code;
+    const action=add('','num');
+    if(m.source==='Deriv'){
+      const follow=document.createElement('button');follow.type='button';follow.className='btn sm';follow.textContent=liveDerivCodes.has(m.code)?'Stop live':'Follow live';follow.onclick=()=>followDerivMarket(m);action.appendChild(follow);
+    }else{
+      const local=document.createElement('span');local.className='tiny faint';local.textContent='Analyze on PC';action.appendChild(local);
+    }
+    const b=document.createElement('button');b.type='button';b.className='btn sm';b.textContent='Analyze';b.onclick=()=>analyzeBrokerMarket(m);action.appendChild(b);
     body.appendChild(tr);
   }
   if(empty)empty.classList.toggle('hidden',rows.length>0);
@@ -1462,7 +1586,8 @@ async function loadDerivMarkets(){
     const rows=j.markets.map(m=>({source:'Deriv',code:m.code,name:m.name,category:derivCatalogCategory(m),market:m.market,submarket:m.submarket,
       status:m.suspended?'suspended':m.open?'exchange open':'exchange closed',raw:m}));
     discoveredMarkets=discoveredMarkets.filter(m=>m.source!=='Deriv').concat(rows);
-    if(status)status.textContent='Deriv catalogue loaded: '+rows.length+' broker-listed symbols · public catalogue · quotes/history load on selection.';
+    resumeLiveDerivSelections(rows);
+    if(status)status.textContent='Deriv catalogue loaded: '+rows.length+' broker-listed symbols · public catalogue · '+liveDerivCodes.size+'/'+LIVE_DERIV_MARKET_CAP+' selected live feeds. Select Follow live per market; unselected symbols are not streamed.';
     renderBrokerMarkets();
   }catch(e){if(status)status.textContent='Deriv catalogue unavailable: '+String(e.message||e)+' · existing markets remain visible.';}
   finally{if(button){button.disabled=false;button.textContent='Refresh Deriv catalogue';}}
@@ -1798,7 +1923,10 @@ async function verifyAndConfirmMt5OpenLimit(gate){
   return verified.limit;
 }
 async function placeOrder(){
-
+  if(isCloudflareReadonlyMode()){
+    toast('Read-only staging','Cloudflare staging is analysis-only. It cannot request trade quotes, buy, or close Deriv contracts. Use the PC-local app for Exness.','warn');
+    return;
+  }
   let mt5RiskOnce=null, mt5OrderAttempted=false;
   if(guardStopIfTripped())return;
   const I=bySym[state.chart.sym];
@@ -1912,6 +2040,7 @@ function tmClose(){
   tmUnsub&&tmUnsub(); tmUnsub=null; tmCtx=null;
 }
 async function openTradeModal({mode,I,amt,sl,tp,tp2,px,dur}){
+  if(isCloudflareReadonlyMode()){toast('Read-only staging','Order quotes and execution are disabled on Cloudflare staging.','warn');return;}
   const dh=state.derivHealth||{};
   const du=dur||derivDurationFor(I.s);
   tmCtx={mode,I,amt,sl,tp,tp2,px,dur:du,ticket:null,side:state.side};
@@ -1991,6 +2120,7 @@ async function openTradeModal({mode,I,amt,sl,tp,tp2,px,dur}){
 $('#tmCancel').onclick=tmClose;
 $('#tmModal').addEventListener('click',(e)=>{ if(e.target===$('#tmModal'))tmClose(); });
 $('#tmConfirm').onclick=async ()=>{
+  if(isCloudflareReadonlyMode()){tmClose();toast('Read-only staging','Order execution is disabled on Cloudflare staging.','warn');return;}
   const t=tmCtx; if(!t)return;
   const okBtn=$('#tmConfirm'); okBtn.disabled=true; okBtn.textContent='Sending…';
   const g=$('#tmGate'); g.classList.add('hidden');
@@ -2317,6 +2447,10 @@ function posPl(p){
   return Number.isFinite(v)?v:null; /* a NaN/Infinity here would poison equity + open P&L */
 }
 async function closeWithBroker(p,exitPx,reason){
+  if(isCloudflareReadonlyMode()){
+    toast('Read-only staging','Cloudflare staging cannot close or manage Deriv contracts. Use the Deriv platform directly for any open position; Exness remains PC-local.','warn');
+    return;
+  }
   const I=bySym[p.sym];
   try{
     if(p.broker==='deriv'&&p.flags?.proxy){
@@ -4764,7 +4898,7 @@ applyTheme();
     if(!pat||!appId){ store.del('session'); return; }
     const restore=async()=>{
       try{
-        if(s.brokerMode==='pat_browser'){
+        if(s.brokerMode==='pat_browser'||s.brokerMode==='cloud_readonly'||await isCloudflareHostedApp()){
           await connectDeriv(appId,pat);
         }else{
           const sess=await patConnect(appId,pat);
@@ -4786,22 +4920,31 @@ applyTheme();
     return;
   }
   if(s.mode==='mt5'){
-    const m=readMt5Session();
-    if(!m||!m.login||!m.password||!m.server){ store.del('session'); return; }
-    const err=$('#authErr');
-    if(err){err.textContent='Restoring your Exness connection…';err.style.display='block';}
-    connectMt5(m.url||bridge.localBridgeWs(),m.login,m.password,m.server,m.token||'')
-      .then(()=>{
-        sessLog.add('restored','Exness reconnected from this browser tab');
-        if(err)err.style.display='none';
-        showApp(s.name||'Exness','mt5');
-      })
-      .catch(e=>{
-        state.connections.mt5=false; save();
-        const tab=$('#authTabMt5');if(tab)tab.click();
-        if(err){err.textContent='Could not restore Exness connection: '+String(e.message||e)+'. Your details remain only in this browser tab; check that the PC bridge and MT5 terminal are running, then connect again.';err.style.display='block';}
-        $('#authScreen').classList.remove('hidden');
-      });
+    const restoreMt5=async()=>{
+      if(await isCloudflareHostedApp()){
+        store.del('session'); clearMt5Session();
+        showApp('Live','live');
+        toast('Exness stays local','Cloudflare staging does not read saved Exness credentials or contact the PC bridge. Open the local app at http://127.0.0.1:8788/app.','warn');
+        return;
+      }
+      const m=readMt5Session();
+      if(!m||!m.login||!m.password||!m.server){ store.del('session'); return; }
+      const err=$('#authErr');
+      if(err){err.textContent='Restoring your Exness connection…';err.style.display='block';}
+      connectMt5(m.url||bridge.localBridgeWs(),m.login,m.password,m.server,m.token||'')
+        .then(()=>{
+          sessLog.add('restored','Exness reconnected from this browser tab');
+          if(err)err.style.display='none';
+          showApp(s.name||'Exness','mt5');
+        })
+        .catch(e=>{
+          state.connections.mt5=false; save();
+          const tab=$('#authTabMt5');if(tab)tab.click();
+          if(err){err.textContent='Could not restore Exness connection: '+String(e.message||e)+'. Your details remain only in this browser tab; check that the PC bridge and MT5 terminal are running, then connect again.';err.style.display='block';}
+          $('#authScreen').classList.remove('hidden');
+        });
+    };
+    void restoreMt5();
     return;
   }
   const restoredName=(s.mode==='hfm'||s.name==='HFM')?'Live':(s.name||'Live');
