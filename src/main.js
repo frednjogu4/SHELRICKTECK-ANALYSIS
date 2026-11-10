@@ -23,6 +23,7 @@ import { derivWsAuthorize, derivWsProposal, derivWsBuy, derivWsSell } from './de
 import * as bridge from './bridge.js';
 import { patternAnalyze, patternStudy, renderPatternChart, playbookHTML, performanceHTML } from './patterns.js';
 import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudSignIn, cloudSignUp, cloudSignOut, cloudVerifyTables, cloudList, saveAnalysis, savePatternEvent, saveAlert, saveSignal } from './cloud.js';
+import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
 
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));
@@ -223,6 +224,8 @@ function api(path,{method='GET',body,headers={},timeoutMs=0}={}){
   const request=()=>{
     const sig=(timeoutMs&&typeof AbortSignal!=='undefined'&&AbortSignal.timeout)?AbortSignal.timeout(timeoutMs):undefined;
     const reqHeaders=Object.assign({'content-type':'application/json'},headers);
+    /* The Cloudflare read-only Worker is technical-only and never uses AI keys, so the per-device keys are not transmitted to it. */
+    if(isCloudflareReadonlyMode())removeAiKeyHeaders(reqHeaders);
     if(String(path||'').startsWith('/api/')&&isPrivateBridgePage()){
       const proxyToken=localApiProxyToken();
       if(proxyToken)reqHeaders['x-aurum-local-api-token']=proxyToken;
@@ -249,6 +252,7 @@ function toast(title,msg,kind){
   setTimeout(()=>{ el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(),320); },4200);
 }
 initNotifications(toast);
+initConnectivityNotices({toast});
 
 /* ---------- confirm modal ---------- */
 const confirmBox=document.createElement('div');
@@ -307,7 +311,11 @@ function goto(view){
   state.view=view;
   try{ document.body.setAttribute('data-view',view); }catch(e){}
   $$('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+view));
-  $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===view));
+  $$('.nav-item').forEach(b=>{
+    const current=b.dataset.view===view;
+    b.classList.toggle('active',current);
+    if(current)b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
+  });
   $('#topTitle').textContent=VIEW_META[view][0];
   $('#topCrumb').textContent=VIEW_META[view][1];
   closeSidebar();
@@ -321,8 +329,8 @@ $$('.nav-item').forEach(b=>b.onclick=()=>goto(b.dataset.view));
 document.addEventListener('click',e=>{
   const g=e.target.closest('[data-goto]'); if(g) goto(g.dataset.goto);
 });
-function openSidebar(){ $('#sidebar').classList.add('open'); $('#scrim').classList.add('open'); try{ document.body.style.overflow='hidden'; }catch(e){} }
-function closeSidebar(){ $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('open'); try{ document.body.style.overflow=''; }catch(e){} }
+function openSidebar(){ $('#sidebar').classList.add('open'); $('#scrim').classList.add('open'); $('#hamburger').setAttribute('aria-expanded','true'); try{ document.body.style.overflow='hidden'; }catch(e){} }
+function closeSidebar(){ $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('open'); $('#hamburger').setAttribute('aria-expanded','false'); try{ document.body.style.overflow=''; }catch(e){} }
 $('#hamburger').onclick=openSidebar;
 $('#scrim').onclick=closeSidebar;
 
@@ -4864,9 +4872,9 @@ let lastActHeal=0;
   };
   check(); setInterval(check,60000);
 })();
-if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
-  navigator.serviceWorker.register('/sw.js').catch(() => { /* offline shell unavailable — app still works */ });
-}
+/* The app works without the offline shell, so a failed registration is not
+   fatal — but it is reported on the console instead of being swallowed. */
+registerServiceWorker();
 {
   let deferred = null;
   window.addEventListener('beforeinstallprompt', (e) => {
@@ -5116,3 +5124,7 @@ async function loadPipelineFlow(){
     div.innerHTML='<div class="tiny" style="color:var(--amber)">Pipeline unavailable: '+escHtml(String(e.message||e))+'</div>';
   }
 }
+
+/* Startup marker for the guard script in index.html: reaching this line means
+   the whole module evaluated without throwing. Keep it the LAST statement. */
+window.__aurumAppStarted=true;
