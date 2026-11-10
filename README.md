@@ -86,6 +86,30 @@ routes, no AI engines, no database. Scope and background are in
 Wrangler is a pinned devDependency (`wrangler@4.156.2`), installed by `npm ci`.
 Use the npm scripts or `npx wrangler`; no global install is needed.
 
+### One workspace, two places (cloud + PC)
+
+The Cloudflare site and the PC app are the same application build. The page
+works out where it is running and switches on only what that place can do:
+
+| | Cloud viewer (Cloudflare) | PC app (local) |
+|---|---|---|
+| Open it | the `*.workers.dev` address, from any device | `http://127.0.0.1:8788/app` on the trading PC |
+| Live prices | built-in watchlist from the public Deriv feed, straight into the browser (no account, no token) | the same feed, plus Exness/MT5 quotes once the bridge is connected |
+| Signals and analysis | the Worker, from Deriv public candles (Yahoo daily data for index CFDs), labelled `AURUM cloud analysis` | Exness/MT5 data first; public sources only as a labelled fallback |
+| Orders, accounts, Exness/MT5 | not available: hidden or blocked in the page and refused by the Worker (`403`) | available |
+| Top bar | `Cloud · view only` | `proxy · …` (state of the local Deriv proxy) |
+| Settings → About → Mode | `Cloud viewer · read-only` | `Full workspace` |
+
+Both places show real data only. The feed label says `Deriv live feed` in the
+cloud viewer only while ticks are arriving; with an open connection and no
+ticks yet it says `Deriv feed · connected · waiting for ticks`, and when the
+browser cannot open the feed it says `Deriv feed · unavailable` (hover the
+label for the browser's reason). Prices then show `—`; nothing is estimated.
+
+The cloud viewer cannot reach the PC, the MT5 bridge or any broker account, and
+it is not meant to. Use it to watch prices and signals away from the desk and
+the PC app to act on them.
+
 ### Before any deployment
 
 ```bash
@@ -157,6 +181,24 @@ dashboard.
   version from `engines.node` in `package.json`, `.nvmrc` or `.node-version`.
   The repository deliberately has none of these, so adding one also changes
   the Node version of a Railway deployment.
+
+## Continuous integration
+
+`.github/ci.yml` is the GitHub Actions workflow for this repository. It runs
+on pull requests and on pushes to `main`, and it only verifies — it never
+deploys and needs no secrets:
+
+- Node 22 and 24: `npm ci`, `npm audit` (reported as a warning), then
+  `npm run verify` (build → smoke and unit tests → the Worker inside workerd →
+  `wrangler deploy --dry-run`).
+- Python 3.11 and 3.13: a syntax check and the PC bridge unit tests
+  (`python -m unittest discover -s tests -p "test_*.py"`). They use only the
+  standard library; no conda environment is involved.
+
+GitHub runs a workflow only from `.github/workflows/`. If the file is still at
+`.github/ci.yml`, open it on github.com, choose **Edit**, change the file name
+to `workflows/ci.yml` (so the path becomes `.github/workflows/ci.yml`) and
+commit.
 
 ## Environment variables and secrets
 
