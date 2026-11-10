@@ -100,11 +100,14 @@ works out where it is running and switches on only what that place can do:
 | Top bar | `Cloud · view only` | `proxy · …` (state of the local Deriv proxy) |
 | Settings → About → Mode | `Cloud viewer · read-only` | `Full workspace` |
 
-Both places show real data only. The feed label says `Deriv live feed` in the
-cloud viewer only while ticks are arriving; with an open connection and no
-ticks yet it says `Deriv feed · connected · waiting for ticks`, and when the
-browser cannot open the feed it says `Deriv feed · unavailable` (hover the
-label for the browser's reason). Prices then show `—`; nothing is estimated.
+Both places show real data only. The feed is reported as live only after a
+valid tick has arrived: the cloud viewer then shows
+`Deriv public feed · receiving ticks` and the PC app `Deriv live feed`. Until
+the first tick the label stays at `Deriv feed · connecting…`; after 30 seconds
+without a tick it changes to `Deriv feed · no recent ticks (stale)`; and when
+the browser cannot open the feed at all it says `Deriv feed · unavailable`
+(hover the label for the browser's reason). A market that has not received a
+price shows `—`; nothing is estimated.
 
 The cloud viewer cannot reach the PC, the MT5 bridge or any broker account, and
 it is not meant to. Use it to watch prices and signals away from the desk and
