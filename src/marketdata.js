@@ -67,6 +67,8 @@ let started = false;
 let reconnectT = null;
 let backoff = 1000;
 let watchdog = null;
+let healthTimer = null;
+let lastValidTickAt = 0;
 let openReqId = 1;
 let defaultSubscriptionsEnabled = true;
 const dynamicTickSubs = new Map(); // Deriv catalogue code -> { callbacks:Set, subscriptionId, reqId, requested }
@@ -93,7 +95,9 @@ function deliverDynamicTick(code, tick, subscription) {
   if (!sub) return;
   if (subscription && subscription.id != null) sub.subscriptionId = subscription.id;
   const quoteValue = Number(tick && tick.quote);
-  if (!Number.isFinite(quoteValue)) return;
+  if (!Number.isFinite(quoteValue) || quoteValue <= 0) return;
+  lastValidTickAt = Date.now();
+  setStatus('live');
   const epoch = Number(tick.epoch) || 0;
   const data = { code, quote: quoteValue, epoch, time: epoch * 1000, status: 'live' };
   sub.callbacks.forEach((cb) => { try { cb(data); } catch (_e) { /* noop */ } });
@@ -134,6 +138,8 @@ function setStatus(s, detail) {
 }
 
 export function feedStatus() { return status; }
+/** Browser receipt time of the most recent valid public tick (0 = none received). */
+export function lastTickAt() { return lastValidTickAt; }
 /** Hosted read-only deployments can opt out of the built-in watchlist stream;
  * only catalogue symbols explicitly selected by the user will be subscribed. */
 export function setDefaultSubscriptionsEnabled(enabled) {
@@ -152,6 +158,9 @@ export function quote(sym) {
 }
 
 function handleTick(sym, px, time) {
+  if (!Number.isFinite(Number(px)) || Number(px) <= 0) return;
+  lastValidTickAt = Date.now();
+  setStatus('live');
   let q = prices[sym];
   if (!q) {
     q = prices[sym] = { px, prev: px, open: px, hist: [], time };
@@ -167,6 +176,7 @@ function handleTick(sym, px, time) {
 
 function close(code) {
   if (watchdog) { clearInterval(watchdog); watchdog = null; }
+  if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
   if (ws) {
     try { ws.onclose = null; ws.close(); } catch (e) { /* noop */ }
     ws = null;
@@ -244,7 +254,10 @@ function connect() {
     watchdog = setInterval(() => {
       if (Date.now() - lastMsg > 30000) scheduleReconnect('watchdog');
     }, 10000);
-    setStatus('live');
+    if (healthTimer) clearInterval(healthTimer);
+    healthTimer = setInterval(() => {
+      if (status === 'live' && lastValidTickAt > 0 && Date.now() - lastValidTickAt > 30000) setStatus('stale', 'no valid tick received in the last 30 seconds');
+    }, 5000);
   };
   ws.onclose = () => { if (started) scheduleReconnect('closed'); };
   ws.onerror = () => { /* onclose follows */ };
