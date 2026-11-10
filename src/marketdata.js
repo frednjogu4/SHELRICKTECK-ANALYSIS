@@ -255,8 +255,11 @@ function connect() {
       if (Date.now() - lastMsg > 30000) scheduleReconnect('watchdog');
     }, 10000);
     if (healthTimer) clearInterval(healthTimer);
+    const openedAt = Date.now();
     healthTimer = setInterval(() => {
       if (status === 'live' && lastValidTickAt > 0 && Date.now() - lastValidTickAt > 30000) setStatus('stale', 'no valid tick received in the last 30 seconds');
+      /* An open socket that never delivers a price must not stay "connecting" for ever. */
+      else if (status === 'connecting' && Date.now() - openedAt > 30000) setStatus('stale', 'connected, but no valid tick has arrived since the connection opened');
     }, 5000);
   };
   ws.onclose = () => { if (started) scheduleReconnect('closed'); };

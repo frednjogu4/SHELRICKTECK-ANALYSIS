@@ -889,13 +889,14 @@ function updateFeedPill(s){
   const pill=$('#feedPill');
   if(pill){
     if(s==='unavailable')pill.title='This browser could not open the public Deriv price feed'+(feedStatusDetail?' ('+feedStatusDetail.slice(0,140)+')':'')+'. Prices show “—”; nothing is estimated.';
+    else if(s==='stale')pill.title='The public Deriv price feed is not delivering ticks'+(feedStatusDetail?' ('+feedStatusDetail.slice(0,140)+')':'')+'. Prices on screen may be old; nothing is estimated.';
     else pill.removeAttribute('title');
   }
 }
 function wireFeed(){
   if(feedWired)return; feedWired=true;
   feed.onStatus((s,detail)=>{
-    feedStatusDetail=s==='unavailable'?String(detail||''):'';
+    feedStatusDetail=(s==='unavailable'||s==='stale')?String(detail||''):'';
     updateFeedPill(s);
     if(s==='live'){
       if(!isCloudflareReadonlyMode()&&!feedLiveAnnounced){ feedLiveAnnounced=true; notify('Live feed connected','Deriv real-time prices are streaming.','ok',{tag:'feed'}); }
