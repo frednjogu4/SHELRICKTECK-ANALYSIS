@@ -718,7 +718,7 @@ function syncDerivKind(){
 async function configureCloudflareReadonlyUi(){
   if(!(await isCloudflareHostedApp()))return;
   cloudflareReadonlyUi=true; derivKind='classic'; syncDerivKind();
-  feed.setDefaultSubscriptionsEnabled(false); /* staging streams no built-in universe; catalogue selections alone subscribe */
+  feed.setDefaultSubscriptionsEnabled(true); /* keep the dashboard's verified Deriv instruments streaming; catalogue follows add only selected extra markets */
   const patTab=$('#derivKindPat'); if(patTab)patTab.hidden=true;
   const mt5Tab=$('#authTabMt5'); if(mt5Tab){mt5Tab.hidden=true;mt5Tab.disabled=true;mt5Tab.title='Exness is available only in the PC-local app; Cloudflare cannot connect to its bridge.';}
   $('#exnessForm')?.querySelectorAll('input,button').forEach((el)=>{el.disabled=true;});
@@ -863,13 +863,15 @@ function updateFeedPill(s){
     idle:['Deriv feed · idle','off'],
     connecting:['Deriv feed · connecting…','off'],
     live:['Deriv live feed','live'],
+    stale:['Deriv feed · no recent ticks (stale)','off'],
     reconnecting:['Deriv feed · reconnecting…','off'],
     unavailable:['Deriv feed · unavailable','off'],
     stopped:['Deriv feed · stopped','off']
   };
   if(isCloudflareReadonlyMode()&&s==='live'){
-    const fresh=[...liveDerivQuotes.values()].some((q)=>q&&q.status==='live'&&Date.now()-Number(q.time||0)<30000);
-    map.live=fresh?['Deriv live feed · selected quotes','live']:(liveDerivCodes.size?['Deriv feed · waiting for selected tick','off']:['Deriv feed · ready · no markets selected','off']);
+    const lastTick=feed.lastTickAt();
+    const fresh=lastTick>0&&Date.now()-lastTick<30000;
+    map.live=fresh?['Deriv public feed · receiving ticks','live']:['Deriv feed · waiting for first tick','off'];
   }
   const [label,cls]=map[s]||map.idle;
   if(txt)txt.textContent=label;
