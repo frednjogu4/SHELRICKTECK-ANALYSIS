@@ -13,7 +13,7 @@
 
 import { createServer } from 'http';
 import { readFile, stat } from 'fs/promises';
-import { join, extname, normalize } from 'path';
+import { join, extname, normalize, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
@@ -74,7 +74,9 @@ const server = createServer(async (req, res) => {
 
   /* static site: single file for everything else */
   let p = normalize(join(DIST, url));
-  if (!p.startsWith(DIST)) { res.writeHead(403); return res.end('forbidden'); }
+  /* Containment: the path must be dist/ itself or inside it. A bare prefix
+     test also accepted sibling folders such as dist-backup/ or dist.old/. */
+  if (p !== DIST && !p.startsWith(DIST + sep)) { res.writeHead(403); return res.end('forbidden'); }
   let out = await fileResponse(p);
   if (!out && !extname(p)) out = await fileResponse(join(DIST, 'index.html')); // SPA fallback
   if (!out) {
