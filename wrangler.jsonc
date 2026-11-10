@@ -5,6 +5,22 @@
   "compatibility_date": "2026-09-28",
   "workers_dev": true,
   "preview_urls": true,
+  // Not a compiler step: this only checks that dist/ is a complete UI build
+  // (npm run build) and makes `wrangler dev` / `wrangler deploy` stop if it is not.
+  "build": {
+    "command": "node scripts/verify-dist.mjs",
+    "watch_dir": "dist"
+  },
+  // Keep the Worker's own structured error logs (console.error in
+  // cloudflare/platform.js). Per-request invocation logs stay off because they
+  // record request metadata, and the browser may attach client-held API keys
+  // as x-ai-* headers that this Worker never needs.
+  "observability": {
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  // Both bindings are required: provider-backed routes answer 503 without them.
+  // namespace_id values are numeric identifiers, not secrets; they must be
+  // unique within the Cloudflare account.
   "ratelimits": [
     {
       "name": "AURUM_SIGNAL_LIMITER",
@@ -20,7 +36,12 @@
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*"],
-    "not_found_handling": "single-page-application"
+    // /api and everything below it always run the Worker, never a static file.
+    "run_worker_first": ["/api", "/api/*"],
+    // A path that matches no file is handed to the Worker, which serves the
+    // app shell for plain app paths (/app) and a real 404 for everything else.
+    // With "single-page-application" every miss, including /missing.js and
+    // /.env, was answered with index.html and status 200.
+    "not_found_handling": "none"
   }
 }

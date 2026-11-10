@@ -5,3 +5,15 @@ dist/
 *.log
 server/data/
 __pycache__/
+
+# Wrangler local state, caches and local-only variables
+.wrangler/
+.dev.vars
+.dev.vars.*
+
+# Any other environment file (the committed template stays tracked)
+.env.*
+!.env.example
+
+# Local bridge credential generated on the PC; never commit it
+bridge_token.txt
