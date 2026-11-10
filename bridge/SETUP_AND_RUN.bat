@@ -139,8 +139,8 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo        Creating the desktop icon "Fredrick TRADING (local app)" -- ALWAYS use that one.
-powershell -NoProfile -Command "$w=New-Object -ComObject WScript.Shell;$s=$w.CreateShortcut([Environment]::GetFolderPath('Desktop')+'\Fredrick TRADING (local app).lnk');$s.TargetPath='%~dp0AUTO_START.bat';$s.WorkingDirectory='%~dp0';$s.Save()" >nul 2>&1
+echo        Creating the desktop icon "Fredrick TRADING (local app)" -- use this one-click launcher.
+powershell -NoProfile -Command "$w=New-Object -ComObject WScript.Shell;$s=$w.CreateShortcut([Environment]::GetFolderPath('Desktop')+'\Fredrick TRADING (local app).lnk');$s.TargetPath='%~dp0..\START_ALL_LOCAL.bat';$s.WorkingDirectory='%~dp0..';$s.Save()" >nul 2>&1
 echo        Installing per-user auto-start (bridge + app open when Windows signs in)...
 powershell -NoProfile -Command "$startup=[Environment]::GetFolderPath('Startup');$shell=New-Object -ComObject WScript.Shell;$s=$shell.CreateShortcut((Join-Path $startup 'Fredrick TRADING AutoStart.lnk'));$s.TargetPath='%~dp0AUTO_START.bat';$s.WorkingDirectory='%~dp0';$s.Save()" >nul 2>&1
 if errorlevel 1 (
