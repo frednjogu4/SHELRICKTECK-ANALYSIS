@@ -12,6 +12,10 @@ import { runDeterministicAnalysis, votesSummary, waitReason } from '../server/li
 import { localDecision } from '../server/lib/localdecision.js';
 import { indexDailySignal, parseYahooChart } from '../server/lib/indices.js';
 import { rsi, sma } from '../server/lib/indicators.js';
+import {
+  HttpError, MAX_JSON_BODY_BYTES, WORKER_SECURITY_HEADERS, allowHeader, createBoundedCache,
+  describeError, isAppShellPath, logEvent, readJsonObject, withoutBody
+} from './platform.js';
 
 const DERIV_PUBLIC_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
 const GRANULARITIES = new Set([60, 300, 3600]);
@@ -21,11 +25,34 @@ const INDEX_YAHOO = Object.freeze({
   US30: '^DJI', NAS100: '^NDX', US100: '^NDX', SPX500: '^GSPC',
   GER40: '^GDAXI', UK100: '^FTSE'
 });
+/* Every route this Worker implements, with the only methods it accepts.
+   Anything else under /api is answered with 403 (blocked namespace), 405
+   (known route, wrong method) or 501 (route not migrated). */
+const API_ROUTES = new Map([
+  ['/api/health', ['GET']],
+  ['/api/signals/usage', ['GET']],
+  ['/api/signals/history', ['GET']],
+  ['/api/markets/deriv', ['GET']],
+  ['/api/signals/scan', ['POST']],
+  ['/api/signals/analyze', ['POST']],
+  ['/api/markets/deriv/candles', ['POST']],
+  ['/api/markets/deriv/tick', ['POST']],
+  ['/api/history/candles', ['POST']]
+]);
+/* Broker, account, order and risk namespaces. They are refused first, for
+   every method, so no later route can ever be reached underneath them. */
+const BLOCKED_API_NAMESPACES = ['/api/deriv', '/api/risk', '/api/ctl'];
+/* Upper bound on cached candle responses kept in one isolate's memory. */
+const CANDLE_CACHE_MAX_ENTRIES = 128;
+const RATE_LIMIT_PERIOD_SECONDS = 60;
+const COMMON_HEADERS = {
+  'cache-control': 'no-store',
+  ...WORKER_SECURITY_HEADERS,
+  'x-aurum-runtime': 'cloudflare-readonly'
+};
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
-  'cache-control': 'no-store',
-  'x-content-type-options': 'nosniff',
-  'x-aurum-runtime': 'cloudflare-readonly'
+  ...COMMON_HEADERS
 };
 
 function responseJson(value, status = 200, extraHeaders = {}) {
@@ -33,6 +60,18 @@ function responseJson(value, status = 200, extraHeaders = {}) {
     status,
     headers: { ...JSON_HEADERS, ...extraHeaders }
   });
+}
+
+function responseText(text, status = 200, extraHeaders = {}) {
+  return new Response(text, {
+    status,
+    headers: { 'content-type': 'text/plain; charset=utf-8', ...COMMON_HEADERS, ...extraHeaders }
+  });
+}
+
+function isBlockedApiPath(pathname) {
+  const path = String(pathname || '').toLowerCase();
+  return BLOCKED_API_NAMESPACES.some((prefix) => path === prefix || path.startsWith(prefix + '/'));
 }
 
 function providerError(message, status = 502) {
@@ -105,16 +144,6 @@ function cleanCode(value) {
   return CODE_RE.test(code) ? code : '';
 }
 
-function parseJsonBody(request, maxBytes = 65536) {
-  const contentLength = Number(request.headers.get('content-length') || 0);
-  if (contentLength > maxBytes) throw new Error('request_too_large');
-  return request.text().then((text) => {
-    if (text.length > maxBytes) throw new Error('request_too_large');
-    try { return text ? JSON.parse(text) : {}; }
-    catch (_) { throw new Error('invalid_json'); }
-  });
-}
-
 function publicSymbol(code, row = {}) {
   return {
     code: String(code || ''),
@@ -138,10 +167,11 @@ function createReadOnlyWorker({
   requestImpl,
   fetchImpl = (...args) => fetch(...args),
   WebSocketImpl = globalThis.WebSocket,
-  now = () => Date.now()
+  now = () => Date.now(),
+  log = logEvent
 } = {}) {
   const derivRequest = requestImpl || makeDerivRequest(WebSocketImpl);
-  const cache = new Map();
+  const cache = createBoundedCache(CANDLE_CACHE_MAX_ENTRIES);
   const yahooCache = new Map();
   let activeSymbolsCache = { at: 0, rows: null };
 
@@ -255,23 +285,57 @@ function createReadOnlyWorker({
   async function enforceRateLimit(env, request, bindingName, scope) {
     const limiter = env && env[bindingName];
     if (!limiter || typeof limiter.limit !== 'function') {
+      /* Fail closed: a public, provider-backed route must never run unmetered. */
+      log('error', 'rate_limiter_not_configured', { binding: bindingName, scope });
       return responseJson({ error: 'rate_limiter_not_configured', detail: 'The Cloudflare rate-limit binding is required for this public API.' }, 503);
     }
     const ip = request.headers.get('cf-connecting-ip') || 'local-dev';
     try {
       const result = await limiter.limit({ key: 'aurum:cloudflare-staging:' + scope + ':' + ip });
-      return result && result.success ? null : responseJson({ error: 'rate_limited', detail: 'Too many requests; wait one minute and retry.' }, 429);
-    } catch (_) {
-      return responseJson({ error: 'rate_limiter_unavailable' }, 503);
+      return result && result.success ? null : responseJson(
+        { error: 'rate_limited', detail: 'Too many requests; wait one minute and retry.' },
+        429, { 'retry-after': String(RATE_LIMIT_PERIOD_SECONDS) }
+      );
+    } catch (e) {
+      /* Fail closed as well, but record why — a broken limiter is an outage. */
+      log('error', 'rate_limiter_unavailable', { binding: bindingName, scope, ...describeError(e) });
+      return responseJson({ error: 'rate_limiter_unavailable', detail: 'Rate limiting is temporarily unavailable; retry shortly.' }, 503, { 'retry-after': '30' });
     }
   }
 
-  async function handleApi(request, env) {
-    const url = new URL(request.url);
+  /* Shared request-body handling for the POST routes: size, media type and
+     JSON-shape problems become 413/415/400; anything unexpected is rethrown
+     to the top-level handler so it is logged and answered with a 500. */
+  async function readBody(request) {
+    try {
+      return { body: await readJsonObject(request, MAX_JSON_BODY_BYTES) };
+    } catch (e) {
+      if (!(e instanceof HttpError)) throw e;
+      return { rejected: responseJson(e.detail ? { error: e.code, detail: e.detail } : { error: e.code }, e.status, e.headers) };
+    }
+  }
+
+  async function handleApi(request, env, url) {
     const origin = request.headers.get('origin');
     if (origin && origin !== url.origin) return responseJson({ error: 'cross_origin_not_allowed' }, 403);
 
-    if (url.pathname === '/api/health' && request.method === 'GET') {
+    if (isBlockedApiPath(url.pathname)) {
+      return responseJson({ error: 'broker_execution_routes_disabled', detail: 'This Cloudflare Worker is analysis-only; broker/account/order routes are not implemented.' }, 403);
+    }
+
+    const allowedMethods = API_ROUTES.get(url.pathname);
+    if (!allowedMethods) return responseJson({ error: 'cloudflare_route_not_migrated' }, 501);
+    const allow = allowHeader(allowedMethods);
+    /* Same-origin OPTIONS only (a foreign Origin was refused above). No
+       Access-Control-Allow-* header is ever sent, so cross-origin reads stay impossible. */
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...COMMON_HEADERS, allow } });
+    /* HEAD is answered as GET with the body removed by the caller. */
+    const method = request.method === 'HEAD' && allowedMethods.includes('GET') ? 'GET' : request.method;
+    if (!allowedMethods.includes(method)) {
+      return responseJson({ error: 'method_not_allowed', detail: 'Use ' + allowedMethods.join(' or ') + ' for this route.' }, 405, { allow });
+    }
+
+    if (url.pathname === '/api/health' && method === 'GET') {
       return responseJson({
         ok: true, runtime: 'cloudflare-readonly', build: 'read-only-signal-adapter-v1',
         engines: { claude: false, chatgpt: false, perplexity: false },
@@ -283,17 +347,16 @@ function createReadOnlyWorker({
       });
     }
 
-    if (url.pathname === '/api/signals/usage' && request.method === 'GET') {
+    if (url.pathname === '/api/signals/usage' && method === 'GET') {
       return responseJson({ cost: 0, cap: 0, day: new Date(now()).toISOString().slice(0, 10), mode: 'technical-only' });
     }
-    if (url.pathname === '/api/signals/history' && request.method === 'GET') return responseJson({ signals: [] });
+    if (url.pathname === '/api/signals/history' && method === 'GET') return responseJson({ signals: [] });
 
-    if (url.pathname === '/api/signals/scan' && request.method === 'POST') {
+    if (url.pathname === '/api/signals/scan' && method === 'POST') {
       const limited = await enforceRateLimit(env, request, 'AURUM_SIGNAL_LIMITER', 'signals-scan');
       if (limited) return limited;
-      let body;
-      try { body = await parseJsonBody(request); }
-      catch (e) { return responseJson({ error: String(e.message) }, e.message === 'request_too_large' ? 413 : 400); }
+      const { body, rejected } = await readBody(request);
+      if (rejected) return rejected;
       const requested = Array.isArray(body.symbols) ? body.symbols.slice(0, 14) : [];
       const symbols = [...new Set(requested.map((x) => cleanSymbol(x)).filter(Boolean))];
       if (!symbols.length) return responseJson({ error: 'symbols_required', detail: 'Provide one or more supported AURUM market symbols.' }, 400);
@@ -301,12 +364,11 @@ function createReadOnlyWorker({
       return responseJson({ results: results.filter(Boolean), feed: 'deriv-public', analysis_only: true, ts: now() });
     }
 
-    if (url.pathname === '/api/signals/analyze' && request.method === 'POST') {
+    if (url.pathname === '/api/signals/analyze' && method === 'POST') {
       const limited = await enforceRateLimit(env, request, 'AURUM_SIGNAL_LIMITER', 'signals-analyze');
       if (limited) return limited;
-      let body;
-      try { body = await parseJsonBody(request); }
-      catch (e) { return responseJson({ error: String(e.message) }, e.message === 'request_too_large' ? 413 : 400); }
+      const { body, rejected } = await readBody(request);
+      if (rejected) return rejected;
       const symbol = cleanSymbol(body.symbol);
       if (!symbol) return responseJson({ error: 'invalid_symbol' }, 400);
       if (body.candleSets != null || body.dataSource === 'Exness MT5 local candles') {
@@ -339,19 +401,18 @@ function createReadOnlyWorker({
       } catch (e) { return providerError(e?.message || e); }
     }
 
-    if (url.pathname === '/api/markets/deriv' && request.method === 'GET') {
+    if (url.pathname === '/api/markets/deriv' && method === 'GET') {
       const limited = await enforceRateLimit(env, request, 'AURUM_MARKET_LIMITER', 'markets-catalog');
       if (limited) return limited;
       try { return responseJson({ markets: await fetchActiveSymbols(), source: 'Deriv public active_symbols', data_status: 'live_catalogue', ts: now() }); }
       catch (e) { return responseJson({ error: 'deriv_catalog_unavailable', detail: String(e?.message || e).slice(0, 120) }, 502); }
     }
 
-    if ((url.pathname === '/api/markets/deriv/candles' || url.pathname === '/api/markets/deriv/tick' || url.pathname === '/api/history/candles') && request.method === 'POST') {
+    if ((url.pathname === '/api/markets/deriv/candles' || url.pathname === '/api/markets/deriv/tick' || url.pathname === '/api/history/candles') && method === 'POST') {
       const limited = await enforceRateLimit(env, request, 'AURUM_MARKET_LIMITER', url.pathname === '/api/history/candles' ? 'history-candles' : 'markets-data');
       if (limited) return limited;
-      let body;
-      try { body = await parseJsonBody(request); }
-      catch (e) { return responseJson({ error: String(e.message) }, e.message === 'request_too_large' ? 413 : 400); }
+      const { body, rejected } = await readBody(request);
+      if (rejected) return rejected;
       if (url.pathname === '/api/history/candles') {
         const symbol = cleanSymbol(body.sym);
         const granularity = Number(body.granularity);
@@ -383,18 +444,52 @@ function createReadOnlyWorker({
       }
     }
 
-    if (url.pathname.startsWith('/api/deriv/') || url.pathname.startsWith('/api/risk/') || url.pathname.startsWith('/api/ctl/')) {
-      return responseJson({ error: 'broker_execution_routes_disabled', detail: 'This Cloudflare Worker is analysis-only; broker/account/order routes are not implemented.' }, 403);
-    }
+    /* Unreachable while API_ROUTES and the handlers above stay in step; kept
+       so a route added to the table without a handler fails loudly, not open. */
     return responseJson({ error: 'cloudflare_route_not_migrated' }, 501);
   }
 
+  /* Non-API requests. Files that exist in dist/ are served by Cloudflare's
+     asset layer before this Worker runs, so a request arriving here matched
+     no static file: plain app paths such as /app get the single-page shell,
+     everything else gets a real 404 instead of a 200 HTML page. */
+  async function serveApp(request, env, url) {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return responseText('Method not allowed', 405, { allow: 'GET, HEAD' });
+    }
+    const assets = env.ASSETS;
+    if (!assets || typeof assets.fetch !== 'function') {
+      log('error', 'assets_binding_missing', { path: url.pathname });
+      return responseJson({ error: 'assets_unavailable', detail: 'The static asset binding is not configured for this deployment.' }, 503);
+    }
+    if (!isAppShellPath(url.pathname)) return responseText('Not found', 404);
+    const shell = await assets.fetch(new Request(new URL('/', url), { method: request.method, headers: request.headers }));
+    /* 2xx covers a full (200) or partial (206, Range request) page; 304 is a
+       cache revalidation. Anything else means the build has no index.html. */
+    if (shell.ok || shell.status === 304) return shell;
+    log('error', 'app_shell_unavailable', { path: url.pathname, status: shell.status });
+    return responseJson({ error: 'app_shell_unavailable', detail: 'The app shell is missing from this deployment. Rebuild the UI assets and redeploy.' }, 503);
+  }
+
   return {
-    async fetch(request, env = {}, ctx) {
-      const url = new URL(request.url);
-      if (url.pathname.startsWith('/api/')) return handleApi(request, env);
-      if (env.ASSETS && typeof env.ASSETS.fetch === 'function') return env.ASSETS.fetch(request);
-      return new Response('AURUM Cloudflare Worker is running. Build the UI assets to serve the app.', { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+    async fetch(request, env, ctx) {
+      const bindings = env || {};
+      let path = '';
+      try {
+        const url = new URL(request.url);
+        path = url.pathname;
+        if (path === '/api' || path.startsWith('/api/')) {
+          const response = await handleApi(request, bindings, url);
+          return request.method === 'HEAD' ? withoutBody(response) : response;
+        }
+        return await serveApp(request, bindings, url);
+      } catch (e) {
+        /* Last line of defence: never leak a stack trace or a platform error
+           page, and never fail silently. Only the method, path and a short
+           error description are logged — no headers, query string or body. */
+        log('error', 'unhandled_exception', { method: request.method, path, ...describeError(e) });
+        return responseJson({ error: 'internal_error', detail: 'Unexpected server error. Retry shortly.' }, 500);
+      }
     }
   };
 }

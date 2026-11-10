@@ -23,6 +23,7 @@ import { derivWsAuthorize, derivWsProposal, derivWsBuy, derivWsSell } from './de
 import * as bridge from './bridge.js';
 import { patternAnalyze, patternStudy, renderPatternChart, playbookHTML, performanceHTML } from './patterns.js';
 import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudSignIn, cloudSignUp, cloudSignOut, cloudVerifyTables, cloudList, saveAnalysis, savePatternEvent, saveAlert, saveSignal } from './cloud.js';
+import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
 
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));
@@ -223,6 +224,8 @@ function api(path,{method='GET',body,headers={},timeoutMs=0}={}){
   const request=()=>{
     const sig=(timeoutMs&&typeof AbortSignal!=='undefined'&&AbortSignal.timeout)?AbortSignal.timeout(timeoutMs):undefined;
     const reqHeaders=Object.assign({'content-type':'application/json'},headers);
+    /* The Cloudflare read-only Worker is technical-only and never uses AI keys, so the per-device keys are not transmitted to it. */
+    if(isCloudflareReadonlyMode())removeAiKeyHeaders(reqHeaders);
     if(String(path||'').startsWith('/api/')&&isPrivateBridgePage()){
       const proxyToken=localApiProxyToken();
       if(proxyToken)reqHeaders['x-aurum-local-api-token']=proxyToken;
@@ -249,6 +252,7 @@ function toast(title,msg,kind){
   setTimeout(()=>{ el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(),320); },4200);
 }
 initNotifications(toast);
+initConnectivityNotices({toast});
 
 /* ---------- confirm modal ---------- */
 const confirmBox=document.createElement('div');
@@ -307,7 +311,11 @@ function goto(view){
   state.view=view;
   try{ document.body.setAttribute('data-view',view); }catch(e){}
   $$('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+view));
-  $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===view));
+  $$('.nav-item').forEach(b=>{
+    const current=b.dataset.view===view;
+    b.classList.toggle('active',current);
+    if(current)b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
+  });
   $('#topTitle').textContent=VIEW_META[view][0];
   $('#topCrumb').textContent=VIEW_META[view][1];
   closeSidebar();
@@ -321,8 +329,8 @@ $$('.nav-item').forEach(b=>b.onclick=()=>goto(b.dataset.view));
 document.addEventListener('click',e=>{
   const g=e.target.closest('[data-goto]'); if(g) goto(g.dataset.goto);
 });
-function openSidebar(){ $('#sidebar').classList.add('open'); $('#scrim').classList.add('open'); try{ document.body.style.overflow='hidden'; }catch(e){} }
-function closeSidebar(){ $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('open'); try{ document.body.style.overflow=''; }catch(e){} }
+function openSidebar(){ $('#sidebar').classList.add('open'); $('#scrim').classList.add('open'); $('#hamburger').setAttribute('aria-expanded','true'); try{ document.body.style.overflow='hidden'; }catch(e){} }
+function closeSidebar(){ $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('open'); $('#hamburger').setAttribute('aria-expanded','false'); try{ document.body.style.overflow=''; }catch(e){} }
 $('#hamburger').onclick=openSidebar;
 $('#scrim').onclick=closeSidebar;
 
@@ -857,6 +865,7 @@ const signOutBtn=$('#signOutBtn'); if(signOutBtn) signOutBtn.onclick=signOut;
    LIVE FEED (Deriv public WebSocket) + ticker
    ================================================================ */
 let feedWired=false, tickN=0, feedLiveAnnounced=false;
+let feedStatusDetail='', feedDownExplained=false;
 function updateFeedPill(s){
   const txt=$('#feedText'), dot=$('#feedDot');
   const map={
@@ -877,15 +886,27 @@ function updateFeedPill(s){
   if(txt)txt.textContent=label;
   if(dot)dot.className='dot '+(cls==='live'?'live':'off');
   const about=$('#aboutFeed'); if(about)about.textContent=label;
+  const pill=$('#feedPill');
+  if(pill){
+    if(s==='unavailable')pill.title='This browser could not open the public Deriv price feed'+(feedStatusDetail?' ('+feedStatusDetail.slice(0,140)+')':'')+'. Prices show “—”; nothing is estimated.';
+    else if(s==='stale')pill.title='The public Deriv price feed is not delivering ticks'+(feedStatusDetail?' ('+feedStatusDetail.slice(0,140)+')':'')+'. Prices on screen may be old; nothing is estimated.';
+    else pill.removeAttribute('title');
+  }
 }
 function wireFeed(){
   if(feedWired)return; feedWired=true;
-  feed.onStatus(s=>{
+  feed.onStatus((s,detail)=>{
+    feedStatusDetail=(s==='unavailable'||s==='stale')?String(detail||''):'';
     updateFeedPill(s);
     if(s==='live'){
       if(!isCloudflareReadonlyMode()&&!feedLiveAnnounced){ feedLiveAnnounced=true; notify('Live feed connected','Deriv real-time prices are streaming.','ok',{tag:'feed'}); }
+      /* Cloud viewer: the feed reports 'live' only after a valid tick, so this is never a connection-only notice. */
+      else if(isCloudflareReadonlyMode()&&!feedLiveAnnounced){ feedLiveAnnounced=true; notify('Live prices streaming','Public Deriv quotes are streaming directly in this browser. View only: no account is connected.','ok',{tag:'feed'}); }
     }else if(s==='unavailable'&&feedLiveAnnounced){
       notify('Feed unavailable','Live Deriv prices unreachable — quotes show “—”.','err',{tag:'feed'});
+    }else if(s==='unavailable'&&isCloudflareReadonlyMode()&&!feedDownExplained){
+      feedDownExplained=true;
+      toast('Live prices unavailable','This browser could not open the public Deriv price feed, so prices show “—”. Nothing is estimated. Try reloading, another browser or another network.','warn');
     }
   });
   feed.onTick((sym,q)=>{
@@ -1083,6 +1104,11 @@ function renderOvDaily(){
 /* ================================================================
    SIGNAL SCANNER (real technical scan on live candles, $0 AI)
    ================================================================ */
+/* Cloud viewer: there is no local API to start, so a failed request is explained as what it is. */
+function cloudAnalysisDownHtml(e){
+  const msg=String(e&&e.message||e||'').slice(0,160);
+  return 'The AURUM cloud analysis service did not return live data'+(msg&&msg!=='fetch unavailable'?' ('+escHtml(msg)+')':'')+'. Nothing is estimated. Try again in a minute.';
+}
 async function scanSignals(){
   const grid=$('#sigGrid');
   if(!grid)return;
@@ -1104,7 +1130,7 @@ async function scanSignals(){
     if(state.view==='overview') renderOverview();
   }catch(e){
     state.scanStatus='error';
-    grid.innerHTML='<div class="empty"><b>Live scan unavailable</b>'+(String(e.message||e)==='fetch unavailable'?'The API server is not running.':'Could not reach the local API. Start it with <code>npm run api</code>.')+'</div>';
+    grid.innerHTML='<div class="empty"><b>Live scan unavailable</b>'+(isCloudflareReadonlyMode()?cloudAnalysisDownHtml(e):(String(e.message||e)==='fetch unavailable'?'The API server is not running.':'Could not reach the local API. Start it with <code>npm run api</code>.'))+'</div>';
     $('#sigStamp').textContent='Scan failed '+timeStr(Date.now());
     const c=$('#navSigCount'); if(c)c.textContent='0';
   }
@@ -1257,7 +1283,8 @@ async function fallbackSignalBatch(symbols,reason){
     const j=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(j.detail||j.error||('fallback scan HTTP '+res.status));
     for(const r of j.results||[]){
-      const source=fallbackSourceFor(r), label=source+' · fallback (Exness unavailable: '+reason+')';
+      /* In the cloud viewer the public source is the normal source, not a fallback from a bridge that is PC-only by design. */
+      const source=fallbackSourceFor(r), label=isCloudflareReadonlyMode()?source+' · AURUM cloud analysis':source+' · fallback (Exness unavailable: '+reason+')';
       found.set(r.symbol,Object.assign({},r,{source:label,data_source:label,fallback:true,fallback_reason:reason}));
     }
   }
@@ -1276,7 +1303,7 @@ async function scanSignalsPreferred(symbols){
         catch(e){missed.push({symbol,reason:String(e&&e.message||e).slice(0,120)});}
       }));
     }
-  }else unique.forEach(symbol=>missed.push({symbol,reason:'Exness bridge is not connected in this tab.'}));
+  }else unique.forEach(symbol=>missed.push({symbol,reason:isCloudflareReadonlyMode()?'Exness is available only in the PC app.':'Exness bridge is not connected in this tab.'}));
   let fallback=[];
   if(missed.length){
     try{fallback=await fallbackSignalBatch(missed.map(x=>x.symbol),missed.length===unique.length?missed[0].reason:'one or more Exness symbols had no fresh data');}
@@ -2179,7 +2206,20 @@ $('#tmConfirm').onclick=async ()=>{
 };
 
 /* ---------- Deriv proxy health pill (topbar) ---------- */
+/* Cloud + PC are one workspace in two places. The cloud viewer has no broker
+   proxy, so the same pill names the place instead of asking a route that is
+   disabled by design (and reporting it as "offline"). */
+function showCloudViewerMode(){
+  state.derivHealth={state:'offline'};
+  const dot=$('#derivDot'), txt=$('#derivText'), pill=$('#derivPill');
+  if(dot)dot.style.background='var(--text-3,#666)';
+  if(txt)txt.textContent='Cloud · view only';
+  if(pill)pill.title='AURUM cloud viewer: live public prices and analysis, viewable anywhere. Orders, accounts and Exness/MT5 are available only in the PC app.';
+  const mode=$('#aboutMode'); if(mode)mode.textContent='Cloud viewer · read-only';
+  const trading=$('#aboutTrading'); if(trading)trading.textContent='Not available here · use the PC app';
+}
 async function refreshDerivPill(){
+  if(isCloudflareReadonlyMode()){ showCloudViewerMode(); return; }
   const h=await derivHealth();
   state.derivHealth=h;
   const dot=$('#derivDot'), txt=$('#derivText');
@@ -3213,7 +3253,7 @@ async function azAnalyze() {
     $('#azLoading').classList.add('hidden');
     $('#azEmpty').classList.remove('hidden');
     const msg=String(e.message||e);
-    $('#azEmpty').innerHTML='<b>Analysis unavailable</b>'+(msg==='fetch unavailable'?'The API server is not running (<code>npm run api</code>). Live-candle analysis needs the local server.':msg);
+    $('#azEmpty').innerHTML='<b>Analysis unavailable</b>'+(isCloudflareReadonlyMode()?cloudAnalysisDownHtml(e):(msg==='fetch unavailable'?'The API server is not running (<code>npm run api</code>). Live-candle analysis needs the local server.':escHtml(msg)));
     toast('Analysis failed',msg,'err');
   } finally {
     btn.disabled = false;
@@ -4864,9 +4904,9 @@ let lastActHeal=0;
   };
   check(); setInterval(check,60000);
 })();
-if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
-  navigator.serviceWorker.register('/sw.js').catch(() => { /* offline shell unavailable — app still works */ });
-}
+/* The app works without the offline shell, so a failed registration is not
+   fatal — but it is reported on the console instead of being swallowed. */
+registerServiceWorker();
 {
   let deferred = null;
   window.addEventListener('beforeinstallprompt', (e) => {
@@ -5116,3 +5156,7 @@ async function loadPipelineFlow(){
     div.innerHTML='<div class="tiny" style="color:var(--amber)">Pipeline unavailable: '+escHtml(String(e.message||e))+'</div>';
   }
 }
+
+/* Startup marker for the guard script in index.html: reaching this line means
+   the whole module evaluated without throwing. Keep it the LAST statement. */
+window.__aurumAppStarted=true;

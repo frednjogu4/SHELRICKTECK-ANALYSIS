@@ -1,7 +1,23 @@
 node_modules/
+# Build output. The deployable site inside it IS committed on purpose
+# (index.html, AURUM_Workspace.html, _headers, sw.js, manifest, icons - added
+# with 'git add -f'), so Cloudflare can publish the repository as it is, with
+# or without a build step. After 'npm run build', commit the changed files.
 dist/
 .env.local
 .env
 *.log
 server/data/
 __pycache__/
+
+# Wrangler local state, caches and local-only variables
+.wrangler/
+.dev.vars
+.dev.vars.*
+
+# Any other environment file (the committed template stays tracked)
+.env.*
+!.env.example
+
+# Local bridge credential generated on the PC; never commit it
+bridge_token.txt

@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <title>Fredrick TRADING — Trading Workspace</title>
-<meta name="manifest" href="/manifest.webmanifest">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://s3.tradingview.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' wss://ws.derivws.com wss://api.derivws.com https://*.supabase.co; frame-src https://www.tradingview.com https://s.tradingview.com; font-src 'self' data:; object-src 'none'; base-uri 'self'">
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#0a0e16">
@@ -570,6 +569,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
 </style>
 </head>
 <body>
+<noscript><div role="alert" style="padding:14px 16px;text-align:center;font-size:14px;line-height:1.5;background:var(--surface-2);color:var(--text);border-bottom:1px solid var(--border)">This app needs JavaScript. Enable JavaScript in your browser settings, then reload this page.</div></noscript>
 <!-- ============ AUTH ============ -->
 <div class="auth" id="authScreen">
   <div class="auth-brand">
@@ -727,7 +727,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
 
   <div class="main">
     <header class="topbar">
-      <button class="icon-btn hamburger" id="hamburger" aria-label="Open menu">
+      <button class="icon-btn hamburger" id="hamburger" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
       <div class="grow">
@@ -1794,6 +1794,8 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div class="card-head"><h3>About</h3></div>
               <ul class="info-list">
                 <li><span class="k">Workspace</span><span class="v">AURUM 2.0 · live</span></li>
+                <li><span class="k">Mode</span><span class="v" id="aboutMode">Full workspace</span></li>
+                <li><span class="k">Trading &amp; accounts</span><span class="v" id="aboutTrading">Through the broker you connect in this app</span></li>
                 <li><span class="k">Market data</span><span class="v" id="aboutFeed">Deriv live feed</span></li>
                 <li><span class="k">Charts / news</span><span class="v">TradingView official widgets</span></li>
                 <li><span class="k">Storage</span><span class="v">Browser localStorage</span></li>
@@ -1909,6 +1911,33 @@ body.compact .tbl th{padding:7px 12px}
 .flash-up{animation:flashUp .7s ease-out}
 .flash-down{animation:flashDown .7s ease-out}
 </style>
+<!-- Startup guard. If the application module below fails to load, or throws
+     while starting, the static page would look normal but no button would
+     respond. This small classic script (no dependencies, old-browser safe)
+     says so and offers a reload. src/main.js sets window.__aurumAppStarted as
+     its last statement. -->
+<script>
+(function(){
+  function check(){
+    if(window.__aurumAppStarted||document.getElementById('startupNotice'))return;
+    var bar=document.createElement('div');
+    bar.id='startupNotice';
+    bar.setAttribute('role','alert');
+    bar.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;background:#8a6d1a;color:#fff;padding:8px 14px;font-size:13px;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap';
+    var text=document.createElement('span');
+    text.textContent='The app did not start correctly, so the controls on this page will not respond. Reload the page. If this keeps happening, update your browser or clear the saved data for this site.';
+    var button=document.createElement('button');
+    button.type='button';
+    button.className='btn primary sm';
+    button.textContent='Reload';
+    button.onclick=function(){ location.reload(); };
+    bar.appendChild(text);
+    bar.appendChild(button);
+    document.body.appendChild(bar);
+  }
+  window.addEventListener('load',function(){ setTimeout(check,3000); });
+})();
+</script>
 <script type="module" src="/src/main.js"></script>
 
 </body>
