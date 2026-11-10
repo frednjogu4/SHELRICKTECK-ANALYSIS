@@ -1,4 +1,8 @@
 node_modules/
+# Build output. The deployable site inside it IS committed on purpose
+# (index.html, AURUM_Workspace.html, _headers, sw.js, manifest, icons - added
+# with 'git add -f'), so Cloudflare can publish the repository as it is, with
+# or without a build step. After 'npm run build', commit the changed files.
 dist/
 .env.local
 .env
