@@ -21,12 +21,13 @@
 ## Local verification
 
 ```sh
+# Node.js 22.12 or newer. Wrangler 4.156.2 is a pinned devDependency.
 npm ci
-npm test
-npm run build
-# Wrangler 4.137.0 requires Node.js 22 or newer
-npx --yes --package=node@22 --package=wrangler@4.137.0 -c 'node "$(command -v wrangler)" dev --config wrangler.jsonc --local --port 8790'
+npm run verify   # build, npm test, Worker runtime tests, deploy dry-run (uploads nothing)
+npm run cf:dev   # optional: the Worker and the site on http://localhost:8790
 ```
+
+`npm run verify` runs, in order: `npm run build` (which also checks that `dist/` is complete), `npm test`, `npm run test:worker` (routing, headers, body limits and rate limiting in the local Worker runtime, without calling a data provider) and `wrangler deploy --dry-run`. `npm test` blocks outbound connections, so it cannot reach Deriv, Yahoo or any other outside service.
 
 The unit tests use mocked providers. In this workspace, a local Wrangler smoke test successfully reached the public Deriv WebSocket and Yahoo Finance chart endpoint; that verifies the local Worker runtime path only, not a deployment in your Cloudflare account.
 
@@ -35,13 +36,26 @@ The unit tests use mocked providers. In this workspace, a local Wrangler smoke t
 The separate staging project should build from this repository using:
 
 - Build command: `npm ci && npm run build`
-- Node.js build environment: `22`
-- Deploy command: `npx --yes wrangler@4.137.0 deploy --config wrangler.jsonc`
+- Node.js build environment: `22` (build variable `NODE_VERSION`; 24 also passes the full verification)
+- Deploy command: `npx wrangler deploy --config wrangler.jsonc` (uses the Wrangler version pinned in `package.json`, currently 4.156.2)
 - Worker entry: `cloudflare/worker.js`
 - Static assets: `dist/`
-- Secrets/bindings: none for this technical-only stage
+- Secrets/bindings: no secrets and no variables; the two rate-limit bindings and the assets binding are declared in `wrangler.jsonc`
+
+Before it bundles or uploads anything, Wrangler runs `node scripts/verify-dist.mjs`. If `dist/` is missing the service worker, manifest, icons or `_headers` file — which is what happens when the build command is skipped — the deploy stops with "dist verification FAILED" instead of publishing an incomplete site. For a manual deployment from a PC use `npm run cf:deploy:staging`, which builds first.
 
 Keep the GitHub repo private, use the `cloudflare-staging` Worker name, and do not attach a production domain. The `workers.dev` URL is public. The config declares `AURUM_SIGNAL_LIMITER` (8 requests/minute per IP) and `AURUM_MARKET_LIMITER` (60 requests/minute per IP). The namespace IDs are numeric binding identifiers, not secrets; if either is already used in your Cloudflare account, change it to another unique integer before deploying. The Worker refuses provider-backed requests if either binding is missing.
+
+## HTTP behaviour of the Worker
+
+- `/api` and `/api/*` always run the Worker. Any other path is served from `dist/`; when no file matches, app routes (`/app`, deep links) receive the app page and file-like paths (`/missing.js`, `/.env`) receive a plain `404`.
+- `/api/deriv*`, `/api/risk*` and `/api/ctl*` are refused first, for every method, with `403 broker_execution_routes_disabled`. Other `/api` paths that were not migrated answer `501 cloudflare_route_not_migrated`.
+- A known route with the wrong method answers `405` with an `Allow` header; `HEAD` works on the `GET` routes.
+- Request bodies must be JSON objects sent as `application/json`, at most 64 KB: otherwise `400`, `413` or `415`.
+- Rate-limited requests answer `429` with `Retry-After: 60`. `/api/health` is not rate limited.
+- A request from another website (foreign `Origin`) answers `403`; the Worker never sends `Access-Control-Allow-*` headers.
+- Unexpected failures answer `500 internal_error`; the detail is written to the Worker log, not returned.
+- Static files carry the security headers in `public/_headers`, including `X-Robots-Tag: noindex, nofollow` for this staging deployment.
 
 ## Known limitations
 
