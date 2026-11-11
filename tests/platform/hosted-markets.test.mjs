@@ -297,6 +297,28 @@ test('the reported fault — the AURUM cloud cannot reach Deriv, the browser can
   } finally { await app.close(); }
 });
 
+test('entering the workspace: its first scan is already read in this browser — the signal cards need no Refresh', async () => {
+  const app = await bootApp({ world: { cloudDeriv: 'down' } });
+  try {
+    await app.enter();
+    /* Nobody presses Refresh. The cards are those of the scan the workspace starts on entering;
+       opening the Signals view shows that scan's results and does not scan again. If that scan
+       were left to the cloud, which cannot reach Deriv here, these six markets would have no
+       card until someone pressed Refresh. */
+    await app.open('signals');
+    const grid = app.doc.getElementById('sigGrid');
+    await app.waitFor(() => grid.querySelectorAll('.sig-card').length > 0, 'signal cards from the scan started on entering');
+    const cards = [...grid.querySelectorAll('.sig-card')].map((card) => ({ symbol: card.querySelector('.sym-name').textContent, why: card.querySelector('.sig-why').textContent }));
+    const fromDeriv = cards.filter((card) => DERIV_SYMBOLS.includes(card.symbol));
+    assert.equal(fromDeriv.length, 6, 'each of the six Deriv markets of that scan has a card');
+    for (const card of fromDeriv) assert.match(card.why, / · source: Deriv public candles · analysed in this browser$/, card.symbol);
+    assert.equal(cards.length - fromDeriv.length, 3, 'plus the three daily index readings');
+    assert.match(app.doc.getElementById('sigStamp').textContent, /^Updated \d\d:\d\d:\d\d · technical · live candles$/, 'nothing is reported as stale, missing or unavailable');
+    for (const symbol of app.scannedByApiAfterEntering()) assert.ok(INDEX_SYMBOLS.includes(symbol), `${symbol} was sent to the AURUM cloud although this browser can read it`);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
 test('one candle connection serves the whole table: the browser opens two sockets in all, not one per market', async () => {
   const app = await bootApp({ world: { cloudDeriv: 'down' } });
   try {

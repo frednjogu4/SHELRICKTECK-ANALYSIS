@@ -1323,6 +1323,9 @@ async function apiSignalScan(symbols){
    reach Deriv. Every reading carries an explicit state: live, daily, stale,
    no-data or unavailable. None of this runs in the PC app. */
 let hostedScannerInstance=null;
+/* True from the moment the visitor enters the workspace: the first statement of
+   boot() sets it, before the workspace starts its first scan. */
+let enteredWorkspace=false;
 function hostedSignalBatch(symbols){
   if(!hostedScannerInstance)hostedScannerInstance=createHostedScanner({
     fetchCandles:(symbol,granularity,count)=>candleHistory.fetchCandles(symbol,granularity,count),
@@ -1331,8 +1334,10 @@ function hostedSignalBatch(symbols){
     onScan:noteHostedScan
   });
   /* The sign-in screen opens no connection to Deriv: until the visitor has
-     entered the workspace (feedWired), every reading is asked of the AURUM cloud. */
-  return hostedScannerInstance.scan(symbols,{browser:feedWired});
+     entered the workspace, every reading is asked of the AURUM cloud. From then
+     on this browser reads the Deriv markets itself, including in the scan that
+     boot() starts before it wires the price feed. */
+  return hostedScannerInstance.scan(symbols,{browser:enteredWorkspace});
 }
 /* Diagnostics for the cloud viewer's scans: counts, states and reasons only.
    Market names and error text; never a token, an account detail or a header. */
@@ -1565,7 +1570,7 @@ function renderMarkets(soft){
    silent price feed the last readings would stay on screen with nothing to mark
    them as old. mktScanRefresh() itself allows one scan per 90 seconds. */
 function hostedMarketsRescan(){
-  if(isCloudflareReadonlyMode()&&feedWired&&state.view==='markets'&&!document.hidden)mktScanRefresh();
+  if(isCloudflareReadonlyMode()&&enteredWorkspace&&state.view==='markets'&&!document.hidden)mktScanRefresh();
 }
 setInterval(hostedMarketsRescan,30000);
 document.addEventListener('visibilitychange',hostedMarketsRescan);
@@ -4311,6 +4316,7 @@ function render(view){
 }
 let booted=false;
 function boot(){
+  enteredWorkspace=true; /* cloud viewer: from here on this browser may read Deriv candles (see hostedSignalBatch) */
   applyBrand();
   setTimeout(()=>{ if(atCfg().on)resumeAutoTrade(); },6000); /* armed survives reloads/deploys */
   if(booted){
