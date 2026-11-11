@@ -134,11 +134,18 @@ live prices.
 
 **How the browser asks Deriv.** One connection for candle history, reused for
 every request and separate from the price stream; answers matched to requests
-by `req_id`; six requests in flight; no more than 180 requests a minute
-(Deriv's published budget for this kind of call is 220); a series is reused for
-20 seconds (1-minute candles), 60 seconds (5-minute) or 5 minutes (1-hour);
-after a rejection for sending too fast, requests pause for 30 seconds, doubling
-up to 5 minutes; a failure is never kept or reused.
+by `req_id`; six requests in flight; no more than 180 requests a minute. A
+series is reused for 20 seconds (1-minute candles), 60 seconds (5-minute) or
+5 minutes (1-hour). A failure is never kept or reused.
+
+Deriv's published limit for these calls is 220 a minute and 14,400 an hour
+([Limits](https://developers.deriv.com/docs/limits/)). A Markets table left
+open sends 60 requests for its first scan and about 30 a minute after that
+(1,800 an hour). If Deriv rejects a request for sending too fast, candle
+requests pause for 30 seconds, doubling up to 5 minutes, and the Worker is
+asked meanwhile. Deriv's page does not say whether the limit is counted per
+connection or per network address, so several tabs or visitors behind one
+address may share it.
 
 **Every reading has one state**, shown in the Markets table and counted in the
 line above it (`Signal column: 20 live · 6 daily index readings · …`):
