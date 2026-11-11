@@ -24,6 +24,8 @@ import * as bridge from './bridge.js';
 import { patternAnalyze, patternStudy, renderPatternChart, playbookHTML, performanceHTML } from './patterns.js';
 import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudSignIn, cloudSignUp, cloudSignOut, cloudVerifyTables, cloudList, saveAnalysis, savePatternEvent, saveAlert, saveSignal } from './cloud.js';
 import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
+import { candleHistory } from './derivhistory.js';
+import { createHostedScanner, signalState, summarizeReadings } from './hostedscan.js';
 
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));
@@ -1070,7 +1072,7 @@ function renderAuthDaily(){
   const m=document.getElementById('authMotivation');
   if(m)m.innerHTML=quoteHtml();
 }
-let bestPick={at:0,item:null,busy:false};
+let bestPick={at:0,item:null,busy:false,unread:'',readable:0};
 async function refreshBestPick(force){
   if(bestPick.busy)return;
   if(Date.now()-bestPick.at<10*60*1000&&!force){ renderBestPick(); return; }
@@ -1080,10 +1082,23 @@ async function refreshBestPick(force){
     const results=await scanSignalsPreferred(syms);
     const dirs=results.filter(r=>!r.error&&(r.signal==='BUY'||r.signal==='SELL'));
     bestPick.item=dirs.length?dirs.reduce((a,b)=>((b.confidence||0)>(a.confidence||0)?b:a)):null;
+    /* Cloud viewer: a market that could not be read (stale, no data, unavailable) is not a market
+       without a setup. The counts are shown when there is no pick. Readings of the PC app carry
+       no such state, so its wording stays as it was. */
+    const counts=summarizeReadings(results);
+    bestPick.unread=scanIssuesText(counts); bestPick.readable=counts.live+counts.daily;
     bestPick.at=Date.now();
     emitSignalAlerts(results);
-  }catch(e){ bestPick.item=null; bestPick.at=Date.now(); }
+  }catch(e){ bestPick.item=null; bestPick.unread=''; bestPick.readable=0; bestPick.at=Date.now(); }
   bestPick.busy=false; renderBestPick();
+}
+/* Cloud viewer: the pick shown on the sign-in screen was read by the AURUM cloud
+   alone (no connection to Deriv is opened there). Once the visitor is in the
+   workspace it is read again, this time with this browser's own Deriv candles. */
+function repickAfterEntering(){
+  if(!isCloudflareReadonlyMode())return;
+  if(bestPick.busy){ setTimeout(repickAfterEntering,1500); return; }
+  refreshBestPick(true);
 }
 const INDEX_ONLY=['NAS100','US30','SPX500','US100','NASDAQ'];
 function renderBestPick(){
@@ -1091,7 +1106,9 @@ function renderBestPick(){
     const el=document.getElementById(id); if(!el)continue;
     if(bestPick.busy&&!bestPick.item){ el.innerHTML='<span class="tiny faint">Scanning live markets\u2026</span>'; continue; }
     const it=bestPick.item;
-    if(!it){ el.innerHTML='<span class="tiny faint">No directional setup right now \u2014 the pick appears the moment the live scan finds one.</span>'; continue; }
+    if(!it){ el.innerHTML='<span class="tiny faint">'+(bestPick.unread
+        ?(bestPick.readable?'No directional setup in the markets that could be read. Not read: ':'No market could be read right now: ')+escHtml(bestPick.unread)+'. Nothing is estimated \u2014 the pick appears when the scan finds one.'
+        :'No directional setup right now \u2014 the pick appears the moment the live scan finds one.')+'</span>'; continue; }
     const ix=INDEX_ONLY.includes(it.symbol);
     el.innerHTML='<b>'+escHtml(it.symbol)+'</b> <span class="badge '+(it.signal==='BUY'?'buy':'sell')+'">'+escHtml(it.signal)+'</span> <b>'+(it.confidence||0)+'%</b>'
       +(ix?' <span class="badge gray">index CFD · analysis only</span>':'')
@@ -1112,8 +1129,18 @@ function renderOvDaily(){
    ================================================================ */
 /* Cloud viewer: there is no local API to start, so a failed request is explained as what it is. */
 function cloudAnalysisDownHtml(e){
-  const msg=String(e&&e.message||e||'').slice(0,160);
+  const full=String(e&&e.message||e||''), msg=full.slice(0,160), st=e&&e.signalState;
+  /* A reading from the cloud viewer's scan explains its own state in a full sentence. */
+  if(st==='stale'||st==='no-data'||st==='unavailable')return escHtml(full.slice(0,420).replace(/[.\s]+$/,''))+'. Nothing is estimated.'+(st==='stale'?'':' Try again in a minute.');
   return 'The AURUM cloud analysis service did not return live data'+(msg&&msg!=='fetch unavailable'?' ('+escHtml(msg)+')':'')+'. Nothing is estimated. Try again in a minute.';
+}
+/* Cloud viewer: "2 stale (market closed or feed paused) · 1 unavailable", or '' when every reading is live. */
+function scanIssuesText(c){
+  const parts=[];
+  if(c&&c.stale)parts.push(c.stale+' stale (market closed or feed paused)');
+  if(c&&c.noData)parts.push(c.noData+' with no data');
+  if(c&&c.unavailable)parts.push(c.unavailable+' unavailable');
+  return parts.join(' \u00b7 ');
 }
 async function scanSignals(){
   const grid=$('#sigGrid');
@@ -1130,7 +1157,8 @@ async function scanSignals(){
     emitSignalAlerts(results);
     state.signals=(data.results||[]).filter(r=>!r.error);
     state.scanStatus=state.signals.length?'ready':'empty';
-    $('#sigStamp').textContent='Updated '+timeStr(Date.now())+' · technical · live candles';
+    state.scanIssues=scanIssuesText(summarizeReadings(results.filter(r=>r&&r.error&&signalState(r))));
+    $('#sigStamp').textContent='Updated '+timeStr(Date.now())+' · technical · live candles'+(state.scanIssues?' · '+state.scanIssues:'');
     const c=$('#navSigCount'); if(c)c.textContent=state.signals.length;
     renderSignals();
     if(state.view==='overview') renderOverview();
@@ -1146,7 +1174,9 @@ function renderSignals(){
   if(state.scanStatus==='loading')return;
   if(state.scanStatus==='error'){ return; }
   if(!state.signals.length){
-    g.innerHTML='<div class="empty"><b>No signals right now</b>Live scan returned no setups — press refresh.</div>';
+    g.innerHTML=state.scanIssues
+      ?'<div class="empty"><b>No live readings right now</b>'+escHtml(state.scanIssues)+'. Nothing is estimated — press refresh to check again.</div>'
+      :'<div class="empty"><b>No signals right now</b>Live scan returned no setups — press refresh.</div>';
     return;
   }
   g.innerHTML='';
@@ -1192,7 +1222,7 @@ function renderSignals(){
     g.appendChild(card);
   });
 }
-$('#refreshSigs').onclick=()=>{ scanSignals(); };
+$('#refreshSigs').onclick=()=>{ if(hostedScannerInstance)hostedScannerInstance.retryBrowser(); scanSignals(); }; /* cloud viewer: a refresh asked for by a person tries this browser's Deriv connection again */
 
 /* ================================================================
    NEWS (TradingView widgets + Perplexity brief)
@@ -1281,20 +1311,68 @@ function fallbackSourceFor(r){
   if(r&&r.source)return String(r.source);
   return ['US30','NAS100','SPX500'].includes(String(r&&r.symbol||''))?'Yahoo Finance public daily data':'Deriv public candles';
 }
-async function fallbackSignalBatch(symbols,reason){
+/* One request per 14 symbols to the AURUM signal API: the local server on a PC, the read-only Worker when hosted. */
+async function apiSignalScan(symbols){
   const found=new Map();
   for(let i=0;i<symbols.length;i+=14){
     const chunk=symbols.slice(i,i+14);
     const res=await api('/api/signals/scan',{method:'POST',body:{symbols:chunk},timeoutMs:30000});
     const j=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(j.detail||j.error||('fallback scan HTTP '+res.status));
-    for(const r of j.results||[]){
-      /* In the cloud viewer the public source is the normal source, not a fallback from a bridge that is PC-only by design. */
-      const source=fallbackSourceFor(r), label=isCloudflareReadonlyMode()?source+' · AURUM cloud analysis':source+' · fallback (Exness unavailable: '+reason+')';
-      found.set(r.symbol,Object.assign({},r,{source:label,data_source:label,fallback:true,fallback_reason:reason}));
-    }
+    for(const r of j.results||[])found.set(r.symbol,r);
   }
-  return symbols.map(symbol=>found.get(symbol)||{symbol,error:'FEED_ERROR',detail:'No fallback result returned for '+symbol+'.',source:'unavailable',data_source:'unavailable'});
+  return found;
+}
+/* ---- Cloud viewer: who analyses what ----
+   Deriv-backed markets are analysed in THIS BROWSER from Deriv's public
+   candles (src/derivhistory.js + src/hostedscan.js). Index CFDs come from the
+   AURUM cloud, which is also the labelled fallback when this browser cannot
+   reach Deriv. Every reading carries an explicit state: live, daily, stale,
+   no-data or unavailable. None of this runs in the PC app. */
+let hostedScannerInstance=null;
+/* True from the moment the visitor enters the workspace: the first statement of
+   boot() sets it, before the workspace starts its first scan. */
+let enteredWorkspace=false;
+function hostedSignalBatch(symbols){
+  if(!hostedScannerInstance)hostedScannerInstance=createHostedScanner({
+    fetchCandles:(symbol,granularity,count)=>candleHistory.fetchCandles(symbol,granularity,count),
+    cloudScan:apiSignalScan,
+    feedClock:()=>feed.feedClock(),
+    onScan:noteHostedScan
+  });
+  /* The sign-in screen opens no connection to Deriv: until the visitor has
+     entered the workspace, every reading is asked of the AURUM cloud. From then
+     on this browser reads the Deriv markets itself, including in the scan that
+     boot() starts before it wires the price feed. */
+  return hostedScannerInstance.scan(symbols,{browser:enteredWorkspace});
+}
+/* Diagnostics for the cloud viewer's scans: counts, states and reasons only.
+   Market names and error text; never a token, an account detail or a header. */
+const hostedDiag={scans:0,last:null,troubleKey:''};
+function noteHostedScan(report){
+  hostedDiag.scans+=1; hostedDiag.last=report;
+  /* A closed market is a normal state, not a fault: only missing or unreachable data is logged,
+     and only when the set of affected markets changes, not once per scan. */
+  const trouble=report.problems.filter(x=>x.state!=='stale');
+  const key=trouble.map(x=>x.symbol+':'+x.state).join('|');
+  if(key===hostedDiag.troubleKey)return;
+  hostedDiag.troubleKey=key;
+  if(!trouble.length||typeof console==='undefined'||!console.warn)return;
+  console.warn('[aurum] '+JSON.stringify({event:'hosted_scan_trouble',at:new Date(report.at).toISOString(),ms:report.ms,
+    live:report.live,daily:report.daily,stale:report.stale,noData:report.noData,unavailable:report.unavailable,
+    inBrowser:report.browser,fromCloud:report.cloud,usedBrowser:report.usedBrowser,browserPaused:report.browserPaused,askedCloudForDeriv:report.askedCloudForDeriv,problems:trouble.slice(0,26),candles:candleHistory.stats()}));
+}
+/* Support read-out, typed into the browser console: what the last scan found and how the candle connection is doing. */
+window.__aurumDiagnostics=()=>({hosted:isCloudflareReadonlyMode(),feed:feed.feedStatus(),lastTickAt:feed.lastTickAt(),scans:hostedDiag.scans,lastScan:hostedDiag.last,candles:candleHistory.stats()});
+async function fallbackSignalBatch(symbols,reason){
+  if(await isCloudflareHostedApp())return hostedSignalBatch(symbols);
+  const found=await apiSignalScan(symbols);
+  return symbols.map(symbol=>{
+    const r=found.get(symbol);
+    if(!r)return {symbol,error:'FEED_ERROR',detail:'No fallback result returned for '+symbol+'.',source:'unavailable',data_source:'unavailable'};
+    const label=fallbackSourceFor(r)+' · fallback (Exness unavailable: '+reason+')';
+    return Object.assign({},r,{source:label,data_source:label,fallback:true,fallback_reason:reason});
+  });
 }
 async function scanSignalsPreferred(symbols){
   const unique=[...new Set((symbols||[]).map(s=>String(s||'').toUpperCase().trim()).filter(Boolean))];
@@ -1389,8 +1467,12 @@ function scanLevelsHtml(I){
 function signalBadge(I){
   const r=state.mktScan[I.s];
   if(r){
-    if(r.error)
-      return '<span class="badge gray" title="'+escHtml(r.detail||'No verified candle data; analysis resumes when a supported feed is available.')+'">No data <button type="button" class="btn sm ghost msig-retry" aria-label="Retry scan for '+escHtml(I.s)+'" style="padding:0 5px;margin-left:4px">Retry</button></span>';
+    if(r.error){
+      /* Cloud viewer states: stale (market closed or feed paused — a retry cannot help), no data, feed unavailable. */
+      const st=signalState(r);
+      if(st==='stale')return '<span class="badge gray" title="'+escHtml(r.detail||'')+'">Stale data</span>';
+      return '<span class="badge gray" title="'+escHtml(r.detail||'No verified candle data; analysis resumes when a supported feed is available.')+'">'+(st==='unavailable'?'Feed unavailable':'No data')+' <button type="button" class="btn sm ghost msig-retry" aria-label="Retry scan for '+escHtml(I.s)+'" style="padding:0 5px;margin-left:4px">Retry</button></span>';
+    }
     const v=escHtml(r.votes||'');
     const partial=r.data_ok===false?' (some timeframes lack data — not confirmable)':'';
     if(r.signal==='BUY')  return '<span class="badge buy" title="MTF confirmed — '+v+'">Buy '+r.confidence+'%</span>';
@@ -1405,6 +1487,21 @@ function signalBadge(I){
   return '<span class="badge gray">Scanning…</span>'; /* first scan in flight — honest, never a dead ellipsis */
 }
 function signalSourceHTML(I){const r=state.mktScan[I.s];return r?'<div class="tiny faint" style="margin-top:3px">source: '+escHtml(r.data_source||r.source||'unavailable')+'</div>':'';}
+/* Cloud viewer: one line that says how many markets are live, stale, without data or unavailable. */
+function renderMarketScanStatus(){
+  const el=document.getElementById('mktScanStatus'); if(!el)return;
+  const rows=isCloudflareReadonlyMode()?INSTR.map(I=>state.mktScan[I.s]).filter(r=>r&&signalState(r)):[];
+  if(!rows.length){ el.classList.add('hidden'); return; }
+  const c=summarizeReadings(rows), parts=[];
+  if(c.live)parts.push(c.live+' live');
+  if(c.daily)parts.push(c.daily+' daily index reading'+(c.daily===1?'':'s'));
+  if(c.stale)parts.push(c.stale+' stale (market closed or feed paused)');
+  if(c.noData)parts.push(c.noData+' with no data');
+  if(c.unavailable)parts.push(c.unavailable+' unavailable');
+  const text='Signal column: '+parts.join(' \u00b7 ')+(mktScanAt?' \u00b7 scanned '+timeStr(mktScanAt):'')+'. Deriv markets are analysed in this browser from Deriv public candles; index readings come from the AURUM cloud. Nothing is estimated.';
+  if(el.textContent!==text)el.textContent=text;
+  el.classList.remove('hidden');
+}
 const strength=I=>{ const ch=chgOf(I); return ch==null?-1:Math.abs(ch); };
 function shortActiveWindow(inst){
   const full=typicalActiveWindow(inst);
@@ -1473,11 +1570,24 @@ function renderMarkets(soft){
       if(sigCell){ const html=signalBadge(I)+scanLevelsHtml(I)+signalSourceHTML(I); if(sigCell.dataset.h!==html){ sigCell.innerHTML=html; sigCell.dataset.h=html; } }
     });
   }
+  renderMarketScanStatus();
 }
+/* Cloud viewer: the Markets scan also repeats on a clock, and when the tab is
+   looked at again. The scan above is started by incoming ticks only, so with a
+   silent price feed the last readings would stay on screen with nothing to mark
+   them as old. mktScanRefresh() itself allows one scan per 90 seconds. */
+function hostedMarketsRescan(){
+  if(isCloudflareReadonlyMode()&&enteredWorkspace&&state.view==='markets'&&!document.hidden)mktScanRefresh();
+}
+setInterval(hostedMarketsRescan,30000);
+document.addEventListener('visibilitychange',hostedMarketsRescan);
 /* retry delegation for the markets signal column */
 { const mb=document.getElementById('mktBody');
   if(mb&&!mb.__sigRetry){ mb.__sigRetry=1;
-    mb.addEventListener('click',(e)=>{ const b=e.target.closest('.msig-retry'); if(b){ e.preventDefault(); mktScanRefresh(true); } }); } }
+    mb.addEventListener('click',(e)=>{ const b=e.target.closest('.msig-retry'); if(b){ e.preventDefault();
+      /* Cloud viewer: a retry asked for by a person tries this browser's own Deriv connection again at once. */
+      if(hostedScannerInstance)hostedScannerInstance.retryBrowser();
+      mktScanRefresh(true); } }); } }
 { const hn=document.getElementById('mktHoursNote'); if(hn)hn.textContent=MARKET_HOURS_NOTE; }
 /* market session badges: OPEN (green) / BREAK (amber) / CLOSED (red), plus an
    honest QUIET state when the schedule says open but the feed stopped ticking */
@@ -1749,15 +1859,24 @@ async function autofillLevels(sym){
   const isCurrent=()=>requestId===levelsRequestSeq&&state.chart.sym===sym;
   const note=$('#levelsNote'); if(!note)return;
   try{
-    const r=await api('/api/signals/scan',{method:'POST',body:{symbols:[sym]},timeoutMs:30000});
-    if(!isCurrent())return;
-    if(!r.ok)throw 0;
-    const j=await r.json();
-    if(!isCurrent())return; /* a slower response for the previous symbol is stale */
-    const sig=(j.results||[])[0];
-    if(sig&&!sig.error)state.mktScan[sym]=sig; /* shared: chart strip + markets badges */
+    let sig;
+    if(await isCloudflareHostedApp()){
+      /* Cloud viewer: the same reading the Markets table shows (this browser first, AURUM cloud as labelled fallback). */
+      sig=(await hostedSignalBatch([sym]))[0];
+      if(!isCurrent())return; /* a slower answer for the previous symbol is stale */
+    }else{
+      const r=await api('/api/signals/scan',{method:'POST',body:{symbols:[sym]},timeoutMs:30000});
+      if(!isCurrent())return;
+      if(!r.ok)throw 0;
+      const j=await r.json();
+      if(!isCurrent())return; /* a slower response for the previous symbol is stale */
+      sig=(j.results||[])[0];
+    }
+    /* shared: chart strip + markets badges. A cloud-viewer state (stale, no data, unavailable) replaces
+       an older reading too, so levels from before a market closed never stay on screen as current. */
+    if(sig&&(!sig.error||signalState(sig)))state.mktScan[sym]=sig;
     updateChartLevels();
-    if(!sig||sig.error){ note.textContent='Live levels unavailable for '+sym+' right now.'; return; }
+    if(!sig||sig.error){ note.textContent=sig&&signalState(sig)&&sig.detail?String(sig.detail):'Live levels unavailable for '+sym+' right now.'; return; }
     if(levelsForSym==='__manual__'){ /* user/AI applied levels meanwhile — do not stomp */
       note.innerHTML='Ticket levels kept (applied manually / from the AI signal) — <a href="#" id="levelsAgain">use live signal levels instead</a>.';
       const a=$('#levelsAgain'); if(a)a.onclick=(e)=>{ e.preventDefault(); levelsForSym=null; autofillLevels(sym); };
@@ -2223,6 +2342,7 @@ function showCloudViewerMode(){
   if(pill)pill.title='AURUM cloud viewer: live public prices and analysis, viewable anywhere. Orders, accounts and Exness/MT5 are available only in the PC app.';
   const mode=$('#aboutMode'); if(mode)mode.textContent='Cloud viewer · read-only';
   const trading=$('#aboutTrading'); if(trading)trading.textContent='Not available here · use the PC app';
+  const analysis=$('#aboutAnalysis'); if(analysis)analysis.textContent='Deriv markets: this browser, from Deriv public candles · indices: AURUM cloud';
 }
 async function refreshDerivPill(){
   if(isCloudflareReadonlyMode()){ showCloudViewerMode(); return; }
@@ -3234,8 +3354,9 @@ async function azAnalyze() {
       }
     }catch(exnessError){
       const fallback=(await scanSignalsPreferred([sym]))[0];
-      if(!fallback||fallback.error)throw new Error((fallback&&fallback.detail)||String(exnessError&&exnessError.message||exnessError));
-      if(String(fallback.data_source||'').startsWith('Deriv public candles')){
+      if(!fallback||fallback.error){const failure=new Error((fallback&&fallback.detail)||String(exnessError&&exnessError.message||exnessError));failure.signalState=signalState(fallback);throw failure;}
+      /* A reading analysed in this browser already is the full technical decision; only a server or cloud reading is completed by the API. */
+      if(String(fallback.data_source||'').startsWith('Deriv public candles')&&fallback.computed!=='browser'){
         try{
           const res=await api('/api/signals/analyze',{method:'POST',headers:Object.assign({'x-aurum-user':state.user||'local'},keyHeaders()),body:{symbol:sym,force:true,withNews:hasAnyKey()}});
           const j=await res.json();if(!res.ok)throw new Error(j.detail||j.error||'analysis fallback unavailable');
@@ -3498,9 +3619,24 @@ function learnDrawdown(payload){
   };
   if(payload&&payload.instrument===sym&&payload.granularity===g){ run(payload); return; }
   status.textContent='Loading real history from the live feed…';
-  api('/api/history/candles',{method:'POST',body:{sym,granularity:g,count:400}})
-    .then(async(r)=>{ const j=await r.json().catch(()=>({})); if(!r.ok)throw new Error(j.detail||j.error||'history unavailable'); run(j); })
+  historyCandles(sym,g,400)
+    .then(run)
     .catch((e)=>{ status.textContent='History unavailable ('+(e.message||'error')+'). The panel stays empty rather than showing invented data.'; $('#ddChart').style.display='none'; $('#ddStats').innerHTML=''; });
+}
+/* Real candle history for the calculator panels. Cloud viewer: read by this
+   browser from the Deriv public feed first; the AURUM API is the fallback
+   there and the only source on the PC. Never invented: a failure rejects. */
+async function historyCandles(sym,granularity,count){
+  if(DERIV_CODE_MAP[sym]&&await isCloudflareHostedApp()){
+    try{
+      const candles=await candleHistory.fetchCandles(sym,granularity,count);
+      if(candles.length>=30)return {source:'Deriv public feed, read by this browser',instrument:sym,granularity,count:candles.length,fetched_at:new Date().toISOString(),candles};
+    }catch(_e){ /* this browser could not get it: ask the AURUM cloud */ }
+  }
+  const r=await api('/api/history/candles',{method:'POST',body:{sym,granularity,count}});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.detail||j.error||'history unavailable');
+  return j;
 }
 const volCache={};
 function learnVolatility(){
@@ -3512,8 +3648,8 @@ function learnVolatility(){
   Promise.all(syms.map((sym)=>{
     const key=sym+'|'+g;
     if(volCache[key])return Promise.resolve(volCache[key]);
-    return api('/api/history/candles',{method:'POST',body:{sym,granularity:g,count:400}})
-      .then(async(r)=>{ const j=await r.json().catch(()=>({})); if(!r.ok)throw new Error(j.error||'unavailable'); volCache[key]=j; return j; })
+    return historyCandles(sym,g,400)
+      .then((j)=>{ volCache[key]=j; return j; })
       .catch(()=>null);
   })).then((res)=>{
     const rows=res.map((p,i)=>{
@@ -4187,6 +4323,7 @@ function render(view){
 }
 let booted=false;
 function boot(){
+  enteredWorkspace=true; /* cloud viewer: from here on this browser may read Deriv candles (see hostedSignalBatch) */
   applyBrand();
   setTimeout(()=>{ if(atCfg().on)resumeAutoTrade(); },6000); /* armed survives reloads/deploys */
   if(booted){
@@ -4223,6 +4360,7 @@ function boot(){
   render('overview');
   wireFeed();
   tickUI();
+  repickAfterEntering();
 }
 
 /* ================================================================
@@ -4271,7 +4409,7 @@ function renderSniperMarketList(){
   const price=(r,key,digits)=>{const n=Number(r&&r[key]);return Number.isFinite(n)&&n>0?fmtPx(n,digits):'—';};
   body.innerHTML=rows.map(I=>{
     const r=state.mktScan[I.s],checked=sniperWatchSymbols.has(I.s),available=r&&!r.error;
-    const signal=available?'<span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span>':'<span class="badge gray">'+(r?'UNAVAILABLE':'WAITING')+'</span>';
+    const signal=available?'<span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span>':'<span class="badge gray">'+(r?(signalState(r)==='stale'?'STALE':signalState(r)==='no-data'?'NO DATA':'UNAVAILABLE'):'WAITING')+'</span>';
     const source=available?(r.data_source||r.source||'source unavailable'):(r&&r.data_source||'—'),digits=I.d||2;
     return '<tr><td><input type="checkbox" data-sniper-watch="'+escHtml(I.s)+'" aria-label="Notify on entry and exit for '+escHtml(I.s)+'" '+(checked?'checked':'')+'></td><td><b>'+escHtml(I.s)+'</b><div class="tiny faint">'+escHtml(I.n)+'</div></td><td>'+signal+'</td><td class="tiny">'+escHtml(available?(r.tf||'—'):'—')+'</td><td class="mono">'+(available?price(r,'entry',digits):'—')+'</td><td class="mono down">'+(available?price(r,'stop_loss',digits):'—')+'</td><td class="mono up">'+(available?price(r,'tp1',digits):'—')+'</td><td class="tiny">'+escHtml(source)+'</td><td><button class="btn ghost sm" type="button" data-sniper-view="'+escHtml(I.s)+'" title="View '+escHtml(I.s)+' signal details" aria-label="View '+escHtml(I.s)+' signal details"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button></td></tr>';
   }).join('');

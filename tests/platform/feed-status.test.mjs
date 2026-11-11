@@ -72,3 +72,34 @@ test('a quote that is not a positive number never makes the feed live', async (t
   assert.equal(feed.lastTickAt(), 0);
   assert.equal(feed.quote('EUR/USD'), null, 'no price is stored for an invalid quote');
 });
+
+test('the feed clock is the newest tick\'s own time, and it never moves backwards', async (t) => {
+  const { feed, socket } = await startFeed(t, 'feed-clock');
+  socket.open();
+  assert.equal(feed.feedClock(), null, 'no tick yet: no clock');
+
+  socket.message({ msg_type: 'tick', tick: { symbol: 'frxEURUSD', quote: 'not-a-price', epoch: 1900000000 } });
+  assert.equal(feed.feedClock(), null, 'an invalid quote sets no clock');
+
+  socket.message({ msg_type: 'tick', tick: { symbol: 'frxEURUSD', quote: 1.5, epoch: 1900000000 } });
+  assert.deepEqual(feed.feedClock(), { epochMs: 1900000000000, seenAtMs: Date.now() });
+
+  t.mock.timers.tick(2000);
+  socket.message({ msg_type: 'tick', tick: { symbol: 'R_75', quote: 2.5, epoch: 1900000002 } });
+  const newest = { epochMs: 1900000002000, seenAtMs: Date.now() };
+  assert.deepEqual(feed.feedClock(), newest, 'a tick from any market moves the clock on');
+
+  /* A tick that is older than the newest one — delivered late, or the last tick of a
+     market that has since closed — is a price, but says nothing about the time. */
+  t.mock.timers.tick(1000);
+  socket.message({ msg_type: 'tick', tick: { symbol: 'frxUSDCAD', quote: 1.25, epoch: 1899990000 } });
+  assert.deepEqual(feed.feedClock(), newest);
+  assert.equal(feed.quote('USD/CAD').px, 1.25, 'the price itself is still taken');
+
+  socket.message({ msg_type: 'tick', tick: { symbol: 'frxUSDCAD', quote: 1.26 } });
+  assert.deepEqual(feed.feedClock(), newest, 'a tick without a timestamp does not move the clock');
+
+  const copy = feed.feedClock();
+  copy.epochMs = 0;
+  assert.deepEqual(feed.feedClock(), newest, 'callers get a copy');
+});
