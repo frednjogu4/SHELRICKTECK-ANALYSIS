@@ -426,7 +426,13 @@ test('hosted mode: the viewer subscribes the built-in watchlist on the public fe
     assert.equal(dot(), 'dot live');
     assert.ok(visibleText().includes(shown), `the quote for ${instrument.s} is rendered on screen`);
 
-    assert.equal(app.socketLog.length, 1, 'one shared socket');
+    /* Entering the workspace also starts the first scan, which reads candle
+       history over a connection of its own (src/derivhistory.js). The price
+       stream stays one shared socket, and there is never a socket per request. */
+    assert.equal(app.socketLog[0], feed, 'the price stream is the first connection');
+    assert.ok(app.socketLog.length <= 2, 'one price stream and at most one candle-history connection');
+    for (const entry of app.socketLog) assert.equal(entry.url, PUBLIC_FEED, 'both connections go to the Deriv public feed');
+    for (const entry of app.socketLog.slice(1)) assert.deepEqual(entry.sent, [], 'a candle connection that never opened has sent nothing');
     assert.deepEqual(app.problems, []);
   } finally {
     await app.close();

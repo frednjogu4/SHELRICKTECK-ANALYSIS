@@ -69,6 +69,7 @@ let backoff = 1000;
 let watchdog = null;
 let healthTimer = null;
 let lastValidTickAt = 0;
+let tickClock = null;        // { epochMs: Deriv time of the newest valid tick, seenAtMs: when this browser received it }
 let openReqId = 1;
 let defaultSubscriptionsEnabled = true;
 const dynamicTickSubs = new Map(); // Deriv catalogue code -> { callbacks:Set, subscriptionId, reqId, requested }
@@ -99,6 +100,7 @@ function deliverDynamicTick(code, tick, subscription) {
   lastValidTickAt = Date.now();
   setStatus('live');
   const epoch = Number(tick.epoch) || 0;
+  noteTickClock(epoch * 1000, lastValidTickAt);
   const data = { code, quote: quoteValue, epoch, time: epoch * 1000, status: 'live' };
   sub.callbacks.forEach((cb) => { try { cb(data); } catch (_e) { /* noop */ } });
 }
@@ -140,6 +142,21 @@ function setStatus(s, detail) {
 export function feedStatus() { return status; }
 /** Browser receipt time of the most recent valid public tick (0 = none received). */
 export function lastTickAt() { return lastValidTickAt; }
+/* The clock only moves forward: a tick that is older than the newest one seen
+   (delivered late, or the last tick of a market that has since closed) says
+   nothing about the current time and is ignored. */
+function noteTickClock(epochMs, seenAtMs) {
+  if (!(epochMs > 0)) return;
+  if (tickClock && epochMs < tickClock.epochMs) return;
+  tickClock = { epochMs, seenAtMs };
+}
+/**
+ * Deriv's clock, read from the newest valid tick: its own timestamp and the
+ * moment this browser received it. Freshness checks use it so that a device
+ * clock that runs fast or slow cannot make live candles look stale (or stale
+ * ones look live). Null until a tick with a timestamp has arrived.
+ */
+export function feedClock() { return tickClock ? { epochMs: tickClock.epochMs, seenAtMs: tickClock.seenAtMs } : null; }
 /** Hosted read-only deployments can opt out of the built-in watchlist stream;
  * only catalogue symbols explicitly selected by the user will be subscribed. */
 export function setDefaultSubscriptionsEnabled(enabled) {
@@ -160,6 +177,7 @@ export function quote(sym) {
 function handleTick(sym, px, time) {
   if (!Number.isFinite(Number(px)) || Number(px) <= 0) return;
   lastValidTickAt = Date.now();
+  noteTickClock(Number(time), lastValidTickAt);
   setStatus('live');
   let q = prices[sym];
   if (!q) {

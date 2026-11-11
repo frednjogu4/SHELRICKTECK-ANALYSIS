@@ -95,7 +95,7 @@ works out where it is running and switches on only what that place can do:
 |---|---|---|
 | Open it | the `*.workers.dev` address, from any device | `http://127.0.0.1:8788/app` on the trading PC |
 | Live prices | built-in watchlist from the public Deriv feed, straight into the browser (no account, no token) | the same feed, plus Exness/MT5 quotes once the bridge is connected |
-| Signals and analysis | the Worker, from Deriv public candles (Yahoo daily data for index CFDs), labelled `AURUM cloud analysis` | Exness/MT5 data first; public sources only as a labelled fallback |
+| Signals and analysis | Deriv markets: the visitor's browser, from Deriv public candles (`analysed in this browser`). Index CFDs: the Worker, from Yahoo daily data (`AURUM cloud analysis`). See [Signals on the cloud viewer](#signals-on-the-cloud-viewer) | Exness/MT5 data first; public sources only as a labelled fallback |
 | Orders, accounts, Exness/MT5 | not available: hidden or blocked in the page and refused by the Worker (`403`) | available |
 | Top bar | `Cloud · view only` | `proxy · …` (state of the local Deriv proxy) |
 | Settings → About → Mode | `Cloud viewer · read-only` | `Full workspace` |
@@ -112,6 +112,86 @@ price shows `—`; nothing is estimated.
 The cloud viewer cannot reach the PC, the MT5 bridge or any broker account, and
 it is not meant to. Use it to watch prices and signals away from the desk and
 the PC app to act on them.
+
+### Signals on the cloud viewer
+
+**Who computes a reading.** On the cloud viewer the 20 Deriv-backed markets
+(forex, gold and silver, crypto, synthetic indices) are analysed in the
+visitor's browser. `src/derivhistory.js` reads the candles from Deriv's public
+feed and `src/hostedscan.js` runs them through the same analysis code the
+Worker and the PC server use, so a market reads the same wherever it is
+computed. The Worker reads the six index CFDs (Yahoo daily data cannot be read
+from a browser) and is the labelled fallback for a browser that cannot reach
+Deriv. On the sign-in screen the Worker is the only source: the browser opens
+no connection to Deriv before the visitor enters the workspace. The PC app does
+not use any of this.
+
+Why: the Worker has to open a new outbound connection to Deriv for every candle
+series, three per market. When Deriv refuses or drops those connections, every
+Deriv market used to show `No data · source: unavailable` while the markets
+were open. The browser already holds a working connection to the same feed for
+live prices.
+
+**How the browser asks Deriv.** One connection for candle history, reused for
+every request and separate from the price stream; answers matched to requests
+by `req_id`; six requests in flight; no more than 180 requests a minute
+(Deriv's published budget for this kind of call is 220); a series is reused for
+20 seconds (1-minute candles), 60 seconds (5-minute) or 5 minutes (1-hour);
+after a rejection for sending too fast, requests pause for 30 seconds, doubling
+up to 5 minutes; a failure is never kept or reused.
+
+**Every reading has one state**, shown in the Markets table and counted in the
+line above it (`Signal column: 20 live · 6 daily index readings · …`):
+
+| State | Shown as | Meaning |
+|---|---|---|
+| live | the signal, with `source: Deriv public candles · analysed in this browser` (or `· AURUM cloud analysis`) | the newest 1-minute candle started no more than 5 minutes ago |
+| daily | the signal, with `source: Yahoo Finance public daily data · AURUM cloud analysis` | end-of-day reading of an index CFD |
+| stale | `Stale data`, `source: Deriv public candles · last candle 2 h ago` | candles exist but are old: the market is closed or the feed is paused. No signal and no levels are shown, and there is no Retry because a retry cannot make a closed market current |
+| no data | `No data` + Retry, `source: Deriv public candles · no usable history` | Deriv answered but has no usable candles for the market |
+| unavailable | `Feed unavailable` + Retry, `source: Deriv public feed unreachable` | neither the browser nor the Worker could get the data. Hover the badge for both reasons |
+
+Only live and daily readings carry a signal, an entry, a stop or a target.
+Nothing is estimated, filled in or carried over from an earlier reading.
+
+Freshness is judged on Deriv's clock: the time of the newest tick when the
+price stream is running, otherwise the device clock, and never earlier than the
+newest candle of the same scan. A device clock that is minutes off therefore
+does not turn live markets stale or closed markets live.
+
+After a scan in which the browser could not reach Deriv for any market, the
+scans of the next minute go straight to the Worker instead of waiting for the
+same failure again; **Retry** and the Signals **Refresh** button try the
+browser again at once. Readings from the Worker are reused for 20 seconds
+(index readings for a minute), so the scans a page makes when it opens fit
+inside the Worker's rate limit of 8 scan requests a minute.
+
+**Finding out why a market has no reading.**
+
+- In the page: hover the badge. The reason is the text Deriv, the browser or
+  the Worker gave.
+- In the browser console: `__aurumDiagnostics()` returns the counts of the
+  last scan, its problems (market, state, reason) and the counters of the
+  candle connection (requests sent, answered, failed by kind, whether it is
+  paused). When the set of affected markets changes, the page also writes one
+  line starting with `[aurum] {"event":"hosted_scan_trouble"`. A closed
+  market is not reported as trouble.
+- In the Worker's logs (Cloudflare dashboard → the Worker → Logs): one
+  `provider_feed_failed` line per request in which Deriv or Yahoo could not be
+  read, with the route, how many markets failed, the markets, how each failed
+  (`deriv:connect`, `deriv:closed`, `deriv:timeout`, `deriv:provider`,
+  `yahoo:error`), how long it took and, where there is one, the WebSocket
+  close code or Deriv's error code.
+
+None of these carries a token, a saved key, a header, an address or anything
+about the visitor: market names, counts, durations and error text only.
+
+**Still read through the Worker:** the full Deriv catalogue under
+"Broker-discovered markets" and the analysis of a market picked from it. If
+the Worker cannot reach Deriv, those say so (`Deriv catalogue unavailable: …`)
+and the failure appears in the Worker's log. The Gold monitor asks the Worker
+first and reads the candles in the browser itself when the Worker fails, as it
+did before.
 
 **The PC copy is refreshed by hand.** The page the PC app serves is
 `bridge/app.html` (with its icons in `bridge/pwa/`): a copy of the built page
@@ -180,6 +260,8 @@ dashboard.
 - **Logs.** Worker logs are kept in Cloudflare (`observability.logs`) without
   per-request invocation logs. The Worker writes an event name, the method,
   the path and a short error description (name, message, top of the stack).
+  When Deriv or Yahoo cannot be read it writes one `provider_feed_failed`
+  line (see [Signals on the cloud viewer](#signals-on-the-cloud-viewer)).
   It does not log request bodies or headers.
 - **Nothing else.** No `vars`, no secrets, no KV/D1/R2, no custom domain, no routes.
 
@@ -289,6 +371,8 @@ browser ── local/LAN only ──> bridge/mt5_bridge.py ──> Exness MT5 te
 index.html            UI shell (connect screen, views, Settings key vault)
 src/main.js           app logic (feed wiring, scanner, trading, notifications)
 src/marketdata.js     Deriv public WS engine (reconnect + watchdog)
+src/derivhistory.js   cloud viewer: Deriv public candle history over one paced connection
+src/hostedscan.js     cloud viewer: signal scan in the browser, with one state per reading
 src/tradingview.js    Advanced Chart / timeline / calendar mounts
 src/notify.js         notifications engine
 src/vault.js          AI key vault (localStorage, x-ai-* headers)

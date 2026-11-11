@@ -78,19 +78,42 @@ function providerError(message, status = 502) {
   return responseJson({ error: 'live_data_unavailable', detail: String(message || 'Public data provider unavailable').slice(0, 160) }, status);
 }
 
+/* An upstream failure with the facts a log line needs to tell the causes
+   apart: how it failed (kind), how long it took, and the WebSocket close
+   code or the provider's own error code when there is one. The message sent
+   to the browser is unchanged. */
+function feedError(kind, message, extra = {}) {
+  const error = new Error(message);
+  error.kind = kind;
+  return Object.assign(error, extra);
+}
+
+/** Short, non-sensitive description of a provider failure for a log line. */
+function describeFeedFailure(error) {
+  const out = { kind: String((error && error.kind) || 'error').slice(0, 24), message: String((error && error.message) || error || '').slice(0, 160) };
+  if (error && Number.isFinite(error.elapsedMs)) out.elapsed_ms = error.elapsedMs;
+  if (error && Number.isFinite(error.closeCode)) out.close_code = error.closeCode;
+  if (error && error.providerCode) out.provider_code = String(error.providerCode).slice(0, 40);
+  return out;
+}
+
 function makeDerivRequest(WebSocketImpl, url = DERIV_PUBLIC_URL) {
   return (payload, timeoutMs = 9000) => new Promise((resolve, reject) => {
-    if (typeof WebSocketImpl !== 'function') return reject(new Error('Workers WebSocket client is unavailable'));
+    if (typeof WebSocketImpl !== 'function') return reject(feedError('no_websocket', 'Workers WebSocket client is unavailable'));
     let socket;
     let settled = false;
+    const startedAt = Date.now();
     const finish = (ok, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       try { socket?.close(); } catch (_) {}
-      ok ? resolve(value) : reject(value instanceof Error ? value : new Error(String(value)));
+      if (ok) { resolve(value); return; }
+      const error = value instanceof Error ? value : new Error(String(value));
+      if (!Number.isFinite(error.elapsedMs)) error.elapsedMs = Date.now() - startedAt;
+      reject(error);
     };
-    const timer = setTimeout(() => finish(false, new Error('Deriv public feed timed out')), timeoutMs);
+    const timer = setTimeout(() => finish(false, feedError('timeout', 'Deriv public feed timed out')), timeoutMs);
     try {
       socket = new WebSocketImpl(url);
       socket.addEventListener('open', () => {
@@ -102,7 +125,7 @@ function makeDerivRequest(WebSocketImpl, url = DERIV_PUBLIC_URL) {
           const raw = event.data;
           const message = JSON.parse(typeof raw === 'string' ? raw : new TextDecoder().decode(raw));
           if (message.error) {
-            finish(false, new Error(String(message.error.message || 'Deriv public feed error')));
+            finish(false, feedError('provider', String(message.error.message || 'Deriv public feed error'), { providerCode: String(message.error.code || '').slice(0, 40) }));
             return;
           }
           if (message.candles || message.history || message.tick || message.active_symbols) finish(true, message);
@@ -110,9 +133,9 @@ function makeDerivRequest(WebSocketImpl, url = DERIV_PUBLIC_URL) {
           if (!(e instanceof SyntaxError)) finish(false, e);
         }
       });
-      socket.addEventListener('error', () => finish(false, new Error('Deriv public WebSocket connection failed')));
-      socket.addEventListener('close', () => {
-        if (!settled) finish(false, new Error('Deriv public WebSocket closed before returning data'));
+      socket.addEventListener('error', () => finish(false, feedError('connect', 'Deriv public WebSocket connection failed')));
+      socket.addEventListener('close', (event) => {
+        if (!settled) finish(false, feedError('closed', 'Deriv public WebSocket closed before returning data', { closeCode: Number(event && event.code) }));
       });
     } catch (e) {
       finish(false, e);
@@ -224,7 +247,9 @@ function createReadOnlyWorker({
     return candles;
   }
 
-  async function scanOne(rawSymbol) {
+  /* `failures`, when given, collects one entry per market that could not be
+     read, so the route can write a single log line for the whole request. */
+  async function scanOne(rawSymbol, failures = null) {
     const symbol = cleanSymbol(rawSymbol);
     if (!symbol) return null;
     try {
@@ -264,8 +289,30 @@ function createReadOnlyWorker({
       };
     } catch (e) {
       const source = 'unavailable';
+      if (failures) failures.push({ symbol, provider: INDEX_YAHOO[symbol] ? 'yahoo' : 'deriv', ...describeFeedFailure(e) });
       return { symbol, error: 'FEED_ERROR', detail: String(e?.message || e).slice(0, 120), source, data_source: source };
     }
+  }
+
+  /* One structured line per request in which a provider failed: which
+     markets, which provider, how it failed and how long the request took.
+     Market symbols and error text only — never a header, a body, an address
+     or anything that identifies the visitor. */
+  function logFeedFailures(route, requested, failures, startedAt) {
+    if (!failures.length) return;
+    const kinds = {};
+    for (const f of failures) kinds[f.provider + ':' + f.kind] = (kinds[f.provider + ':' + f.kind] || 0) + 1;
+    const first = failures[0];
+    log('warn', 'provider_feed_failed', {
+      route, requested, failed: failures.length, duration_ms: Math.max(0, now() - startedAt), kinds,
+      symbols: failures.map((f) => f.symbol).slice(0, 14),
+      first: { symbol: first.symbol, provider: first.provider, kind: first.kind, message: first.message, elapsed_ms: first.elapsed_ms, close_code: first.close_code, provider_code: first.provider_code }
+    });
+  }
+
+  /* The same line for the routes that read one thing from Deriv. */
+  function logProviderFailure(route, error, startedAt, target = '') {
+    log('warn', 'provider_feed_failed', { route, requested: 1, failed: 1, duration_ms: Math.max(0, now() - startedAt), target: String(target).slice(0, 32), first: { provider: 'deriv', ...describeFeedFailure(error) } });
   }
 
   async function runPool(items, limit, task) {
@@ -360,7 +407,10 @@ function createReadOnlyWorker({
       const requested = Array.isArray(body.symbols) ? body.symbols.slice(0, 14) : [];
       const symbols = [...new Set(requested.map((x) => cleanSymbol(x)).filter(Boolean))];
       if (!symbols.length) return responseJson({ error: 'symbols_required', detail: 'Provide one or more supported AURUM market symbols.' }, 400);
-      const results = await runPool(symbols, 4, scanOne);
+      const startedAt = now();
+      const failures = [];
+      const results = await runPool(symbols, 4, (symbol) => scanOne(symbol, failures));
+      logFeedFailures(url.pathname, symbols.length, failures, startedAt);
       return responseJson({ results: results.filter(Boolean), feed: 'deriv-public', analysis_only: true, ts: now() });
     }
 
@@ -374,8 +424,11 @@ function createReadOnlyWorker({
       if (body.candleSets != null || body.dataSource === 'Exness MT5 local candles') {
         return responseJson({ error: 'exness_local_only', detail: 'Exness candles are not accepted by the Cloudflare API. Analyze them in the local browser/PC app.' }, 403);
       }
+      const startedAt = now();
       if (INDEX_YAHOO[symbol]) {
-        const result = await scanOne(symbol);
+        const failures = [];
+        const result = await scanOne(symbol, failures);
+        logFeedFailures(url.pathname, 1, failures, startedAt);
         return result?.error ? providerError(result.detail) : responseJson({ ...result, timeframe: 'DAILY', news: { available: false, reason: 'technical_only' }, meta: { mode: 'technical', reason: 'cloudflare_readonly', engines: [], spent: 0, cap: 0, cached: false, at: new Date(now()).toISOString() } });
       }
       try {
@@ -398,14 +451,21 @@ function createReadOnlyWorker({
           latest_candle_time: Number(latest?.time || 0),
           meta: { mode: 'technical', reason: 'cloudflare_readonly', engines: [], spent: 0, cap: 0, cached: false, at: new Date(now()).toISOString() }
         });
-      } catch (e) { return providerError(e?.message || e); }
+      } catch (e) {
+        logProviderFailure(url.pathname, e, startedAt, symbol);
+        return providerError(e?.message || e);
+      }
     }
 
     if (url.pathname === '/api/markets/deriv' && method === 'GET') {
       const limited = await enforceRateLimit(env, request, 'AURUM_MARKET_LIMITER', 'markets-catalog');
       if (limited) return limited;
+      const startedAt = now();
       try { return responseJson({ markets: await fetchActiveSymbols(), source: 'Deriv public active_symbols', data_status: 'live_catalogue', ts: now() }); }
-      catch (e) { return responseJson({ error: 'deriv_catalog_unavailable', detail: String(e?.message || e).slice(0, 120) }, 502); }
+      catch (e) {
+        logProviderFailure(url.pathname, e, startedAt, 'active_symbols');
+        return responseJson({ error: 'deriv_catalog_unavailable', detail: String(e?.message || e).slice(0, 120) }, 502);
+      }
     }
 
     if ((url.pathname === '/api/markets/deriv/candles' || url.pathname === '/api/markets/deriv/tick' || url.pathname === '/api/history/candles') && method === 'POST') {
@@ -413,6 +473,7 @@ function createReadOnlyWorker({
       if (limited) return limited;
       const { body, rejected } = await readBody(request);
       if (rejected) return rejected;
+      const startedAt = now();
       if (url.pathname === '/api/history/candles') {
         const symbol = cleanSymbol(body.sym);
         const granularity = Number(body.granularity);
@@ -422,7 +483,10 @@ function createReadOnlyWorker({
         try {
           const candles = freshCandles(await fetchCandlesByCode(DERIV_CODE_MAP[symbol], granularity, count), 30);
           return responseJson({ source: 'deriv-public', instrument: symbol, granularity, count: candles.length, fetched_at: new Date(now()).toISOString(), candles });
-        } catch (e) { return providerError(e?.message || e); }
+        } catch (e) {
+          logProviderFailure(url.pathname, e, startedAt, symbol);
+          return providerError(e?.message || e);
+        }
       }
       const code = cleanCode(body.code);
       if (!code) return responseJson({ error: 'invalid_market_code' }, 400);
@@ -440,6 +504,7 @@ function createReadOnlyWorker({
         const candles = freshCandles(await fetchCandlesByCode(code, granularity, count), 50);
         return responseJson({ code, name: market.name, market: market.market, candles, source: 'Deriv public candles', data_status: 'live', ts: now() });
       } catch (e) {
+        logProviderFailure(url.pathname, e, startedAt, code);
         return responseJson({ error: url.pathname.endsWith('/tick') ? 'deriv_market_tick_unavailable' : 'deriv_market_history_unavailable', detail: String(e?.message || e).slice(0, 120) }, 502);
       }
     }
