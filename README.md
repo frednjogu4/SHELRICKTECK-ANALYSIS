@@ -262,6 +262,36 @@ its service worker, manifest, icons and headers file. To pin the Node version
 there, set the build variable `NODE_VERSION` (22 or 24) in the Cloudflare
 dashboard.
 
+### When a merge does not reach the live site
+
+The staging Worker is published by that Git integration: a merge into `main`
+starts a build, and a successful build becomes the active deployment. The
+builds so far took 22 to 45 seconds.
+
+**What is live.** Cloudflare dashboard → Workers & Pages → `cloudflare-staging`
+→ **Deployments**. "Active deployment" is the version that serves the site.
+Its row in the list below carries the commit message of the merge it was built
+from.
+
+**The merge is not in that list.** The list shows successful builds only.
+
+1. On the same page select **View Build History** at the bottom. Failed and
+   cancelled builds are listed there, each with its log.
+2. Use **Retry build** on the build of that merge. In GitHub the same action
+   is **Re-run** on the commit's check: commit page → the mark next to the
+   author → Details.
+3. A retry rebuilds the commit of *that* build. Retrying the build of an older
+   merge publishes the older code again; it does not pick up later merges.
+4. If no build exists for the merge at all, the next commit on `main` starts
+   one, and it publishes everything merged up to then.
+
+**Pull requests get a separate preview build.** It runs Cloudflare's Preview
+command (`npx wrangler preview` by default, an open-beta Wrangler command)
+instead of the deploy command. The preview builds of pull requests #3 and #4
+failed. The cause is in Cloudflare's build log and has not been established.
+A red preview mark on a pull request is not the result of the production
+publish: #3 was published after its preview had failed.
+
 ### What the configuration does
 
 - **Routing.** `/api` and `/api/*` always run the Worker. Other requests are
