@@ -113,6 +113,16 @@ The cloud viewer cannot reach the PC, the MT5 bridge or any broker account, and
 it is not meant to. Use it to watch prices and signals away from the desk and
 the PC app to act on them.
 
+**The PC copy is refreshed by hand.** The page the PC app serves is
+`bridge/app.html` (with its icons in `bridge/pwa/`): a copy of the built page
+(`dist/index.html`) that is replaced when the PC package is updated.
+`npm run build` does not touch it. The copy committed here is still the build
+that was uploaded with the PC package (commit `243eb80`), so it is older than
+`dist/`: it does not include changes made since then (for example the
+feed-status labels and the Settings → About rows described above), and it
+still carries the previous name, logo and icons. Refreshing it changes what
+runs on the trading PC, so it is a separate, deliberate step.
+
 ### Before any deployment
 
 ```bash
@@ -184,6 +194,44 @@ dashboard.
   version from `engines.node` in `package.json`, `.nvmrc` or `.node-version`.
   The repository deliberately has none of these, so adding one also changes
   the Node version of a Railway deployment.
+
+## Brand and WhatsApp sharing
+
+Every device starts with the Shelricktech brand: the name `Shelricktech`, the
+tagline `INVESTMENT` and the ST logo in the sidebar and on the login screen,
+and the same logo as the browser-tab and home-screen icon.
+
+| What | Where it is set |
+|---|---|
+| Name, tagline and logo inside the page | `BRAND_DEFAULT` in `src/main.js`; the text shown before the script runs is in `index.html` (`<title>`, `#brandName`, `#brandTag`) |
+| Browser-tab and home-screen icons | `public/icons/`, listed in `public/manifest.webmanifest` |
+| WhatsApp number the share buttons open | `WA_DEFAULT` in `src/main.js` |
+
+A device can replace any of these for itself in **Settings** (Brand & logo,
+WhatsApp signal number). That choice is stored in that browser only.
+
+The four share buttons (a news signal, today's brief, the Gold signal, an AI
+brief) open `https://wa.me/<number>` with the message filled in. Nothing is
+sent until the person presses Send in WhatsApp. `WA_DEFAULT` is part of the
+public page, so anyone who opens the site can read it. Today's brief is shared
+only when the calendar actually loaded; a failed calendar is reported, not
+shared as "no events".
+
+Automatic sending (no tap) is separate: it goes through the server's WhatsApp
+Cloud API and is addressed by the `WA_TO` server variable (see
+`server/lib/wa.js`), not by `WA_DEFAULT`. The Cloudflare Worker has no
+WhatsApp, news or calendar route, so on the Cloudflare site only the Gold
+signal button has anything to share, and only while live Gold prices are
+arriving in the browser.
+
+To change the logo, replace `branding/shelricktech-logo.jpg` (square, white
+background, 512 px or larger) and run:
+
+```bash
+python -m pip install pillow          # once; only this script needs it
+python scripts/make-brand-assets.py   # icons + the logo built into src/main.js
+npm run build                         # then commit the changed files, including dist/
+```
 
 ## Continuous integration
 
@@ -258,7 +306,9 @@ cloudflare/platform.js  Worker HTTP helpers (body limits, error type, bounded ca
 wrangler.jsonc        Cloudflare configuration (routing, rate limits, logs)
 public/_headers       security headers for the static files on Cloudflare
 src/resilience.js     offline/online notices, service-worker registration, key-header stripping
-scripts/              build check (verify-dist), post-build copy, test runner, test network guard
+scripts/              build check (verify-dist), post-build copy, test runner, test network guard,
+                      brand image generator (make-brand-assets.py, needs Pillow, not part of the build)
+branding/             source artwork for the logo and the icons
 tests/platform/       Worker HTTP, app shell, config, build-check and tooling tests
 tests/worker-runtime/ the Worker under the real Cloudflare runtime (npm run test:worker)
 src/patterns.js       pattern UI: /api/patterns client + SVG candle chart + playbook + perf bars
