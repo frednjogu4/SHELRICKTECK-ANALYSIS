@@ -113,6 +113,16 @@ The cloud viewer cannot reach the PC, the MT5 bridge or any broker account, and
 it is not meant to. Use it to watch prices and signals away from the desk and
 the PC app to act on them.
 
+**The PC copy is refreshed by hand.** The page the PC app serves is
+`bridge/app.html` (with its icons in `bridge/pwa/`): a copy of the built page
+(`dist/index.html`) that is replaced when the PC package is updated.
+`npm run build` does not touch it. The copy committed here is still the build
+that was uploaded with the PC package (commit `243eb80`), so it is older than
+`dist/`: it does not include changes made since then (for example the
+feed-status labels and the Settings → About rows described above), and it
+still carries the previous name, logo and icons. Refreshing it changes what
+runs on the trading PC, so it is a separate, deliberate step.
+
 ### Signals on the cloud viewer
 
 **Who computes a reading.** On the cloud viewer the 20 Deriv-backed markets
@@ -126,11 +136,28 @@ Deriv. On the sign-in screen the Worker is the only source: the browser opens
 no connection to Deriv before the visitor enters the workspace. The PC app does
 not use any of this.
 
-Why: the Worker has to open a new outbound connection to Deriv for every candle
-series, three per market. When Deriv refuses or drops those connections, every
-Deriv market used to show `No data · source: unavailable` while the markets
-were open. The browser already holds a working connection to the same feed for
-live prices.
+**Why the Worker is not used for this.** The Worker opens a new outbound
+connection to Deriv for every candle series, three per market, and Deriv often
+refuses them. Whenever it did, every Deriv market showed
+`No data · source: unavailable` while the markets were open.
+
+What is known about the refusals:
+
+- Deriv limits requests: 220 a minute and 14,400 an hour for these calls
+  ([Limits](https://developers.deriv.com/docs/limits/)).
+- Deriv's API is served through Cloudflare, and Cloudflare presents every
+  Worker that calls another Cloudflare-hosted service under one shared address
+  ([Cloudflare HTTP headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/),
+  "CF-Connecting-IP in Worker subrequests").
+- On 11 Nov 2026 the live Worker was refused with
+  `You have reached the rate limit for active_symbols.` on the first request
+  of a new connection. The limit is therefore not counted per connection.
+
+The most likely explanation is that this Worker shares one request budget with
+every other Cloudflare Worker that calls Deriv. Deriv does not document what
+its limit is counted against, so this is an inference, not a confirmed fact.
+A visitor's browser connects to Deriv under the visitor's own address, as the
+live price stream already does.
 
 **How the browser asks Deriv.** One connection for candle history, reused for
 every request and separate from the price stream; answers matched to requests
@@ -143,9 +170,8 @@ Deriv's published limit for these calls is 220 a minute and 14,400 an hour
 open sends 60 requests for its first scan and about 30 a minute after that
 (1,800 an hour). If Deriv rejects a request for sending too fast, candle
 requests pause for 30 seconds, doubling up to 5 minutes, and the Worker is
-asked meanwhile. Deriv's page does not say whether the limit is counted per
-connection or per network address, so several tabs or visitors behind one
-address may share it.
+asked meanwhile. If Deriv counts its limit per network address, as the
+refusals above suggest, several tabs or visitors behind one address share it.
 
 **Every reading has one state**, shown in the Markets table and counted in the
 line above it (`Signal column: 20 live · 6 daily index readings · …`):
@@ -193,22 +219,19 @@ inside the Worker's rate limit of 8 scan requests a minute.
 None of these carries a token, a saved key, a header, an address or anything
 about the visitor: market names, counts, durations and error text only.
 
-**Still read through the Worker:** the full Deriv catalogue under
-"Broker-discovered markets" and the analysis of a market picked from it. If
-the Worker cannot reach Deriv, those say so (`Deriv catalogue unavailable: …`)
-and the failure appears in the Worker's log. The Gold monitor asks the Worker
-first and reads the candles in the browser itself when the Worker fails, as it
-did before.
+**Still read through the Worker**, and therefore still failing whenever Deriv
+refuses the Worker:
 
-**The PC copy is refreshed by hand.** The page the PC app serves is
-`bridge/app.html` (with its icons in `bridge/pwa/`): a copy of the built page
-(`dist/index.html`) that is replaced when the PC package is updated.
-`npm run build` does not touch it. The copy committed here is still the build
-that was uploaded with the PC package (commit `243eb80`), so it is older than
-`dist/`: it does not include changes made since then (for example the
-feed-status labels and the Settings → About rows described above), and it
-still carries the previous name, logo and icons. Refreshing it changes what
-runs on the trading PC, so it is a separate, deliberate step.
+- The best-market panel on the sign-in screen. When no market can be read it
+  says so (`No market could be read right now: 9 unavailable. …`) instead of
+  "no setup", and the pick is read again in the browser once the visitor is
+  inside.
+- The full Deriv catalogue under "Broker-discovered markets" and the analysis
+  of a market picked from it. They say so
+  (`Deriv catalogue unavailable: You have reached the rate limit for active_symbols.`)
+  and the failure appears in the Worker's log.
+- The Gold monitor's first attempt. It reads the candles in the browser itself
+  when the Worker fails, as it did before.
 
 ### Before any deployment
 

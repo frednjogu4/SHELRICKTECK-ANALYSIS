@@ -500,6 +500,29 @@ test('sign-in screen: no connection to Deriv is opened; the first scan is answer
   } finally { await app.close(); }
 });
 
+test('best-market panel: markets that could not be read are reported as such, not as "no setup"', async () => {
+  const app = await bootApp({ world: { cloudDeriv: 'down', yahoo: 'down' } });
+  try {
+    /* Sign-in screen: the cloud is the only source here and reaches neither Deriv nor Yahoo. */
+    const onSignIn = app.doc.getElementById('authBestBody');
+    await app.waitFor(() => /could be read/.test(onSignIn.textContent), 'the sign-in screen panel');
+    assert.equal(onSignIn.textContent, 'No market could be read right now: 9 unavailable. Nothing is estimated \u2014 the pick appears when the scan finds one.');
+    assert.deepEqual(app.sockets, [], 'still no connection to Deriv from the sign-in screen');
+
+    /* Inside the workspace the pick is read again, this time with this browser's own candles:
+       six markets are readable now, the three index CFDs are not. The panel shows a pick or
+       says which markets were not read; it no longer claims that nothing could be read. */
+    await app.enter();
+    const inside = app.doc.getElementById('ovBest');
+    const picked = () => !!inside.querySelector('.badge.buy, .badge.sell');
+    await app.waitFor(() => picked() || /Not read: /.test(inside.textContent), 'the pick repeated after entering');
+    if (!picked()) assert.equal(inside.textContent, 'No directional setup in the markets that could be read. Not read: 3 unavailable. Nothing is estimated \u2014 the pick appears when the scan finds one.');
+    assert.ok(!/No market could be read/.test(inside.textContent));
+    assert.equal(app.doc.getElementById('authBestBody').textContent, inside.textContent, 'both panels show the same pick');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
 /* ---------------------------------------------------------------- other consumers of the same reading */
 
 test('order ticket and analyzer use the browser reading: no "levels unavailable", and the cloud is not asked to analyse', async () => {
@@ -677,6 +700,8 @@ test('PC app: scans go to the local API as before — no candle connection from 
     assert.ok(app.sockets[0].sent.every((message) => message.style === 'ticks'));
     assert.ok(app.doc.getElementById('mktScanStatus').classList.contains('hidden'), 'the cloud viewer status line stays hidden');
     assert.equal(app.doc.getElementById('aboutAnalysis').textContent, 'Exness MT5 first · labelled Deriv / Yahoo fallback');
+    /* The best-market panel keeps the PC wording, although one of its markets failed: the local API said WAIT for the others. */
+    assert.equal(app.doc.getElementById('authBestBody').textContent, 'No directional setup right now \u2014 the pick appears the moment the live scan finds one.');
     assert.deepEqual(app.warnings.filter((line) => line.startsWith('[aurum]')), []);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }

@@ -1072,7 +1072,7 @@ function renderAuthDaily(){
   const m=document.getElementById('authMotivation');
   if(m)m.innerHTML=quoteHtml();
 }
-let bestPick={at:0,item:null,busy:false};
+let bestPick={at:0,item:null,busy:false,unread:'',readable:0};
 async function refreshBestPick(force){
   if(bestPick.busy)return;
   if(Date.now()-bestPick.at<10*60*1000&&!force){ renderBestPick(); return; }
@@ -1082,9 +1082,14 @@ async function refreshBestPick(force){
     const results=await scanSignalsPreferred(syms);
     const dirs=results.filter(r=>!r.error&&(r.signal==='BUY'||r.signal==='SELL'));
     bestPick.item=dirs.length?dirs.reduce((a,b)=>((b.confidence||0)>(a.confidence||0)?b:a)):null;
+    /* Cloud viewer: a market that could not be read (stale, no data, unavailable) is not a market
+       without a setup. The counts are shown when there is no pick. Readings of the PC app carry
+       no such state, so its wording stays as it was. */
+    const counts=summarizeReadings(results);
+    bestPick.unread=scanIssuesText(counts); bestPick.readable=counts.live+counts.daily;
     bestPick.at=Date.now();
     emitSignalAlerts(results);
-  }catch(e){ bestPick.item=null; bestPick.at=Date.now(); }
+  }catch(e){ bestPick.item=null; bestPick.unread=''; bestPick.readable=0; bestPick.at=Date.now(); }
   bestPick.busy=false; renderBestPick();
 }
 /* Cloud viewer: the pick shown on the sign-in screen was read by the AURUM cloud
@@ -1101,7 +1106,9 @@ function renderBestPick(){
     const el=document.getElementById(id); if(!el)continue;
     if(bestPick.busy&&!bestPick.item){ el.innerHTML='<span class="tiny faint">Scanning live markets\u2026</span>'; continue; }
     const it=bestPick.item;
-    if(!it){ el.innerHTML='<span class="tiny faint">No directional setup right now \u2014 the pick appears the moment the live scan finds one.</span>'; continue; }
+    if(!it){ el.innerHTML='<span class="tiny faint">'+(bestPick.unread
+        ?(bestPick.readable?'No directional setup in the markets that could be read. Not read: ':'No market could be read right now: ')+escHtml(bestPick.unread)+'. Nothing is estimated \u2014 the pick appears when the scan finds one.'
+        :'No directional setup right now \u2014 the pick appears the moment the live scan finds one.')+'</span>'; continue; }
     const ix=INDEX_ONLY.includes(it.symbol);
     el.innerHTML='<b>'+escHtml(it.symbol)+'</b> <span class="badge '+(it.signal==='BUY'?'buy':'sell')+'">'+escHtml(it.signal)+'</span> <b>'+(it.confidence||0)+'%</b>'
       +(ix?' <span class="badge gray">index CFD · analysis only</span>':'')
