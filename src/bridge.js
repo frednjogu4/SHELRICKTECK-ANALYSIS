@@ -81,12 +81,24 @@ function assertBridgeSafety(url, token) {
     machine, Chrome/Edge treat it as mixed content and may block it SILENTLY —
     which looks exactly like "bridge not running". Tell the user how to tell
     the two cases apart and how to allow the local connection. */
+export function sameOriginBridgeWs(pageUrl){
+  try{
+    const page=new URL(pageUrl);
+    /* The local Python server intentionally serves the app, HTTP commands,
+       and a WebSocket endpoint together on 8788. Using that same origin avoids
+       Chrome's cross-origin/private-network checks against localhost:8787. */
+    if(page.protocol==='http:'&&page.port==='8788'&&isLocalHost(page.origin)) return 'ws://'+page.host;
+  }catch(e){}
+  return '';
+}
 export function localBridgeWs(){
   try{
+    const sameOrigin=sameOriginBridgeWs(location.href);
+    if(sameOrigin) return sameOrigin;
     const h=location.hostname;
-    if((h==='127.0.0.1'||h==='localhost')&&(location.port==='8788'||location.port==='8787')) return 'ws://'+location.host;
-    /* opened via the PC's LAN address (http://192.168.x.x:8788/app from a
-       phone) -> the trading socket is on the same host, port 8787 */
+    if((h==='127.0.0.1'||h==='localhost')&&location.port==='8787') return 'ws://'+location.host;
+    /* Hosted app / phone clients can still use the bridge's dedicated socket
+       port on a private PC/LAN address. */
     if(h && h!=='127.0.0.1' && h!=='localhost' && isLocalHost('ws://'+h+':8787/')) return 'ws://'+h+':8787';
   }catch(e){}
   return 'ws://127.0.0.1:8787';
@@ -130,7 +142,9 @@ function healthOnce(url, token) {
     that actually answered so connect uses the same one. */
 export function healthBridge(url, token) {
   url = normalizeBridgeUrl(url);
-  const cands = [url];
+  let sameOrigin = '';
+  try { sameOrigin = sameOriginBridgeWs(location.href); } catch (e) {}
+  const cands = [...new Set([sameOrigin, url].filter(Boolean))];
   try {
     const u = new URL(url);
     if (u.hostname === '127.0.0.1') cands.push(url.replace('127.0.0.1', 'localhost'));
@@ -339,6 +353,7 @@ export function bridgeHistory(symbol, timeframe, count = 120) { return frame({ t
  * ================================================================ */
 export async function diagnoseBridge(url, token, creds) {
   url = normalizeBridgeUrl(url);
+  try { url = sameOriginBridgeWs(location.href) || url; } catch (e) {}
   const steps = [];
   const add = (name, ok, detail) => { steps.push({ name, ok: ok === true ? true : ok === false ? false : null, detail }); };
   let pageHttps = false;

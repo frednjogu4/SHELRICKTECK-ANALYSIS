@@ -23,10 +23,6 @@ import { derivWsAuthorize, derivWsProposal, derivWsBuy, derivWsSell } from './de
 import * as bridge from './bridge.js';
 import { patternAnalyze, patternStudy, renderPatternChart, playbookHTML, performanceHTML } from './patterns.js';
 import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudSignIn, cloudSignUp, cloudSignOut, cloudVerifyTables, cloudList, saveAnalysis, savePatternEvent, saveAlert, saveSignal } from './cloud.js';
-import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
-import { candleHistory } from './derivhistory.js';
-import { createHostedScanner, signalState, summarizeReadings } from './hostedscan.js';
-import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
 
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));
@@ -52,12 +48,6 @@ const dateStr=t=>new Date(t).toLocaleString('en-GB',{day:'2-digit',month:'short'
 const INSTR=INSTRUMENTS.map(I=>Object.assign({},I,{p:null,open:null,hist:[],t:0}));
 const bySym=Object.fromEntries(INSTR.map(i=>[i.s,i]));
 const chgOf=I=>{ if(I.p==null||I.open==null)return null; return ((I.p-I.open)/I.open)*100; };
-
-/* ---------- built-in WhatsApp number ----------
-   Share buttons open WhatsApp with the Shelricktech number unless the device
-   has its own number saved in Settings. International format, digits only.
-   Declared here because the Settings field is filled in during start-up. */
-const WA_DEFAULT='254721752212';
 
 /* ---------- persistent state ---------- */
 const store={
@@ -228,13 +218,30 @@ function localApiProxyToken(){
   try{if(t){sessionStorage.setItem('aurum_local_api_token',t);return t;}return sessionStorage.getItem('aurum_local_api_token')||'';}catch(e){return t;}
 }
 try{document.addEventListener('input',(e)=>{if(e.target&&e.target.id==='mt5Token'&&isPrivateBridgePage()){const t=String(e.target.value||'').trim();try{t?sessionStorage.setItem('aurum_local_api_token',t):sessionStorage.removeItem('aurum_local_api_token');}catch(_){}}});}catch(e){}
+async function hydrateLoopbackBridgeToken(){
+  try{
+    const host=String(location.hostname||'').toLowerCase();
+    if(location.protocol!=='http:'||location.port!=='8788'||!['127.0.0.1','localhost','::1'].includes(host))return;
+    const field=document.getElementById('mt5Token');
+    if(field&&field.value)return;
+    const r=await fetch('/local-config',{cache:'no-store',credentials:'same-origin'});
+    if(!r.ok)return;
+    const cfg=await r.json();
+    const token=String(cfg&&cfg.bridgeToken||'').trim();
+    const server=String(cfg&&cfg.exnessServer||'').trim();
+    if(server){['exnessServer','mt5Server'].forEach(id=>{const el=document.getElementById(id);if(el&&!el.value)el.value=server;});}
+    if(!token)return;
+    const input=document.getElementById('mt5Token');
+    if(input&&!input.value)input.value=token;
+    try{sessionStorage.setItem('aurum_local_api_token',token);}catch(_e){}
+  }catch(_e){}
+}
+void hydrateLoopbackBridgeToken();
 function api(path,{method='GET',body,headers={},timeoutMs=0}={}){
   if(typeof fetch!=='function')return Promise.reject(new Error('fetch unavailable'));
   const request=()=>{
     const sig=(timeoutMs&&typeof AbortSignal!=='undefined'&&AbortSignal.timeout)?AbortSignal.timeout(timeoutMs):undefined;
     const reqHeaders=Object.assign({'content-type':'application/json'},headers);
-    /* The Cloudflare read-only Worker is technical-only and never uses AI keys, so the per-device keys are not transmitted to it. */
-    if(isCloudflareReadonlyMode())removeAiKeyHeaders(reqHeaders);
     if(String(path||'').startsWith('/api/')&&isPrivateBridgePage()){
       const proxyToken=localApiProxyToken();
       if(proxyToken)reqHeaders['x-aurum-local-api-token']=proxyToken;
@@ -261,7 +268,6 @@ function toast(title,msg,kind){
   setTimeout(()=>{ el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(),320); },4200);
 }
 initNotifications(toast);
-initConnectivityNotices({toast});
 
 /* ---------- confirm modal ---------- */
 const confirmBox=document.createElement('div');
@@ -320,11 +326,7 @@ function goto(view){
   state.view=view;
   try{ document.body.setAttribute('data-view',view); }catch(e){}
   $$('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+view));
-  $$('.nav-item').forEach(b=>{
-    const current=b.dataset.view===view;
-    b.classList.toggle('active',current);
-    if(current)b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
-  });
+  $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===view));
   $('#topTitle').textContent=VIEW_META[view][0];
   $('#topCrumb').textContent=VIEW_META[view][1];
   closeSidebar();
@@ -338,8 +340,8 @@ $$('.nav-item').forEach(b=>b.onclick=()=>goto(b.dataset.view));
 document.addEventListener('click',e=>{
   const g=e.target.closest('[data-goto]'); if(g) goto(g.dataset.goto);
 });
-function openSidebar(){ $('#sidebar').classList.add('open'); $('#scrim').classList.add('open'); $('#hamburger').setAttribute('aria-expanded','true'); try{ document.body.style.overflow='hidden'; }catch(e){} }
-function closeSidebar(){ $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('open'); $('#hamburger').setAttribute('aria-expanded','false'); try{ document.body.style.overflow=''; }catch(e){} }
+function openSidebar(){ $('#sidebar').classList.add('open'); $('#scrim').classList.add('open'); try{ document.body.style.overflow='hidden'; }catch(e){} }
+function closeSidebar(){ $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('open'); try{ document.body.style.overflow=''; }catch(e){} }
 $('#hamburger').onclick=openSidebar;
 $('#scrim').onclick=closeSidebar;
 
@@ -735,7 +737,7 @@ function syncDerivKind(){
 async function configureCloudflareReadonlyUi(){
   if(!(await isCloudflareHostedApp()))return;
   cloudflareReadonlyUi=true; derivKind='classic'; syncDerivKind();
-  feed.setDefaultSubscriptionsEnabled(true); /* keep the dashboard's verified Deriv instruments streaming; catalogue follows add only selected extra markets */
+  feed.setDefaultSubscriptionsEnabled(false); /* staging streams no built-in universe; catalogue selections alone subscribe */
   const patTab=$('#derivKindPat'); if(patTab)patTab.hidden=true;
   const mt5Tab=$('#authTabMt5'); if(mt5Tab){mt5Tab.hidden=true;mt5Tab.disabled=true;mt5Tab.title='Exness is available only in the PC-local app; Cloudflare cannot connect to its bridge.';}
   $('#exnessForm')?.querySelectorAll('input,button').forEach((el)=>{el.disabled=true;});
@@ -874,48 +876,33 @@ const signOutBtn=$('#signOutBtn'); if(signOutBtn) signOutBtn.onclick=signOut;
    LIVE FEED (Deriv public WebSocket) + ticker
    ================================================================ */
 let feedWired=false, tickN=0, feedLiveAnnounced=false;
-let feedStatusDetail='', feedDownExplained=false;
 function updateFeedPill(s){
   const txt=$('#feedText'), dot=$('#feedDot');
   const map={
     idle:['Deriv feed · idle','off'],
     connecting:['Deriv feed · connecting…','off'],
     live:['Deriv live feed','live'],
-    stale:['Deriv feed · no recent ticks (stale)','off'],
     reconnecting:['Deriv feed · reconnecting…','off'],
     unavailable:['Deriv feed · unavailable','off'],
     stopped:['Deriv feed · stopped','off']
   };
   if(isCloudflareReadonlyMode()&&s==='live'){
-    const lastTick=feed.lastTickAt();
-    const fresh=lastTick>0&&Date.now()-lastTick<30000;
-    map.live=fresh?['Deriv public feed · receiving ticks','live']:['Deriv feed · waiting for first tick','off'];
+    const fresh=[...liveDerivQuotes.values()].some((q)=>q&&q.status==='live'&&Date.now()-Number(q.time||0)<30000);
+    map.live=fresh?['Deriv live feed · selected quotes','live']:(liveDerivCodes.size?['Deriv feed · waiting for selected tick','off']:['Deriv feed · ready · no markets selected','off']);
   }
   const [label,cls]=map[s]||map.idle;
   if(txt)txt.textContent=label;
   if(dot)dot.className='dot '+(cls==='live'?'live':'off');
   const about=$('#aboutFeed'); if(about)about.textContent=label;
-  const pill=$('#feedPill');
-  if(pill){
-    if(s==='unavailable')pill.title='This browser could not open the public Deriv price feed'+(feedStatusDetail?' ('+feedStatusDetail.slice(0,140)+')':'')+'. Prices show “—”; nothing is estimated.';
-    else if(s==='stale')pill.title='The public Deriv price feed is not delivering ticks'+(feedStatusDetail?' ('+feedStatusDetail.slice(0,140)+')':'')+'. Prices on screen may be old; nothing is estimated.';
-    else pill.removeAttribute('title');
-  }
 }
 function wireFeed(){
   if(feedWired)return; feedWired=true;
-  feed.onStatus((s,detail)=>{
-    feedStatusDetail=(s==='unavailable'||s==='stale')?String(detail||''):'';
+  feed.onStatus(s=>{
     updateFeedPill(s);
     if(s==='live'){
       if(!isCloudflareReadonlyMode()&&!feedLiveAnnounced){ feedLiveAnnounced=true; notify('Live feed connected','Deriv real-time prices are streaming.','ok',{tag:'feed'}); }
-      /* Cloud viewer: the feed reports 'live' only after a valid tick, so this is never a connection-only notice. */
-      else if(isCloudflareReadonlyMode()&&!feedLiveAnnounced){ feedLiveAnnounced=true; notify('Live prices streaming','Public Deriv quotes are streaming directly in this browser. View only: no account is connected.','ok',{tag:'feed'}); }
     }else if(s==='unavailable'&&feedLiveAnnounced){
       notify('Feed unavailable','Live Deriv prices unreachable — quotes show “—”.','err',{tag:'feed'});
-    }else if(s==='unavailable'&&isCloudflareReadonlyMode()&&!feedDownExplained){
-      feedDownExplained=true;
-      toast('Live prices unavailable','This browser could not open the public Deriv price feed, so prices show “—”. Nothing is estimated. Try reloading, another browser or another network.','warn');
     }
   });
   feed.onTick((sym,q)=>{
@@ -1073,92 +1060,32 @@ function renderAuthDaily(){
   const m=document.getElementById('authMotivation');
   if(m)m.innerHTML=quoteHtml();
 }
-/* Today's best market. Two lines, because two kinds of reading reach this panel and
-   their scores are not on one scale (src/bestpick.js):
-     - the pick: the strongest BUY/SELL among the LIVE readings (1m/5m/1h), with the
-       time it was read;
-     - the daily index trend: the strongest daily index reading, with the day its
-       newest bar belongs to. It is never ranked against the live markets. */
-const BEST_PICK_INDICES=['NAS100','US30','SPX500'];
-const BEST_PICK_EVERY_MS=10*60*1000;
-let bestPick={at:0,item:null,daily:null,dailyRead:[],dailyUnread:'',busy:false,unread:'',readable:0,unreachable:0};
-/* Reads the panel's markets once. It runs at start-up, on every tick of the 10-minute
-   timer near the end of this file, and once more when the visitor enters the workspace:
-   the timer is the schedule. (A second condition used to stand here, "at least 10 minutes
-   since the last result". A tick comes 10 minutes after the previous read STARTED, a few
-   seconds short of that, so every second tick was skipped and the panel was read every
-   20 minutes.) */
-async function refreshBestPick(){
+let bestPick={at:0,item:null,busy:false};
+async function refreshBestPick(force){
   if(bestPick.busy)return;
+  if(Date.now()-bestPick.at<10*60*1000&&!force){ renderBestPick(); return; }
   bestPick.busy=true; renderBestPick();
-  const syms=INSTR.slice(0,6).map(I=>I.s).concat(BEST_PICK_INDICES);
-  /* A scan answers with one reading per symbol and reports a market it could not read inside
-     that reading. Should the scan itself fail, the panel is filled from an empty list. */
-  let results=[];
-  try{ results=await scanSignalsPreferred(syms); }catch(e){}
-  const pick=splitBestPick(results,BEST_PICK_INDICES);
-  bestPick.item=pick.live; bestPick.daily=pick.daily; bestPick.dailyRead=pick.dailyRead;
-  /* Cloud viewer: a market that could not be read (stale, no data, unavailable) is not a market
-     without a setup. Each line reports its own unread markets when it has nothing to show.
-     Readings of the PC app carry no such state, so the wording of its first line stays as it was. */
-  const counts=summarizeReadings(pick.liveSide);
-  bestPick.unread=scanIssuesText(counts); bestPick.readable=counts.live; bestPick.unreachable=counts.unavailable;
-  /* An index that could not be read is said so on the daily line in both apps: this line
-     is new, and an index missing from it without a word would read as "no direction". */
-  const unreadIndices=pick.dailySide.filter(r=>r.error).length;
-  bestPick.dailyUnread=unreadIndices?unreadIndices+' unavailable':'';
-  bestPick.at=Date.now();
-  try{ emitSignalAlerts(results); }catch(e){}
+  try{
+    const syms=INSTR.slice(0,6).map(I=>I.s).concat(['NAS100','US30','SPX500']);
+    const results=await scanSignalsPreferred(syms);
+    const dirs=results.filter(r=>!r.error&&(r.signal==='BUY'||r.signal==='SELL'));
+    bestPick.item=dirs.length?dirs.reduce((a,b)=>((b.confidence||0)>(a.confidence||0)?b:a)):null;
+    bestPick.at=Date.now();
+    emitSignalAlerts(results);
+  }catch(e){ bestPick.item=null; bestPick.at=Date.now(); }
   bestPick.busy=false; renderBestPick();
 }
-/* Cloud viewer: the pick shown on the sign-in screen was read by the AURUM cloud
-   alone (no connection to Deriv is opened there). Once the visitor is in the
-   workspace it is read again, this time with this browser's own Deriv candles. */
-function repickAfterEntering(){
-  if(!isCloudflareReadonlyMode())return;
-  if(bestPick.busy){ setTimeout(repickAfterEntering,1500); return; }
-  refreshBestPick();
-}
 const INDEX_ONLY=['NAS100','US30','SPX500','US100','NASDAQ'];
-const INDEX_BADGE=' <span class="badge gray">index CFD · analysis only</span>';
-const DAILY_TREND_NOTE='A once-a-day reading from daily closing prices. It changes only while the index\u2019s own market is open, and its score (50 + 8 per check) is not comparable with the live markets above.';
-/* First line: the strongest live reading, or why there is none. */
-function bestPickLiveHtml(){
-  const it=bestPick.item;
-  if(!it&&!bestPick.unread)return '<span class="tiny faint">No directional setup right now \u2014 the pick appears the moment the live scan finds one.</span>';
-  if(!it){
-    /* Sign-in screen of the cloud viewer: every reading there is the cloud's (no connection to
-       Deriv is opened before the visitor enters). Where the cloud could not reach the feed,
-       the visitor is told who reads the markets next. A closed market gets no such sentence:
-       entering does not open it. */
-    const next=bestPick.unreachable&&!enteredWorkspace?' Inside the workspace this browser reads the live markets itself.':'';
-    return '<span class="tiny faint">'+(bestPick.readable?'No directional setup in the live markets that could be read. Not read: ':'No live market could be read right now: ')+escHtml(bestPick.unread)+'. Nothing is estimated \u2014 the pick appears when the scan finds one.'+next+'</span>';
-  }
-  return '<b>'+escHtml(it.symbol)+'</b> <span class="badge '+(it.signal==='BUY'?'buy':'sell')+'">'+escHtml(it.signal)+'</span> <b>'+(Number(it.confidence)||0)+'%</b>'
-    +(INDEX_ONLY.includes(it.symbol)?INDEX_BADGE:'')
-    +' <span class="tiny faint">votes '+escHtml(it.votes||'\u2014')+' \u00b7 source: '+escHtml(it.data_source||it.source||'unavailable')+' \u00b7 '+timeStr(bestPick.at)+'</span>';
-}
-/* Second line: the daily index trend. Its label carries the day of the bar it comes from,
-   where the reading says it (the PC app's local API does not). '' when the scan brought no
-   daily index reading at all (the PC app with every index read live from MT5). */
-function bestPickDailyHtml(){
-  const d=bestPick.daily, read=bestPick.dailyRead||[], unread=bestPick.dailyUnread;
-  const open='<div class="bp-daily" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border-soft)" title="'+escHtml(DAILY_TREND_NOTE)+'">';
-  const label=day=>'Daily index trend'+(day?' \u00b7 '+escHtml(day):'');
-  if(d)return open+'<span class="tiny faint">'+label(dailyBarText(d))+'</span> <b>'+escHtml(d.symbol)+'</b> <span class="badge '+(d.signal==='BUY'?'buy':'sell')+'">'+escHtml(d.signal)+'</span> <b>'+(Number(d.confidence)||0)+'%</b>'
-    +INDEX_BADGE
-    +' <span class="tiny faint">votes '+escHtml(d.votes||'\u2014')+' \u00b7 source: '+escHtml(d.data_source||d.source||'unavailable')+'</span></div>';
-  if(read.length)return open+'<span class="tiny faint">'+label(sharedDailyBarText(read))+': no direction on '+escHtml(read.map(r=>r.symbol).join(', '))+'.'+(unread?' Not read: '+escHtml(unread)+'.':'')+'</span></div>';
-  if(unread)return open+'<span class="tiny faint">Daily index trend: not read right now ('+escHtml(unread)+'). Nothing is estimated.</span></div>';
-  return '';
-}
 function renderBestPick(){
   for(const id of ['authBestBody','ovBest']){
     const el=document.getElementById(id); if(!el)continue;
-    /* Only the very first scan shows a placeholder: a later one keeps the previous lines on
-       screen until its own result replaces them. */
-    if(bestPick.busy&&!bestPick.at){ el.innerHTML='<span class="tiny faint">Scanning live markets\u2026</span>'; continue; }
-    el.innerHTML='<div class="bp-live">'+bestPickLiveHtml()+'</div>'+bestPickDailyHtml();
+    if(bestPick.busy&&!bestPick.item){ el.innerHTML='<span class="tiny faint">Scanning live markets\u2026</span>'; continue; }
+    const it=bestPick.item;
+    if(!it){ el.innerHTML='<span class="tiny faint">No directional setup right now \u2014 the pick appears the moment the live scan finds one.</span>'; continue; }
+    const ix=INDEX_ONLY.includes(it.symbol);
+    el.innerHTML='<b>'+escHtml(it.symbol)+'</b> <span class="badge '+(it.signal==='BUY'?'buy':'sell')+'">'+escHtml(it.signal)+'</span> <b>'+(it.confidence||0)+'%</b>'
+      +(ix?' <span class="badge gray">index CFD · analysis only</span>':'')
+      +' <span class="tiny faint">votes '+escHtml(it.votes||'\u2014')+' \u00b7 source: '+escHtml(it.data_source||it.source||'unavailable')+' \u00b7 '+timeStr(bestPick.at)+'</span>';
   }
 }
 function renderOvDaily(){
@@ -1173,21 +1100,6 @@ function renderOvDaily(){
 /* ================================================================
    SIGNAL SCANNER (real technical scan on live candles, $0 AI)
    ================================================================ */
-/* Cloud viewer: there is no local API to start, so a failed request is explained as what it is. */
-function cloudAnalysisDownHtml(e){
-  const full=String(e&&e.message||e||''), msg=full.slice(0,160), st=e&&e.signalState;
-  /* A reading from the cloud viewer's scan explains its own state in a full sentence. */
-  if(st==='stale'||st==='no-data'||st==='unavailable')return escHtml(full.slice(0,420).replace(/[.\s]+$/,''))+'. Nothing is estimated.'+(st==='stale'?'':' Try again in a minute.');
-  return 'The AURUM cloud analysis service did not return live data'+(msg&&msg!=='fetch unavailable'?' ('+escHtml(msg)+')':'')+'. Nothing is estimated. Try again in a minute.';
-}
-/* Cloud viewer: "2 stale (market closed or feed paused) · 1 unavailable", or '' when every reading is live. */
-function scanIssuesText(c){
-  const parts=[];
-  if(c&&c.stale)parts.push(c.stale+' stale (market closed or feed paused)');
-  if(c&&c.noData)parts.push(c.noData+' with no data');
-  if(c&&c.unavailable)parts.push(c.unavailable+' unavailable');
-  return parts.join(' \u00b7 ');
-}
 async function scanSignals(){
   const grid=$('#sigGrid');
   if(!grid)return;
@@ -1203,14 +1115,13 @@ async function scanSignals(){
     emitSignalAlerts(results);
     state.signals=(data.results||[]).filter(r=>!r.error);
     state.scanStatus=state.signals.length?'ready':'empty';
-    state.scanIssues=scanIssuesText(summarizeReadings(results.filter(r=>r&&r.error&&signalState(r))));
-    $('#sigStamp').textContent='Updated '+timeStr(Date.now())+' · technical · live candles'+(state.scanIssues?' · '+state.scanIssues:'');
+    $('#sigStamp').textContent='Updated '+timeStr(Date.now())+' · technical · live candles';
     const c=$('#navSigCount'); if(c)c.textContent=state.signals.length;
     renderSignals();
     if(state.view==='overview') renderOverview();
   }catch(e){
     state.scanStatus='error';
-    grid.innerHTML='<div class="empty"><b>Live scan unavailable</b>'+(isCloudflareReadonlyMode()?cloudAnalysisDownHtml(e):(String(e.message||e)==='fetch unavailable'?'The API server is not running.':'Could not reach the local API. Start it with <code>npm run api</code>.'))+'</div>';
+    grid.innerHTML='<div class="empty"><b>Live scan unavailable</b>'+(String(e.message||e)==='fetch unavailable'?'The API server is not running.':'Could not reach the local API. Start it with <code>npm run api</code>.')+'</div>';
     $('#sigStamp').textContent='Scan failed '+timeStr(Date.now());
     const c=$('#navSigCount'); if(c)c.textContent='0';
   }
@@ -1220,9 +1131,7 @@ function renderSignals(){
   if(state.scanStatus==='loading')return;
   if(state.scanStatus==='error'){ return; }
   if(!state.signals.length){
-    g.innerHTML=state.scanIssues
-      ?'<div class="empty"><b>No live readings right now</b>'+escHtml(state.scanIssues)+'. Nothing is estimated — press refresh to check again.</div>'
-      :'<div class="empty"><b>No signals right now</b>Live scan returned no setups — press refresh.</div>';
+    g.innerHTML='<div class="empty"><b>No signals right now</b>Live scan returned no setups — press refresh.</div>';
     return;
   }
   g.innerHTML='';
@@ -1268,7 +1177,7 @@ function renderSignals(){
     g.appendChild(card);
   });
 }
-$('#refreshSigs').onclick=()=>{ if(hostedScannerInstance)hostedScannerInstance.retryBrowser(); scanSignals(); }; /* cloud viewer: a refresh asked for by a person tries this browser's Deriv connection again */
+$('#refreshSigs').onclick=()=>{ scanSignals(); };
 
 /* ================================================================
    NEWS (TradingView widgets + Perplexity brief)
@@ -1357,68 +1266,19 @@ function fallbackSourceFor(r){
   if(r&&r.source)return String(r.source);
   return ['US30','NAS100','SPX500'].includes(String(r&&r.symbol||''))?'Yahoo Finance public daily data':'Deriv public candles';
 }
-/* One request per 14 symbols to the AURUM signal API: the local server on a PC, the read-only Worker when hosted. */
-async function apiSignalScan(symbols){
+async function fallbackSignalBatch(symbols,reason){
   const found=new Map();
   for(let i=0;i<symbols.length;i+=14){
     const chunk=symbols.slice(i,i+14);
     const res=await api('/api/signals/scan',{method:'POST',body:{symbols:chunk},timeoutMs:30000});
     const j=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(j.detail||j.error||('fallback scan HTTP '+res.status));
-    for(const r of j.results||[])found.set(r.symbol,r);
+    for(const r of j.results||[]){
+      const source=fallbackSourceFor(r), label=source+' · fallback (Exness unavailable: '+reason+')';
+      found.set(r.symbol,Object.assign({},r,{source:label,data_source:label,fallback:true,fallback_reason:reason}));
+    }
   }
-  return found;
-}
-/* ---- Cloud viewer: who analyses what ----
-   Deriv-backed markets are analysed in THIS BROWSER from Deriv's public
-   candles (src/derivhistory.js + src/hostedscan.js). Index CFDs come from the
-   AURUM cloud, which is also the labelled fallback when this browser cannot
-   reach Deriv. Every reading carries an explicit state: live, daily, stale,
-   no-data or unavailable. None of this runs in the PC app. */
-let hostedScannerInstance=null;
-/* True from the moment the visitor enters the workspace: the first statement of
-   boot() sets it, before the workspace starts its first scan. */
-let enteredWorkspace=false;
-function hostedSignalBatch(symbols){
-  if(!hostedScannerInstance)hostedScannerInstance=createHostedScanner({
-    fetchCandles:(symbol,granularity,count)=>candleHistory.fetchCandles(symbol,granularity,count),
-    cloudScan:apiSignalScan,
-    feedClock:()=>feed.feedClock(),
-    onScan:noteHostedScan
-  });
-  /* The sign-in screen opens no connection to Deriv: until the visitor has
-     entered the workspace, every reading is asked of the AURUM cloud. From then
-     on this browser reads the Deriv markets itself, including in the scan that
-     boot() starts before it wires the price feed. */
-  return hostedScannerInstance.scan(symbols,{browser:enteredWorkspace});
-}
-/* Diagnostics for the cloud viewer's scans: counts, states and reasons only.
-   Market names and error text; never a token, an account detail or a header. */
-const hostedDiag={scans:0,last:null,troubleKey:''};
-function noteHostedScan(report){
-  hostedDiag.scans+=1; hostedDiag.last=report;
-  /* A closed market is a normal state, not a fault: only missing or unreachable data is logged,
-     and only when the set of affected markets changes, not once per scan. */
-  const trouble=report.problems.filter(x=>x.state!=='stale');
-  const key=trouble.map(x=>x.symbol+':'+x.state).join('|');
-  if(key===hostedDiag.troubleKey)return;
-  hostedDiag.troubleKey=key;
-  if(!trouble.length||typeof console==='undefined'||!console.warn)return;
-  console.warn('[aurum] '+JSON.stringify({event:'hosted_scan_trouble',at:new Date(report.at).toISOString(),ms:report.ms,
-    live:report.live,daily:report.daily,stale:report.stale,noData:report.noData,unavailable:report.unavailable,
-    inBrowser:report.browser,fromCloud:report.cloud,usedBrowser:report.usedBrowser,browserPaused:report.browserPaused,askedCloudForDeriv:report.askedCloudForDeriv,problems:trouble.slice(0,26),candles:candleHistory.stats()}));
-}
-/* Support read-out, typed into the browser console: what the last scan found and how the candle connection is doing. */
-window.__aurumDiagnostics=()=>({hosted:isCloudflareReadonlyMode(),feed:feed.feedStatus(),lastTickAt:feed.lastTickAt(),scans:hostedDiag.scans,lastScan:hostedDiag.last,candles:candleHistory.stats()});
-async function fallbackSignalBatch(symbols,reason){
-  if(await isCloudflareHostedApp())return hostedSignalBatch(symbols);
-  const found=await apiSignalScan(symbols);
-  return symbols.map(symbol=>{
-    const r=found.get(symbol);
-    if(!r)return {symbol,error:'FEED_ERROR',detail:'No fallback result returned for '+symbol+'.',source:'unavailable',data_source:'unavailable'};
-    const label=fallbackSourceFor(r)+' · fallback (Exness unavailable: '+reason+')';
-    return Object.assign({},r,{source:label,data_source:label,fallback:true,fallback_reason:reason});
-  });
+  return symbols.map(symbol=>found.get(symbol)||{symbol,error:'FEED_ERROR',detail:'No fallback result returned for '+symbol+'.',source:'unavailable',data_source:'unavailable'});
 }
 async function scanSignalsPreferred(symbols){
   const unique=[...new Set((symbols||[]).map(s=>String(s||'').toUpperCase().trim()).filter(Boolean))];
@@ -1433,7 +1293,7 @@ async function scanSignalsPreferred(symbols){
         catch(e){missed.push({symbol,reason:String(e&&e.message||e).slice(0,120)});}
       }));
     }
-  }else unique.forEach(symbol=>missed.push({symbol,reason:isCloudflareReadonlyMode()?'Exness is available only in the PC app.':'Exness bridge is not connected in this tab.'}));
+  }else unique.forEach(symbol=>missed.push({symbol,reason:'Exness bridge is not connected in this tab.'}));
   let fallback=[];
   if(missed.length){
     try{fallback=await fallbackSignalBatch(missed.map(x=>x.symbol),missed.length===unique.length?missed[0].reason:'one or more Exness symbols had no fresh data');}
@@ -1513,12 +1373,8 @@ function scanLevelsHtml(I){
 function signalBadge(I){
   const r=state.mktScan[I.s];
   if(r){
-    if(r.error){
-      /* Cloud viewer states: stale (market closed or feed paused — a retry cannot help), no data, feed unavailable. */
-      const st=signalState(r);
-      if(st==='stale')return '<span class="badge gray" title="'+escHtml(r.detail||'')+'">Stale data</span>';
-      return '<span class="badge gray" title="'+escHtml(r.detail||'No verified candle data; analysis resumes when a supported feed is available.')+'">'+(st==='unavailable'?'Feed unavailable':'No data')+' <button type="button" class="btn sm ghost msig-retry" aria-label="Retry scan for '+escHtml(I.s)+'" style="padding:0 5px;margin-left:4px">Retry</button></span>';
-    }
+    if(r.error)
+      return '<span class="badge gray" title="'+escHtml(r.detail||'No verified candle data; analysis resumes when a supported feed is available.')+'">No data <button type="button" class="btn sm ghost msig-retry" aria-label="Retry scan for '+escHtml(I.s)+'" style="padding:0 5px;margin-left:4px">Retry</button></span>';
     const v=escHtml(r.votes||'');
     const partial=r.data_ok===false?' (some timeframes lack data — not confirmable)':'';
     if(r.signal==='BUY')  return '<span class="badge buy" title="MTF confirmed — '+v+'">Buy '+r.confidence+'%</span>';
@@ -1533,21 +1389,6 @@ function signalBadge(I){
   return '<span class="badge gray">Scanning…</span>'; /* first scan in flight — honest, never a dead ellipsis */
 }
 function signalSourceHTML(I){const r=state.mktScan[I.s];return r?'<div class="tiny faint" style="margin-top:3px">source: '+escHtml(r.data_source||r.source||'unavailable')+'</div>':'';}
-/* Cloud viewer: one line that says how many markets are live, stale, without data or unavailable. */
-function renderMarketScanStatus(){
-  const el=document.getElementById('mktScanStatus'); if(!el)return;
-  const rows=isCloudflareReadonlyMode()?INSTR.map(I=>state.mktScan[I.s]).filter(r=>r&&signalState(r)):[];
-  if(!rows.length){ el.classList.add('hidden'); return; }
-  const c=summarizeReadings(rows), parts=[];
-  if(c.live)parts.push(c.live+' live');
-  if(c.daily)parts.push(c.daily+' daily index reading'+(c.daily===1?'':'s'));
-  if(c.stale)parts.push(c.stale+' stale (market closed or feed paused)');
-  if(c.noData)parts.push(c.noData+' with no data');
-  if(c.unavailable)parts.push(c.unavailable+' unavailable');
-  const text='Signal column: '+parts.join(' \u00b7 ')+(mktScanAt?' \u00b7 scanned '+timeStr(mktScanAt):'')+'. Deriv markets are analysed in this browser from Deriv public candles; index readings come from the AURUM cloud. Nothing is estimated.';
-  if(el.textContent!==text)el.textContent=text;
-  el.classList.remove('hidden');
-}
 const strength=I=>{ const ch=chgOf(I); return ch==null?-1:Math.abs(ch); };
 function shortActiveWindow(inst){
   const full=typicalActiveWindow(inst);
@@ -1616,24 +1457,11 @@ function renderMarkets(soft){
       if(sigCell){ const html=signalBadge(I)+scanLevelsHtml(I)+signalSourceHTML(I); if(sigCell.dataset.h!==html){ sigCell.innerHTML=html; sigCell.dataset.h=html; } }
     });
   }
-  renderMarketScanStatus();
 }
-/* Cloud viewer: the Markets scan also repeats on a clock, and when the tab is
-   looked at again. The scan above is started by incoming ticks only, so with a
-   silent price feed the last readings would stay on screen with nothing to mark
-   them as old. mktScanRefresh() itself allows one scan per 90 seconds. */
-function hostedMarketsRescan(){
-  if(isCloudflareReadonlyMode()&&enteredWorkspace&&state.view==='markets'&&!document.hidden)mktScanRefresh();
-}
-setInterval(hostedMarketsRescan,30000);
-document.addEventListener('visibilitychange',hostedMarketsRescan);
 /* retry delegation for the markets signal column */
 { const mb=document.getElementById('mktBody');
   if(mb&&!mb.__sigRetry){ mb.__sigRetry=1;
-    mb.addEventListener('click',(e)=>{ const b=e.target.closest('.msig-retry'); if(b){ e.preventDefault();
-      /* Cloud viewer: a retry asked for by a person tries this browser's own Deriv connection again at once. */
-      if(hostedScannerInstance)hostedScannerInstance.retryBrowser();
-      mktScanRefresh(true); } }); } }
+    mb.addEventListener('click',(e)=>{ const b=e.target.closest('.msig-retry'); if(b){ e.preventDefault(); mktScanRefresh(true); } }); } }
 { const hn=document.getElementById('mktHoursNote'); if(hn)hn.textContent=MARKET_HOURS_NOTE; }
 /* market session badges: OPEN (green) / BREAK (amber) / CLOSED (red), plus an
    honest QUIET state when the schedule says open but the feed stopped ticking */
@@ -1905,24 +1733,15 @@ async function autofillLevels(sym){
   const isCurrent=()=>requestId===levelsRequestSeq&&state.chart.sym===sym;
   const note=$('#levelsNote'); if(!note)return;
   try{
-    let sig;
-    if(await isCloudflareHostedApp()){
-      /* Cloud viewer: the same reading the Markets table shows (this browser first, AURUM cloud as labelled fallback). */
-      sig=(await hostedSignalBatch([sym]))[0];
-      if(!isCurrent())return; /* a slower answer for the previous symbol is stale */
-    }else{
-      const r=await api('/api/signals/scan',{method:'POST',body:{symbols:[sym]},timeoutMs:30000});
-      if(!isCurrent())return;
-      if(!r.ok)throw 0;
-      const j=await r.json();
-      if(!isCurrent())return; /* a slower response for the previous symbol is stale */
-      sig=(j.results||[])[0];
-    }
-    /* shared: chart strip + markets badges. A cloud-viewer state (stale, no data, unavailable) replaces
-       an older reading too, so levels from before a market closed never stay on screen as current. */
-    if(sig&&(!sig.error||signalState(sig)))state.mktScan[sym]=sig;
+    const r=await api('/api/signals/scan',{method:'POST',body:{symbols:[sym]},timeoutMs:30000});
+    if(!isCurrent())return;
+    if(!r.ok)throw 0;
+    const j=await r.json();
+    if(!isCurrent())return; /* a slower response for the previous symbol is stale */
+    const sig=(j.results||[])[0];
+    if(sig&&!sig.error)state.mktScan[sym]=sig; /* shared: chart strip + markets badges */
     updateChartLevels();
-    if(!sig||sig.error){ note.textContent=sig&&signalState(sig)&&sig.detail?String(sig.detail):'Live levels unavailable for '+sym+' right now.'; return; }
+    if(!sig||sig.error){ note.textContent='Live levels unavailable for '+sym+' right now.'; return; }
     if(levelsForSym==='__manual__'){ /* user/AI applied levels meanwhile — do not stomp */
       note.innerHTML='Ticket levels kept (applied manually / from the AI signal) — <a href="#" id="levelsAgain">use live signal levels instead</a>.';
       const a=$('#levelsAgain'); if(a)a.onclick=(e)=>{ e.preventDefault(); levelsForSym=null; autofillLevels(sym); };
@@ -2377,21 +2196,7 @@ $('#tmConfirm').onclick=async ()=>{
 };
 
 /* ---------- Deriv proxy health pill (topbar) ---------- */
-/* Cloud + PC are one workspace in two places. The cloud viewer has no broker
-   proxy, so the same pill names the place instead of asking a route that is
-   disabled by design (and reporting it as "offline"). */
-function showCloudViewerMode(){
-  state.derivHealth={state:'offline'};
-  const dot=$('#derivDot'), txt=$('#derivText'), pill=$('#derivPill');
-  if(dot)dot.style.background='var(--text-3,#666)';
-  if(txt)txt.textContent='Cloud · view only';
-  if(pill)pill.title='AURUM cloud viewer: live public prices and analysis, viewable anywhere. Orders, accounts and Exness/MT5 are available only in the PC app.';
-  const mode=$('#aboutMode'); if(mode)mode.textContent='Cloud viewer · read-only';
-  const trading=$('#aboutTrading'); if(trading)trading.textContent='Not available here · use the PC app';
-  const analysis=$('#aboutAnalysis'); if(analysis)analysis.textContent='Deriv markets: this browser, from Deriv public candles · indices: AURUM cloud';
-}
 async function refreshDerivPill(){
-  if(isCloudflareReadonlyMode()){ showCloudViewerMode(); return; }
   const h=await derivHealth();
   state.derivHealth=h;
   const dot=$('#derivDot'), txt=$('#derivText');
@@ -3217,7 +3022,7 @@ const newsCalBtn=$('#newsCalBtn'); if(newsCalBtn&&!newsCalBtn.__wired){ newsCalB
 const newsCalShare=$('#newsCalShare'); if(newsCalShare&&!newsCalShare.__wired){ newsCalShare.__wired=true; newsCalShare.onclick=()=>shareCalBrief(); }
 const waInput=$('#waNumber');
 if(waInput&&!waInput.__wired){ waInput.__wired=true;
-  waInput.value=waDigits();
+  waInput.value=String(state.settings.wa||'');
   waInput.addEventListener('input',()=>{ state.settings.wa=waInput.value.replace(/[^0-9+]/g,'').slice(0,16); save(); });
 }
 const waAutoChk=$('#waAuto');
@@ -3400,9 +3205,8 @@ async function azAnalyze() {
       }
     }catch(exnessError){
       const fallback=(await scanSignalsPreferred([sym]))[0];
-      if(!fallback||fallback.error){const failure=new Error((fallback&&fallback.detail)||String(exnessError&&exnessError.message||exnessError));failure.signalState=signalState(fallback);throw failure;}
-      /* A reading analysed in this browser already is the full technical decision; only a server or cloud reading is completed by the API. */
-      if(String(fallback.data_source||'').startsWith('Deriv public candles')&&fallback.computed!=='browser'){
+      if(!fallback||fallback.error)throw new Error((fallback&&fallback.detail)||String(exnessError&&exnessError.message||exnessError));
+      if(String(fallback.data_source||'').startsWith('Deriv public candles')){
         try{
           const res=await api('/api/signals/analyze',{method:'POST',headers:Object.assign({'x-aurum-user':state.user||'local'},keyHeaders()),body:{symbol:sym,force:true,withNews:hasAnyKey()}});
           const j=await res.json();if(!res.ok)throw new Error(j.detail||j.error||'analysis fallback unavailable');
@@ -3426,7 +3230,7 @@ async function azAnalyze() {
     $('#azLoading').classList.add('hidden');
     $('#azEmpty').classList.remove('hidden');
     const msg=String(e.message||e);
-    $('#azEmpty').innerHTML='<b>Analysis unavailable</b>'+(isCloudflareReadonlyMode()?cloudAnalysisDownHtml(e):(msg==='fetch unavailable'?'The API server is not running (<code>npm run api</code>). Live-candle analysis needs the local server.':escHtml(msg)));
+    $('#azEmpty').innerHTML='<b>Analysis unavailable</b>'+(msg==='fetch unavailable'?'The API server is not running (<code>npm run api</code>). Live-candle analysis needs the local server.':msg);
     toast('Analysis failed',msg,'err');
   } finally {
     btn.disabled = false;
@@ -3665,24 +3469,9 @@ function learnDrawdown(payload){
   };
   if(payload&&payload.instrument===sym&&payload.granularity===g){ run(payload); return; }
   status.textContent='Loading real history from the live feed…';
-  historyCandles(sym,g,400)
-    .then(run)
+  api('/api/history/candles',{method:'POST',body:{sym,granularity:g,count:400}})
+    .then(async(r)=>{ const j=await r.json().catch(()=>({})); if(!r.ok)throw new Error(j.detail||j.error||'history unavailable'); run(j); })
     .catch((e)=>{ status.textContent='History unavailable ('+(e.message||'error')+'). The panel stays empty rather than showing invented data.'; $('#ddChart').style.display='none'; $('#ddStats').innerHTML=''; });
-}
-/* Real candle history for the calculator panels. Cloud viewer: read by this
-   browser from the Deriv public feed first; the AURUM API is the fallback
-   there and the only source on the PC. Never invented: a failure rejects. */
-async function historyCandles(sym,granularity,count){
-  if(DERIV_CODE_MAP[sym]&&await isCloudflareHostedApp()){
-    try{
-      const candles=await candleHistory.fetchCandles(sym,granularity,count);
-      if(candles.length>=30)return {source:'Deriv public feed, read by this browser',instrument:sym,granularity,count:candles.length,fetched_at:new Date().toISOString(),candles};
-    }catch(_e){ /* this browser could not get it: ask the AURUM cloud */ }
-  }
-  const r=await api('/api/history/candles',{method:'POST',body:{sym,granularity,count}});
-  const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(j.detail||j.error||'history unavailable');
-  return j;
 }
 const volCache={};
 function learnVolatility(){
@@ -3694,8 +3483,8 @@ function learnVolatility(){
   Promise.all(syms.map((sym)=>{
     const key=sym+'|'+g;
     if(volCache[key])return Promise.resolve(volCache[key]);
-    return historyCandles(sym,g,400)
-      .then((j)=>{ volCache[key]=j; return j; })
+    return api('/api/history/candles',{method:'POST',body:{sym,granularity:g,count:400}})
+      .then(async(r)=>{ const j=await r.json().catch(()=>({})); if(!r.ok)throw new Error(j.error||'unavailable'); volCache[key]=j; return j; })
       .catch(()=>null);
   })).then((res)=>{
     const rows=res.map((p,i)=>{
@@ -3728,21 +3517,8 @@ function renderAtRecord(){
 }
 
 /* ================= Brand & logo (Settings) =================
-   BRAND_DEFAULT is the built-in Shelricktech brand every device starts with.
-   A name/tagline/logo set in Settings replaces it on THAT device only
-   (localStorage via settings). The logo below is generated from
-   branding/shelricktech-logo.jpg by scripts/make-brand-assets.py. */
-const BRAND_DEFAULT={name:'Shelricktech',tag:'INVESTMENT',logo:'data:image/jpeg;base64,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'};
-/* Once per device: clearing the name or tagline field used to store a copy of the
-   built-in text of that time ("FREDRICK" / "TRADING"). Such a copy is not a custom
-   value, so it is dropped and the device follows the current built-in brand. The
-   marker keeps this to a single run: either word typed in Settings afterwards stays. */
-if(!state.settings.brandMigrated){
-  const b=state.settings.brand;
-  if(b&&typeof b==='object'){ if(b.name==='FREDRICK')delete b.name; if(b.tag==='TRADING')delete b.tag; }
-  state.settings.brandMigrated=1; store.set('settings',state.settings);
-}
-function brandName(){ return String((state.settings.brand&&state.settings.brand.name)||BRAND_DEFAULT.name).slice(0,24); }
+   Name/tagline/logo live on THIS device only (localStorage via settings). */
+const BRAND_DEFAULT={name:'FREDRICK',tag:'TRADING',logo:'data:image/jpeg;base64,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'};
 function applyBrand(){
   const b=state.settings.brand||BRAND_DEFAULT;
   const name=String(b.name||BRAND_DEFAULT.name).slice(0,24);
@@ -3751,7 +3527,7 @@ function applyBrand(){
   if(bn)bn.textContent=name; if(bt)bt.textContent=tag;
   if(bm){
     if(b.logo||BRAND_DEFAULT.logo){ bm.innerHTML='<img src="'+(b.logo||BRAND_DEFAULT.logo)+'" alt="logo" style="width:26px;height:26px;border-radius:8px;object-fit:cover;display:block">'; }
-    else bm.textContent=(name.trim()[0]||'S').toUpperCase();
+    else bm.textContent=(name.trim()[0]||'F').toUpperCase();
   }
   const al=document.getElementById('authLogo');
   if(al)al.src=b.logo||BRAND_DEFAULT.logo; /* login dashboard shows the brand mark */
@@ -3760,14 +3536,12 @@ function applyBrand(){
   if(ni&&document.activeElement!==ni)ni.value=b.name===undefined?'':b.name;
   if(ti&&document.activeElement!==ti)ti.value=b.tag===undefined?'':b.tag;
 }
-/* Also at start-up: the login screen shows the logo before anyone has entered the app. */
-applyBrand();
 function bindBrand(){
   const ni=$('#brandNameInput'); if(ni&&!ni.__wired){ ni.__wired=true;
-    ni.addEventListener('input',()=>{ const b=state.settings.brand=state.settings.brand||{}; const v=ni.value.trim(); if(v)b.name=v; else delete b.name; save(); applyBrand(); });
+    ni.addEventListener('input',()=>{ const b=state.settings.brand=state.settings.brand||{}; b.name=ni.value.trim()||BRAND_DEFAULT.name; save(); applyBrand(); });
   }
   const ti=$('#brandTagInput'); if(ti&&!ti.__wired){ ti.__wired=true;
-    ti.addEventListener('input',()=>{ const b=state.settings.brand=state.settings.brand||{}; const v=ti.value.trim(); if(v)b.tag=v; else delete b.tag; save(); applyBrand(); });
+    ti.addEventListener('input',()=>{ const b=state.settings.brand=state.settings.brand||{}; b.tag=ti.value.trim()||BRAND_DEFAULT.tag; save(); applyBrand(); });
   }
   const fi=$('#brandLogo'); if(fi&&!fi.__wired){ fi.__wired=true;
     fi.addEventListener('change',()=>{
@@ -3780,13 +3554,12 @@ function bindBrand(){
     });
   }
   const rs=$('#brandReset'); if(rs&&!rs.__wired){ rs.__wired=true;
-    rs.onclick=()=>{ state.settings.brand={}; save(); applyBrand(); const fi2=$('#brandLogo'); if(fi2)fi2.value=''; toast('Brand reset','Back to the built-in Shelricktech name and logo.','ok'); };
+    rs.onclick=()=>{ state.settings.brand={}; save(); applyBrand(); const fi2=$('#brandLogo'); if(fi2)fi2.value=''; toast('Brand reset','Back to Fredrick TRADING defaults.','ok'); };
   }
 }
 
 /* ================= News: market-moving feed + today's calendar (UTC) ================= */
-/* The number saved on this device, otherwise the built-in one (WA_DEFAULT, top of this file). */
-function waDigits(){ return String(state.settings.wa||'').replace(/\D/g,'')||WA_DEFAULT; }
+function waDigits(){ return String(state.settings.wa||'').replace(/\D/g,''); }
 function waLink(text){
   const d=waDigits();
   if(!d||d.length<8){ toast('WhatsApp number missing','Add your number in Settings (international format, digits only) — it stays on this device.','err'); return null; }
@@ -4118,7 +3891,7 @@ function updateNewsValidity(){
 }
 function newsSignalText(it){
   const b=it.bias||{};
-  return '🚨 '+brandName()+' trading signal\n'
+  return '🚨 '+((state.settings.brand&&state.settings.brand.name)||'FREDRICK')+' TRADING signal\n'
     +(b.pair||b.ccy||'?')+' — '+(b.dir?b.dir+' (heuristic news read)':'no direction (no confident tone)')+'\n'
     +'Headline: '+it.title+'\n'
     +(it.source?'Source: '+it.source+'\n':'')
@@ -4151,9 +3924,8 @@ async function shareCalBrief(){
   try{
     const r=await api('/api/news/calendar');
     const j=await r.json().catch(()=>({}));
-    if(!r.ok||!Array.isArray(j.events))throw new Error('calendar unavailable'); /* never share "no events" for a calendar that did not load */
     const ev=(j.events||[]).filter(e2=>e2.impact==='High'||e2.impact==='Medium').slice(0,8);
-    let txt='📅 '+brandName()+' — today (UTC)\n';
+    let txt='📅 '+((state.settings.brand&&state.settings.brand.name)||'FREDRICK')+' TRADING — today (UTC)\n';
     txt+=ev.length?ev.map(e2=>(e2.time_utc||'all day')+' '+e2.impact.toUpperCase()+' · '+e2.country+' '+e2.event).join('\n'):'No high/medium events listed today.';
     const sig=(state.newsItems||[]).filter(it=>it.bias&&it.bias.dir).slice(0,5);
     if(sig.length)txt+='\n\nNews signals (heuristic):\n'+sig.map(it=>'• '+(it.bias.pair||it.bias.ccy)+' '+it.bias.dir+' — '+it.title).join('\n');
@@ -4369,7 +4141,6 @@ function render(view){
 }
 let booted=false;
 function boot(){
-  enteredWorkspace=true; /* cloud viewer: from here on this browser may read Deriv candles (see hostedSignalBatch) */
   applyBrand();
   setTimeout(()=>{ if(atCfg().on)resumeAutoTrade(); },6000); /* armed survives reloads/deploys */
   if(booted){
@@ -4406,7 +4177,6 @@ function boot(){
   render('overview');
   wireFeed();
   tickUI();
-  repickAfterEntering();
 }
 
 /* ================================================================
@@ -4455,7 +4225,7 @@ function renderSniperMarketList(){
   const price=(r,key,digits)=>{const n=Number(r&&r[key]);return Number.isFinite(n)&&n>0?fmtPx(n,digits):'—';};
   body.innerHTML=rows.map(I=>{
     const r=state.mktScan[I.s],checked=sniperWatchSymbols.has(I.s),available=r&&!r.error;
-    const signal=available?'<span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span>':'<span class="badge gray">'+(r?(signalState(r)==='stale'?'STALE':signalState(r)==='no-data'?'NO DATA':'UNAVAILABLE'):'WAITING')+'</span>';
+    const signal=available?'<span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span>':'<span class="badge gray">'+(r?'UNAVAILABLE':'WAITING')+'</span>';
     const source=available?(r.data_source||r.source||'source unavailable'):(r&&r.data_source||'—'),digits=I.d||2;
     return '<tr><td><input type="checkbox" data-sniper-watch="'+escHtml(I.s)+'" aria-label="Notify on entry and exit for '+escHtml(I.s)+'" '+(checked?'checked':'')+'></td><td><b>'+escHtml(I.s)+'</b><div class="tiny faint">'+escHtml(I.n)+'</div></td><td>'+signal+'</td><td class="tiny">'+escHtml(available?(r.tf||'—'):'—')+'</td><td class="mono">'+(available?price(r,'entry',digits):'—')+'</td><td class="mono down">'+(available?price(r,'stop_loss',digits):'—')+'</td><td class="mono up">'+(available?price(r,'tp1',digits):'—')+'</td><td class="tiny">'+escHtml(source)+'</td><td><button class="btn ghost sm" type="button" data-sniper-view="'+escHtml(I.s)+'" title="View '+escHtml(I.s)+' signal details" aria-label="View '+escHtml(I.s)+' signal details"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button></td></tr>';
   }).join('');
@@ -5065,7 +4835,7 @@ function scheduleDerivSync(){
 }
 scheduleDerivSync();
 renderAuthDaily(); renderOvDaily(); refreshBestPick();
-setInterval(()=>{ try{ refreshBestPick(); }catch(e){} },BEST_PICK_EVERY_MS);
+setInterval(()=>{ try{ refreshBestPick(); }catch(e){} },10*60*1000);
 
 /* --- activity login: any real use of the app (click/key) quietly restores
    the Deriv session from this computer's remembered token if the server
@@ -5111,9 +4881,9 @@ let lastActHeal=0;
   };
   check(); setInterval(check,60000);
 })();
-/* The app works without the offline shell, so a failed registration is not
-   fatal — but it is reported on the console instead of being swallowed. */
-registerServiceWorker();
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+  navigator.serviceWorker.register('/sw.js').catch(() => { /* offline shell unavailable — app still works */ });
+}
 {
   let deferred = null;
   window.addEventListener('beforeinstallprompt', (e) => {
@@ -5363,7 +5133,3 @@ async function loadPipelineFlow(){
     div.innerHTML='<div class="tiny" style="color:var(--amber)">Pipeline unavailable: '+escHtml(String(e.message||e))+'</div>';
   }
 }
-
-/* Startup marker for the guard script in index.html: reaching this line means
-   the whole module evaluated without throwing. Keep it the LAST statement. */
-window.__aurumAppStarted=true;
