@@ -289,6 +289,110 @@ refuses the Worker:
 - The Gold monitor's first attempt. It reads the candles in the browser itself
   when the Worker fails, as it did before.
 
+### The confidence score, and how it moves with the price
+
+Every reading carries a score ("Confidence"). It is computed once, when the
+analysis runs, from how the three timeframes vote: 15 + 7 per timeframe + up
+to 25 for the strength of the votes + 20 when two of three agree, at most 93
+(a WAIT at most 45). The daily index readings use 50 + 8 per net daily check.
+The formula is fixed and is shown in the app under **AI Signals → How the
+confidence score is computed**.
+
+**It is a score, not a chance of profit.** See the replay result below before
+reading anything into it.
+
+Since 2026-11 the score shown for a BUY or SELL then **moves with the market**
+(`src/signalrun.js`):
+
+- A reading is followed from the price it was **first read** at. While later
+  analyses repeat the same direction, the entry, stop and target 1 of that
+  first reading stay the reference; the newest analysis supplies the score.
+- Up to **30 points come off** as the live price moves from that entry toward
+  the stop; up to **15 are added** as it moves toward target 1. Both are in
+  proportion to the distance covered. (A move in the signal's direction has
+  used up part of the target distance, so the score rises half as fast as it
+  falls.) The result stays between 5 and 93.
+- The sentence beside the score says how far the price has moved and in which
+  direction, how much of the way to the stop or the target that is, and where
+  and when the reading started:
+  `6.0 pips with this BUY · 33% of the way to target 1 · first read at 1.08500, 14:05:09 · score as read 70%`.
+- At the **stop** or at **target 1** the reading is over
+  (`Stop level reached at 14:12:40 · this BUY reading (…) is over`). A price
+  that comes back does not revive it. The next analysis that still says BUY or
+  SELL starts a new reading at its own entry.
+- Distances are given in **pips** for currency pairs (0.0001, or 0.01 where
+  the yen is quoted), in **dollars** for gold, silver and crypto, and in
+  **points** for everything else. Gold is in dollars on purpose: brokers do
+  not agree on what one pip of gold is.
+
+| Where | What is shown |
+|---|---|
+| AI Signals → Market scanner cards | live score, bar, and the full sentence under the bar |
+| Markets table, Overview signal list | live score in the badge |
+| Sniper alerts: Selected markets, Live Sniper setups | a **Confidence** column: live score and `6.0 pips with` / `6.0 pips against` / `stop reached` / `target 1 reached`; the detail line (eye icon) has the full sentence |
+| Gold / US Dollar monitor | **Confidence** under the signal: live score, bar and the full sentence; followed from the gold price the monitor itself shows (Exness MT5 in the PC app, otherwise the public Deriv tick) |
+
+What does **not** move: a WAIT (nothing to follow); the daily index readings
+(US30, NAS100, SPX500 have no entry, stop or target, so their score changes
+only when a daily vote does, and the card says so); the best-market panel
+(a snapshot with its read time); the "Analyze a symbol" card; notifications
+and WhatsApp texts, which quote the score as read; and the Sniper filter
+("confidence ≥ 70%"), which compares the score as read.
+
+The scores update on every price tick, without a new scan. Readings are
+followed in the page's memory only: after a reload a reading is followed from
+the first analysis the page makes.
+
+**One venue's levels are never measured with another venue's price.** The
+prices streaming into the page come from Deriv. In the PC app with Exness
+connected, a scanner reading made from Exness candles has Exness levels, so
+it is measured against the Exness price that came with its latest analysis
+and the sentence ends with `measured at the Exness price of 14:07:12, updated
+at each analysis`. Such a score moves at each analysis, not at each tick. If
+Exness then fails and the market is read from the fallback, that is a new
+reading with its own levels. The Gold monitor asks the terminal for the
+Exness gold price every ten seconds while its view is open; a tick older
+than two minutes is not treated as a live price.
+
+**A card is one reading.** The scanner cards stay as they were read until
+Refresh, while other views read the same markets again. When the newest
+analysis of a market is a different reading, the card shows its own score as
+read and `This BUY reading is no longer the newest for this market: refresh
+to see the latest.` A stop or target is noticed on every tick, whether or
+not that market is on screen at the time.
+
+**What a replay of the rule showed (November 2026).** The 1m/5m/1h rule and
+its levels (stop 1.5 × ATR of the 5-minute candles, target 1 at 2.25 × ATR, so
+a reward of 1.5 for a risk of 1) were replayed minute by minute, with the
+repository's own `runDeterministicAnalysis` and `localDecision`, on 1-minute
+gold candles from January 2020 to 11 November 2026 (an OANDA-derived public
+series, not Exness prices). An alert was counted whenever the signal changed
+to BUY or SELL, as the Gold monitor notifies; each was followed until its stop
+or its target 1.
+
+| | Alerts | Target 1 before the stop |
+|---|---|---|
+| Needed to break even at 1.5 : 1, before the spread | | 40.0% |
+| The rule as it is, gold 2020 – Nov 2026 | 174,239 (about 96 a day) | **39.8%** |
+| Each single year 2020 … 2026 | 21,000 – 26,000 | 39.0% – 40.6% |
+| Score below 60 / 60–64 / 65–69 / 70–74 / 75–79 | | 40.2 / 39.4 / 39.7 / 40.2 / 40.1% |
+| Only alerts where the 1-hour vote agrees | 83,976 | 40.4% |
+| Only alerts where all three timeframes agree | 10,875 | 40.6% |
+| A coin flip at the same moments, same stop and target (2025–2026) | 46,816 | 39.8% |
+| The opposite of the signal, same moments (2025–2026) | 46,816 | 40.4% |
+| GBP/USD and EUR/USD, 26 Mar – 25 Sep 2026 | 13,349 and 13,511 | 36.7% and 39.3% |
+
+In words: on this data the rule's direction was right as often as a coin's,
+its score did not separate better alerts from worse ones, and stricter
+versions of the same votes did not change that. With a spread to pay on about
+90 alerts a day, following every alert loses steadily. The live movement of
+the score described above does not change this either: it reports where the
+price is against a reading, it does not predict where it goes next.
+Limits of the replay: one data source that is not the broker's; one look per
+minute at the close of the minute; when a stop and a target fell inside the
+same minute the stop was counted (counting the target instead changes the
+figures by less than 0.1 point).
+
 ### Before any deployment
 
 ```bash
