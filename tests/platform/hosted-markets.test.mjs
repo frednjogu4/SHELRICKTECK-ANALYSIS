@@ -1117,3 +1117,205 @@ test('PC app, best-market panel: an index the local API could not read is said s
     } finally { await app.close(); }
   }
 });
+
+/* ---------------------------------------------------------------- live confidence */
+
+/* The score of a BUY/SELL reading moves with the price since the reading was first made
+   (src/signalrun.js). These tests run the PC app, where the local API stand-in answers
+   with readings written by the test and the stand-in feed ticks at a known price, so the
+   distance between a reading's entry and the live price is known. None of the numbers
+   is a market price, and no assertion says what an analysis would conclude. */
+const EUR_TICK = basePriceFor('frxEURUSD');
+const GOLD_TICK = basePriceFor('frxXAUUSD');
+const PIP = 0.0001;
+/* A BUY scored 70, read 6 pips below the price the feed ticks at: 12-pip stop, 18-pip target. */
+const LIVE_BUY = {
+  symbol: 'EUR/USD', signal: 'BUY', bias: 'bullish', confidence: 70, mtf_signal: 'BUY_CONFIRMED', votes: 'written by the test', data_ok: true,
+  entry: EUR_TICK - 6 * PIP, price: EUR_TICK - 6 * PIP, stop_loss: EUR_TICK - 18 * PIP, tp1: EUR_TICK + 12 * PIP, tp2: EUR_TICK + 26 * PIP,
+  tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv public candles'
+};
+const LIVE_DAILY = {
+  symbol: 'US30', signal: 'BUY', bias: 'bullish', confidence: 90, votes: 'daily reading written by the test', data_ok: true,
+  entry: null, stop_loss: null, tp1: null, tp2: null, tf: 'DAILY (index)', model: 'technical-daily', source: 'Yahoo Finance public daily data'
+};
+const liveWait = (symbol) => ({ symbol, signal: 'WAIT', bias: 'neutral', confidence: 20, votes: 'written by the test', wait_reason: 'MTF_NO_ALIGNMENT', wait_detail: 'written by the test', data_ok: true, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv public candles' });
+const liveScanApi = (path, body) => {
+  if (path === '/api/health') return { status: 200, body: { ok: true } };
+  if (path === '/api/signals/scan') return { status: 200, body: { results: body.symbols.map((symbol) => (symbol === 'EUR/USD' ? LIVE_BUY : symbol === 'US30' ? LIVE_DAILY : liveWait(symbol))) } };
+  return null;
+};
+/* One more tick on the price stream, as Deriv would send it. */
+const pushTick = (app, code, quote) => {
+  const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+  assert.ok(stream, 'the price stream is open');
+  stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: code, quote, epoch: nowSec() } }) });
+};
+const NO_LEVELS = 'Daily reading with no entry, stop or target: this score moves only when one of its daily votes changes.';
+const CLOCK = '\\d\\d:\\d\\d:\\d\\d';
+
+test('live confidence, scanner cards: the score moves with the price since the reading, and the card says by how much', async () => {
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, world: { ticks: true } });
+  try {
+    await app.enter();
+    await app.open('signals');
+    const card = (symbol) => [...app.doc.querySelectorAll('#sigGrid .sig-card')].find((el) => el.querySelector('.sym-name').textContent === symbol);
+    const shown = (symbol) => {
+      const el = card(symbol);
+      return el ? { score: el.querySelector('[data-live-conf]').textContent, bar: el.querySelector('.conf-bar i').style.width, note: el.querySelector('.sig-live').textContent } : null;
+    };
+    /* The reading says 70. The feed ticks 6 pips above its entry, a third of the way to the target: 70 + 5. */
+    await app.waitFor(() => shown('EUR/USD') && shown('EUR/USD').score === '75%', 'the card to show the score at the live price');
+    assert.equal(shown('EUR/USD').bar, '75%');
+    assert.match(shown('EUR/USD').note, new RegExp('^6\\.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 49\\.99940, ' + CLOCK + ' \u00b7 score as read 70%$'));
+
+    /* The price falls to 6 pips below the entry, half-way to the stop: 70 - 15. No new scan is needed. */
+    const scans = app.requests.filter((r) => r.path === '/api/signals/scan').length;
+    pushTick(app, 'frxEURUSD', EUR_TICK - 12 * PIP);
+    assert.equal(shown('EUR/USD').score, '55%');
+    assert.equal(shown('EUR/USD').bar, '55%');
+    assert.match(shown('EUR/USD').note, /^6\.0 pips against this BUY \u00b7 50% of the way to the stop \u00b7 first read at 49\.99940, /);
+    assert.equal(app.requests.filter((r) => r.path === '/api/signals/scan').length, scans, 'the tick alone moved the score');
+
+    /* Through the stop: the reading is over, and a price that comes back does not revive it. */
+    pushTick(app, 'frxEURUSD', EUR_TICK - 19 * PIP);
+    assert.equal(shown('EUR/USD').score, '40%');
+    assert.match(shown('EUR/USD').note, new RegExp('^Stop level reached at ' + CLOCK + ' \u00b7 this BUY reading \\(first read at 49\\.99940, ' + CLOCK + '\\) is over \u00b7 score as read 70%$'));
+    pushTick(app, 'frxEURUSD', EUR_TICK);
+    assert.equal(shown('EUR/USD').score, '40%');
+    assert.match(shown('EUR/USD').note, /^Stop level reached at /);
+
+    /* The next analysis says BUY again: a new reading, followed from its own entry. */
+    app.click(app.doc.getElementById('refreshSigs'));
+    await app.waitFor(() => shown('EUR/USD') && shown('EUR/USD').score === '75%', 'a new reading after the refresh');
+    assert.match(shown('EUR/USD').note, /^6\.0 pips with this BUY /);
+
+    /* A daily index reading has no levels: its score is the reading's own, and the card says why it stands still. */
+    assert.deepEqual(shown('US30'), { score: '90%', bar: '90%', note: NO_LEVELS });
+    /* WAIT has nothing to follow. */
+    assert.deepEqual(shown('GBP/USD'), { score: '20%', bar: '20%', note: '' });
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('live confidence, Markets and Overview: the same reading shows the same score everywhere', async () => {
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, world: { ticks: true } });
+  try {
+    await app.openMarkets();
+    await app.waitFor(() => app.row('EUR/USD').badge === 'Buy 75%', 'the Markets badge at the live price');
+    pushTick(app, 'frxEURUSD', EUR_TICK - 12 * PIP);
+    assert.equal(app.row('EUR/USD').badge, 'Buy 55%', 'the badge follows the tick');
+    assert.match(app.row('GBP/USD').badge, /^Wait/);
+
+    await app.open('signals');
+    await app.waitFor(() => app.doc.querySelector('#sigGrid .sig-card [data-live-conf="EUR/USD"]'), 'the scanner card');
+    assert.equal(app.doc.querySelector('#sigGrid .sig-card [data-live-conf="EUR/USD"]').textContent, '55%');
+    await app.open('overview');
+    await app.waitFor(() => app.doc.querySelector('#ovSignals [data-live-conf="EUR/USD"]'), 'the Overview signal list');
+    assert.equal(app.doc.querySelector('#ovSignals [data-live-conf="EUR/USD"]').textContent, '55%');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('live confidence, Sniper alerts: both tables carry a Confidence column, and the detail line gives the full sentence', async () => {
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, world: { ticks: true } });
+  try {
+    await app.enter();
+    await app.open('sniper');
+    const doc = app.doc;
+    const headers = (table) => [...table.querySelectorAll('thead th')].map((th) => th.textContent);
+    const watchTable = doc.getElementById('sniperWatchList').closest('table');
+    assert.deepEqual(headers(watchTable), ['Notify', 'Market', 'Signal', 'Confidence', 'Timeframe', 'Entry', 'SL', 'TP1', 'Source', 'View']);
+
+    /* Choose two markets: one with a BUY, one the scan reads as WAIT. */
+    app.click(doc.getElementById('sniperPickerToggle'));
+    const rowOf = (symbol) => { const box = doc.querySelector('[data-sniper-watch="' + symbol + '"]'); return box ? box.closest('tr') : null; };
+    await app.waitFor(() => rowOf('EUR/USD') && rowOf('EUR/USD').querySelector('[data-live-conf]'), 'a scanned row for EUR/USD');
+    for (const symbol of ['EUR/USD', 'GBP/USD']) {
+      const box = doc.querySelector('[data-sniper-watch="' + symbol + '"]');
+      box.checked = true;
+      box.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+    }
+    const cells = (symbol) => [...rowOf(symbol).children].map((td) => td.textContent);
+    await app.waitFor(() => cells('EUR/USD')[3] === '75%6.0 pips with', 'the live score in the selected-markets table');
+    assert.equal(cells('EUR/USD').length, headers(watchTable).length, 'one cell under every header');
+    assert.equal(cells('GBP/USD')[3], '20%', 'a WAIT shows the score as read, with nothing to follow');
+
+    /* The setups table lists the BUY only. */
+    const setups = doc.querySelector('#sniperSignalList table');
+    assert.deepEqual(headers(setups), ['Market', 'Signal', 'Confidence', 'Timeframe', 'Entry', 'SL', 'TP1', 'Source']);
+    const setupRows = [...setups.querySelectorAll('tbody tr')];
+    assert.equal(setupRows.length, 1);
+    assert.equal(setupRows[0].children.length, 8);
+    assert.equal(setupRows[0].children[0].textContent, 'EUR/USD');
+    assert.equal(setupRows[0].children[2].textContent, '75%6.0 pips with');
+
+    /* The eye icon: the detail line. */
+    app.click(doc.querySelector('[data-sniper-view="EUR/USD"]'));
+    const detail = doc.getElementById('sniperSelectedDetail');
+    assert.match(detail.textContent, /Confidence: 75% \u00b7 Source: /);
+    assert.match(detail.querySelector('[data-live-note]').textContent, /^6\.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 49\.99940, /);
+
+    /* One tick against the reading moves all three. */
+    pushTick(app, 'frxEURUSD', EUR_TICK - 12 * PIP);
+    assert.equal(cells('EUR/USD')[3], '55%6.0 pips against');
+    assert.equal(doc.querySelector('#sniperSignalList tbody tr').children[2].textContent, '55%6.0 pips against');
+    assert.match(detail.textContent, /Confidence: 55% \u00b7 Source: /);
+    assert.match(detail.querySelector('[data-live-note]').textContent, /^6\.0 pips against this BUY \u00b7 50% of the way to the stop /);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('live confidence, Gold monitor: the score is shown, moves with the gold price, and is withdrawn with the analysis', async () => {
+  /* A SELL scored 71, read 3 dollars above the price the feed ticks at: 15-dollar stop, 22.5-dollar target. */
+  const sell = {
+    symbol: 'XAU/USD', signal: 'SELL', bias: 'bearish', confidence: 71, mtf_signal: 'SELL_CONFIRMED', votes: '1m -3 SELL \u00b7 5m -3 SELL \u00b7 1h -3 SELL', data_ok: true,
+    entry: GOLD_TICK + 3, price: GOLD_TICK + 3, stop_loss: GOLD_TICK + 18, tp1: GOLD_TICK - 19.5, tp2: GOLD_TICK - 37,
+    rationale: 'written by the test', risks: [], model: 'technical', source: 'Deriv public candles'
+  };
+  const wait = { symbol: 'XAU/USD', signal: 'WAIT', bias: 'neutral', confidence: 38, mtf_signal: 'NO_CONFIRMATION', votes: '1m +1 WAIT \u00b7 5m -1 WAIT \u00b7 1h +0 WAIT', data_ok: true, entry: GOLD_TICK, stop_loss: GOLD_TICK - 4, tp1: GOLD_TICK + 4, tp2: GOLD_TICK + 8, rationale: 'written by the test', risks: [], model: 'technical' };
+  let answer = sell;
+  const pcApi = (path, body) => {
+    if (path === '/api/signals/analyze') return answer ? { status: 200, body: { ...answer, latest_candle_time: nowSec() } } : { status: 503, body: { error: 'written by the test' } };
+    return liveScanApi(path, body);
+  };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi, world: { ticks: true } });
+  try {
+    await app.enter();
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    assert.equal(text('goldConfidence'), '\u2014', 'nothing before the first analysis');
+    /* The monitor analyses only once it has a fresh gold price: let the feed's first ticks arrive. */
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await app.open('gold');
+    await app.waitFor(() => text('goldSignal') === 'SELL', 'the first gold analysis');
+
+    /* 3 dollars with the SELL, 13% of the way to the target: 71 + 2. */
+    assert.equal(text('goldConfidence'), '73%');
+    assert.equal(doc.getElementById('goldConfidenceBar').style.width, '73%');
+    assert.match(text('goldConfidenceNote'), new RegExp('^\\$3\\.00 with this SELL \u00b7 13% of the way to target 1 \u00b7 first read at 183\\.00, ' + CLOCK + ' \u00b7 score as read 71%$'));
+
+    /* Gold rises to 7.5 dollars above the entry, half-way to the stop: 71 - 15. */
+    pushTick(app, 'frxXAUUSD', GOLD_TICK + 10.5);
+    assert.equal(text('goldConfidence'), '56%');
+    assert.equal(doc.getElementById('goldConfidenceBar').style.width, '56%');
+    assert.match(text('goldConfidenceNote'), /^\$7\.50 against this SELL \u00b7 50% of the way to the stop \u00b7 first read at 183\.00, /);
+
+    /* The next analysis is WAIT: the score as read, and nothing to follow. */
+    answer = wait;
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => text('goldSignal') === 'WAIT', 'the WAIT analysis');
+    assert.equal(text('goldConfidence'), '38%');
+    assert.equal(text('goldConfidenceNote'), 'No confirmed direction, so there is no entry, stop or target to follow.');
+
+    /* The analysis fails (the local API, and the browser's own read of Deriv behind it): no score is left standing. */
+    answer = null;
+    app.state.browserDeriv = 'down';
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => text('goldSignalBadge') === 'UNAVAILABLE', 'the failed analysis');
+    assert.equal(text('goldConfidence'), '\u2014');
+    assert.equal(doc.getElementById('goldConfidenceBar').style.width, '0%');
+    assert.equal(text('goldConfidenceNote'), 'No current analysis, so no score is shown.');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});

@@ -7,6 +7,7 @@
  * simulated price engine, no demo balance and no fake content.
  * ================================================================ */
 import { INSTRUMENTS, INSTRUMENT_MAP, WATCHLIST_DEFAULTS, DERIV_CODE_MAP } from '../server/lib/symbols.js';
+import { createSignalTracker, describeLive } from './signalrun.js';
 import * as bridgeMod from './bridge.js';
 import { readMt5Identity, saveMt5Identity, forgetMt5Identity } from './mt5identity.js';
 import { marketStatus, typicalActiveWindow, MARKET_HOURS_NOTE } from '../server/lib/markethours.js';
@@ -52,6 +53,35 @@ const dateStr=t=>new Date(t).toLocaleString('en-GB',{day:'2-digit',month:'short'
 const INSTR=INSTRUMENTS.map(I=>Object.assign({},I,{p:null,open:null,hist:[],t:0}));
 const bySym=Object.fromEntries(INSTR.map(i=>[i.s,i]));
 const chgOf=I=>{ if(I.p==null||I.open==null)return null; return ((I.p-I.open)/I.open)*100; };
+/* ---------- live confidence (src/signalrun.js) ----------
+   A reading's score is fixed when the analysis runs. These follow each BUY/SELL
+   reading from the price it was first read at: the score shown loses points as the
+   live price moves toward the stop and gains points as it moves toward target 1.
+   Scan readings are followed market by market; the Gold monitor reads gold from a
+   source of its own and keeps its own run. Display only: alerts and Sniper filters
+   keep using the score as read. It is a score, never a chance of profit. */
+const signalRuns=createSignalTracker(), goldRuns=createSignalTracker();
+const NO_LEVELS_NOTE='Daily reading with no entry, stop or target: this score moves only when one of its daily votes changes.';
+function liveReading(symbol){const I=bySym[symbol];return signalRuns.read(symbol,I&&I.p!=null?I.p:null);}
+function liveScore(r){const live=r&&r.symbol?liveReading(r.symbol):null;return live?live.confidence:(Number(r&&r.confidence)||0);}
+function liveNoteText(live,symbol,short){const I=bySym[symbol],digits=(I&&I.d)||2;return describeLive(live,{short:!!short,time:timeStr,price:v=>fmtPx(v,digits)});}
+/* The sentence beside a reading's score: how far the market has moved since it was first read. */
+function liveNoteFor(r,short){
+  if(!r||r.error||!(r.signal==='BUY'||r.signal==='SELL'))return '';
+  const live=liveReading(r.symbol);
+  if(live)return liveNoteText(live,r.symbol,short);
+  return short?'':NO_LEVELS_NOTE;
+}
+/* '<b data-live-conf="EUR/USD">75%</b>': a score that paintLiveConfidence() keeps current between renders. */
+function liveScoreHtml(r,tag='b'){return '<'+tag+' data-live-conf="'+escHtml(r.symbol)+'">'+liveScore(r)+'%</'+tag+'>';}
+function liveNoteHtml(r,short){return '<div class="tiny faint" data-live-note="'+escHtml(r.symbol)+'"'+(short?' data-live-short="1"':'')+'>'+escHtml(liveNoteFor(r,short))+'</div>';}
+/* Runs on every price tick: rewrites the scores, bars and sentences already on the page. */
+function paintLiveConfidence(){
+  $$('[data-live-conf]').forEach(el=>{const live=liveReading(el.dataset.liveConf);if(live)el.textContent=live.confidence+'%';});
+  $$('[data-live-bar]').forEach(el=>{const live=liveReading(el.dataset.liveBar);if(live)el.style.width=live.confidence+'%';});
+  $$('[data-live-note]').forEach(el=>{const live=liveReading(el.dataset.liveNote);if(live)el.textContent=liveNoteText(live,el.dataset.liveNote,el.dataset.liveShort==='1');});
+  if(state.view==='gold')updateGoldConfidence();
+}
 
 /* ---------- built-in WhatsApp number ----------
    Share buttons open WhatsApp with the Shelricktech number unless the device
@@ -983,6 +1013,7 @@ function tickUI(){
   if(state.view==='news'){ updateNewsValidity(); updateNewsTimeline(); }
   if(state.view==='portfolio') updatePortfolioLive();
   if(state.view==='overview') updateKpis();
+  paintLiveConfidence();
 }
 
 /* level watcher: SL / TP1 / TP2 with guidance notifications */
@@ -1258,6 +1289,7 @@ function renderSignals(){
       '</div>'+
       '<div class="row between"><span class="tiny muted">Confidence</span><b class="mono"></b></div>'+
       '<div class="conf-bar"><i></i></div>'+
+      '<div class="tiny faint sig-live" style="margin-top:6px;line-height:1.45"></div>'+
       '<div class="sig-levels">'+
         '<div><div class="k">Entry</div><div class="v" data-l="e"></div></div>'+
         '<div><div class="k">Stop</div><div class="v down" data-l="s"></div></div>'+
@@ -1269,8 +1301,10 @@ function renderSignals(){
     card.querySelector('.sym-name').textContent=sig.symbol;
     card.querySelector('.sym-full').textContent=I.n;
     card.querySelector('.badge').textContent=sig.signal;
-    const cb=card.querySelector('.conf-bar i'); cb.style.width=(sig.confidence||0)+'%';
-    card.querySelector('.row.between b').textContent=(sig.confidence||0)+'%';
+    const score=liveScore(sig);
+    const cb=card.querySelector('.conf-bar i'); cb.style.width=score+'%'; cb.dataset.liveBar=sig.symbol;
+    const cv=card.querySelector('.row.between b'); cv.textContent=score+'%'; cv.dataset.liveConf=sig.symbol;
+    const cn=card.querySelector('.sig-live'); cn.textContent=liveNoteFor(sig); cn.dataset.liveNote=sig.symbol;
     card.querySelector('[data-l="e"]').textContent=fmtPx(sig.entry,I.d);
     card.querySelector('[data-l="s"]').textContent=fmtPx(sig.stop_loss,I.d);
     card.querySelector('[data-l="t"]').textContent=fmtPx(sig.tp1,I.d);
@@ -1462,7 +1496,9 @@ async function scanSignalsPreferred(symbols){
     }
   }
   const all=new Map([...exness.entries(),...fallback.map(r=>[r.symbol,r])]);
-  return unique.map(symbol=>all.get(symbol)||{symbol,error:'FEED_ERROR',detail:'No verified signal data.',data_source:'unavailable'});
+  const out=unique.map(symbol=>all.get(symbol)||{symbol,error:'FEED_ERROR',detail:'No verified signal data.',data_source:'unavailable'});
+  out.forEach(r=>signalRuns.observe(r)); /* live confidence: a BUY/SELL reading is followed from here on */
+  return out;
 }
 function emitSignalAlerts(results){
   for(const r of results||[]){
@@ -1540,8 +1576,8 @@ function signalBadge(I){
     }
     const v=escHtml(r.votes||'');
     const partial=r.data_ok===false?' (some timeframes lack data — not confirmable)':'';
-    if(r.signal==='BUY')  return '<span class="badge buy" title="MTF confirmed — '+v+'">Buy '+r.confidence+'%</span>';
-    if(r.signal==='SELL') return '<span class="badge sell" title="MTF confirmed — '+v+'">Sell '+r.confidence+'%</span>';
+    if(r.signal==='BUY')  return '<span class="badge buy" title="MTF confirmed — '+v+'">Buy '+liveScoreHtml(r,'span')+'</span>';
+    if(r.signal==='SELL') return '<span class="badge sell" title="MTF confirmed — '+v+'">Sell '+liveScoreHtml(r,'span')+'</span>';
     if(r.bias==='bullish') return '<span class="badge lean lean-up" title="Direction leans up but timeframes are not fully confirmed'+partial+' — '+v+'">▲ Lean up</span>';
     if(r.bias==='bearish')return '<span class="badge lean lean-dn" title="Direction leans down but timeframes are not fully confirmed'+partial+' — '+v+'">▼ Lean down</span>';
     const wr=r.wait_reason?(' ['+r.wait_reason+']'):'';
@@ -3065,7 +3101,7 @@ function renderOverview(){
     const I=bySym[sig.symbol]||{d:4};
     const d=document.createElement('div');
     d.className='mini-signal';
-    d.innerHTML='<div class="top"><b>'+sig.symbol+'</b><span class="badge '+(sig.signal==='BUY'?'buy':sig.signal==='SELL'?'sell':'neutral')+'">'+sig.signal+' · '+sig.confidence+'%</span></div>'+
+    d.innerHTML='<div class="top"><b>'+sig.symbol+'</b><span class="badge '+(sig.signal==='BUY'?'buy':sig.signal==='SELL'?'sell':'neutral')+'">'+sig.signal+' · '+liveScoreHtml(sig,'span')+'</span></div>'+
       '<div class="meta">entry '+fmtPx(sig.entry,I.d)+' · SL '+fmtPx(sig.stop_loss,I.d)+' · TP '+fmtPx(sig.tp1,I.d)+' · technical</div>';
     d.onclick=()=>goto('signals');
     sv.appendChild(d);
@@ -3914,6 +3950,7 @@ function goldDataSource(){
 }
 function goldUsingExnessResult(){return state.goldAnalysis?String(state.goldAnalysis.data_source||'').startsWith('Exness MT5'):goldDataSource()==='mt5';}
 function updateGoldQuoteDisplay(){
+  updateGoldConfidence();
   const badge=$('#goldQuoteState'),priceEl=$('#goldPrice'),sourceEl=$('#goldSource'),timeEl=$('#goldQuoteTime');if(!badge)return;
   const I=bySym[GOLD_SYMBOL];let q=null,source='';
   if(goldUsingExnessResult()){
@@ -3945,6 +3982,21 @@ async function refreshGoldQuote(){
     }catch(_e){goldMt5Quote=null;}
   }
   updateGoldQuoteDisplay();
+}
+/* The live price the Gold monitor is showing, or null when it has no fresh one. */
+function goldLivePrice(){
+  if(goldUsingExnessResult())return goldMt5Quote&&goldFreshTimestamp(goldMt5Quote.time)&&Number(goldMt5Quote.price)>0?Number(goldMt5Quote.price):null;
+  const I=bySym[GOLD_SYMBOL];
+  return I&&I.p!=null&&goldFreshTimestamp(I.t)?I.p:null;
+}
+/* Gold monitor score: the analysis' own figure, moved by the price since this BUY/SELL was first read. */
+function updateGoldConfidence(){
+  const el=$('#goldConfidence'),bar=$('#goldConfidenceBar'),note=$('#goldConfidenceNote');if(!el)return;
+  const d=state.goldAnalysis;
+  if(!d){el.textContent='—';if(bar)bar.style.width='0%';if(note)note.textContent='No current analysis, so no score is shown.';return;}
+  const live=goldRuns.read(GOLD_SYMBOL,goldLivePrice()),score=live?live.confidence:(Number(d.confidence)||0),dig=goldDisplayDigits();
+  el.textContent=score+'%';if(bar)bar.style.width=score+'%';
+  if(note)note.textContent=live?describeLive(live,{time:timeStr,price:v=>fmtPx(v,dig)}):'No confirmed direction, so there is no entry, stop or target to follow.';
 }
 function goldDisplayDigits(){const raw=goldMt5Quote&&goldMt5Quote.digits,d=raw==null?NaN:Number(raw);return Number.isInteger(d)&&d>=0&&d<=8?d:((bySym[GOLD_SYMBOL]&&bySym[GOLD_SYMBOL].d)||2);}
 function goldFmtLevel(value,digits){return value==null||!Number.isFinite(Number(value))?'—':fmtPx(Number(value),digits);}
@@ -4052,10 +4104,11 @@ async function runGoldAnalysis(){
       d=await goldDerivFallback(goldFallbackReason());
     }
     d.updatedAt=Date.now();state.goldAnalysis=d;goldAnalysisAt=Date.now();goldAnalysisError='';
+    goldRuns.observe(Object.assign({},d,{symbol:GOLD_SYMBOL})); /* live confidence follows this BUY/SELL from its first reading */
     renderGoldAnalysis();updateGoldQuoteDisplay();
     if(status)status.textContent=(d.data_ok===false?'CHECK DATA · ':'LIVE ANALYSIS · ')+(d.data_source||'');
   }catch(e){
-    state.goldAnalysis=null;goldAnalysisAt=Date.now();goldAnalysisError=String(e&&e.message||e||'Live analysis unavailable');
+    state.goldAnalysis=null;goldRuns.forget(GOLD_SYMBOL);goldAnalysisAt=Date.now();goldAnalysisError=String(e&&e.message||e||'Live analysis unavailable');
     if(goldDataSource()==='mt5')goldMt5Quote=null;
     if(status)status.textContent='ANALYSIS UNAVAILABLE';
     const r=$('#goldRationale');if(r)r.textContent=goldAnalysisError+' No old signal is being presented as current.';
@@ -4087,7 +4140,7 @@ function startGoldMonitor(){
 function renderGold(){
   const src=$('#goldSourceSelect');if(src){src.value=state.settings.goldSource||'auto';src.onchange=()=>{
     const next=['auto','deriv','mt5'].includes(src.value)?src.value:'auto';state.settings.goldSource=next;save();
-    state.goldAnalysis=null;goldAnalysisAt=0;goldNextAttemptAt=0;goldAnalysisError='';goldMt5Quote=null;
+    state.goldAnalysis=null;goldRuns.forget(GOLD_SYMBOL);goldAnalysisAt=0;goldNextAttemptAt=0;goldAnalysisError='';goldMt5Quote=null;
     const badge=$('#goldSignalBadge');if(badge){badge.textContent='ANALYZING';badge.className='badge gray';}
     const sig=$('#goldSignal');if(sig){sig.textContent='—';sig.className='faint';}
     ['goldEntry','goldSL','goldTP1','goldTP2'].forEach(id=>{const el=$('#'+id);if(el)el.textContent='—';});
@@ -4469,14 +4522,16 @@ function renderSniperMarketList(){
   const rows=(sniperPickerOpen||q)?matches:matches.filter(I=>sniperWatchSymbols.has(I.s));
   if(!rows.length){
     const message=q?'No markets match that search.':(sniperWatchSymbols.size?'No selected markets.':'No markets selected yet — choose Add markets to pick what to monitor.');
-    body.innerHTML='<tr><td colspan="9" class="faint">'+escHtml(message)+'</td></tr>';return;
+    body.innerHTML='<tr><td colspan="10" class="faint">'+escHtml(message)+'</td></tr>';return;
   }
   const price=(r,key,digits)=>{const n=Number(r&&r[key]);return Number.isFinite(n)&&n>0?fmtPx(n,digits):'—';};
   body.innerHTML=rows.map(I=>{
     const r=state.mktScan[I.s],checked=sniperWatchSymbols.has(I.s),available=r&&!r.error;
     const signal=available?'<span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span>':'<span class="badge gray">'+(r?(signalState(r)==='stale'?'STALE':signalState(r)==='no-data'?'NO DATA':'UNAVAILABLE'):'WAITING')+'</span>';
     const source=available?(r.data_source||r.source||'source unavailable'):(r&&r.data_source||'—'),digits=I.d||2;
-    return '<tr><td><input type="checkbox" data-sniper-watch="'+escHtml(I.s)+'" aria-label="Notify on entry and exit for '+escHtml(I.s)+'" '+(checked?'checked':'')+'></td><td><b>'+escHtml(I.s)+'</b><div class="tiny faint">'+escHtml(I.n)+'</div></td><td>'+signal+'</td><td class="tiny">'+escHtml(available?(r.tf||'—'):'—')+'</td><td class="mono">'+(available?price(r,'entry',digits):'—')+'</td><td class="mono down">'+(available?price(r,'stop_loss',digits):'—')+'</td><td class="mono up">'+(available?price(r,'tp1',digits):'—')+'</td><td class="tiny">'+escHtml(source)+'</td><td><button class="btn ghost sm" type="button" data-sniper-view="'+escHtml(I.s)+'" title="View '+escHtml(I.s)+' signal details" aria-label="View '+escHtml(I.s)+' signal details"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button></td></tr>';
+    /* Score of the reading as it stands now; a BUY/SELL also says how far the market has moved since it was first read. */
+    const confidence=!available||r.confidence==null?'—':(r.signal==='BUY'||r.signal==='SELL'?liveScoreHtml(r)+liveNoteHtml(r,true):escHtml(String(Number(r.confidence)||0))+'%');
+    return '<tr><td><input type="checkbox" data-sniper-watch="'+escHtml(I.s)+'" aria-label="Notify on entry and exit for '+escHtml(I.s)+'" '+(checked?'checked':'')+'></td><td><b>'+escHtml(I.s)+'</b><div class="tiny faint">'+escHtml(I.n)+'</div></td><td>'+signal+'</td><td class="mono">'+confidence+'</td><td class="tiny">'+escHtml(available?(r.tf||'—'):'—')+'</td><td class="mono">'+(available?price(r,'entry',digits):'—')+'</td><td class="mono down">'+(available?price(r,'stop_loss',digits):'—')+'</td><td class="mono up">'+(available?price(r,'tp1',digits):'—')+'</td><td class="tiny">'+escHtml(source)+'</td><td><button class="btn ghost sm" type="button" data-sniper-view="'+escHtml(I.s)+'" title="View '+escHtml(I.s)+' signal details" aria-label="View '+escHtml(I.s)+' signal details"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button></td></tr>';
   }).join('');
 }
 function renderSniperSelectedDetail(){
@@ -4485,7 +4540,7 @@ function renderSniperSelectedDetail(){
   if(!symbol||!r){el.innerHTML='<div class="empty"><b>No current scan result</b>Refresh signals to load this market.</div>';return;}
   if(r.error){el.innerHTML='<div class="empty"><b>Signal unavailable for '+escHtml(symbol)+'</b>'+escHtml(r.detail||'No verified source data.')+' No levels are shown as current.</div>';return;}
   const I=bySym[symbol],digits=I&&I.d||2,fmt=k=>{const n=Number(r[k]);return Number.isFinite(n)&&n>0?fmtPx(n,digits):'—';},source=r.data_source||r.source||'unavailable';
-  el.innerHTML='<div class="row between wrap"><div><b style="font-size:18px">'+escHtml(symbol)+'</b> <span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span></div><label class="row tiny" style="gap:6px"><input type="checkbox" data-sniper-detail-watch="'+escHtml(symbol)+'" '+(sniperWatchSymbols.has(symbol)?'checked':'')+'> Notify on entry &amp; exit</label></div><div class="az-tiles" style="margin-top:12px"><div class="az-tile"><div class="k">ENTRY REFERENCE</div><div class="v">'+fmt('entry')+'</div></div><div class="az-tile"><div class="k">STOP LOSS</div><div class="v down">'+fmt('stop_loss')+'</div></div><div class="az-tile"><div class="k">TP1</div><div class="v up">'+fmt('tp1')+'</div></div><div class="az-tile"><div class="k">TP2 / EXIT</div><div class="v up">'+fmt('tp2')+'</div></div></div><div class="hint">Price: '+(Number(r.price)>0?fmtPx(Number(r.price),digits):'—')+' · Confidence: '+escHtml(String(r.confidence||0))+'% · Source: '+escHtml(source)+' · '+escHtml(r.tf||'')+'. Analysis only — no order sent.</div>';
+  el.innerHTML='<div class="row between wrap"><div><b style="font-size:18px">'+escHtml(symbol)+'</b> <span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span></div><label class="row tiny" style="gap:6px"><input type="checkbox" data-sniper-detail-watch="'+escHtml(symbol)+'" '+(sniperWatchSymbols.has(symbol)?'checked':'')+'> Notify on entry &amp; exit</label></div><div class="az-tiles" style="margin-top:12px"><div class="az-tile"><div class="k">ENTRY REFERENCE</div><div class="v">'+fmt('entry')+'</div></div><div class="az-tile"><div class="k">STOP LOSS</div><div class="v down">'+fmt('stop_loss')+'</div></div><div class="az-tile"><div class="k">TP1</div><div class="v up">'+fmt('tp1')+'</div></div><div class="az-tile"><div class="k">TP2 / EXIT</div><div class="v up">'+fmt('tp2')+'</div></div></div><div class="hint">Price: '+(Number(r.price)>0?fmtPx(Number(r.price),digits):'—')+' · Confidence: '+liveScoreHtml(r)+' · Source: '+escHtml(source)+' · '+escHtml(r.tf||'')+'. Analysis only — no order sent.</div>'+liveNoteHtml(r,false);
   const watch=el.querySelector('[data-sniper-detail-watch]');if(watch)watch.onchange=()=>setSniperWatch(symbol,watch.checked);
 }
 function renderSniperSignalAlerts(results,qualifiedSymbols=new Set()){
@@ -4495,9 +4550,9 @@ function renderSniperSignalAlerts(results,qualifiedSymbols=new Set()){
     .sort((a,b)=>(Number(b.confidence)||0)-(Number(a.confidence)||0));
   if(!rows.length){targets.forEach(el=>el.innerHTML='<div class="tiny faint">No directional setup in your selected markets yet. Waiting for fresh, source-labelled data.</div>');return;}
   const level=(r,key)=>{const n=Number(r[key]);if(!Number.isFinite(n)||n<=0)return '—';const digits=(bySym[r.symbol]&&bySym[r.symbol].d)||2;return fmtPx(n,digits);};
-  const html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Market</th><th>Signal</th><th>Timeframe</th><th>Entry</th><th>SL</th><th>TP1</th><th>Source</th></tr></thead><tbody>'+rows.map(r=>{
+  const html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Market</th><th>Signal</th><th>Confidence</th><th>Timeframe</th><th>Entry</th><th>SL</th><th>TP1</th><th>Source</th></tr></thead><tbody>'+rows.map(r=>{
     const qualified=qualifiedSymbols.has(r.symbol), cls=r.signal==='BUY'?'buy':'sell';
-    return '<tr><td><b>'+escHtml(r.symbol)+'</b></td><td><span class="badge '+cls+'">'+escHtml(r.signal)+'</span><div class="tiny faint">'+(qualified?'filter match':'selected market')+'</div></td><td class="tiny">'+escHtml(r.tf||'—')+'</td><td class="mono">'+level(r,'entry')+'</td><td class="mono down">'+level(r,'stop_loss')+'</td><td class="mono up">'+level(r,'tp1')+'</td><td class="tiny">'+escHtml(r.data_source||r.source||'unavailable')+'</td></tr>';
+    return '<tr><td><b>'+escHtml(r.symbol)+'</b></td><td><span class="badge '+cls+'">'+escHtml(r.signal)+'</span><div class="tiny faint">'+(qualified?'filter match':'selected market')+'</div></td><td class="mono">'+liveScoreHtml(r)+liveNoteHtml(r,true)+'</td><td class="tiny">'+escHtml(r.tf||'—')+'</td><td class="mono">'+level(r,'entry')+'</td><td class="mono down">'+level(r,'stop_loss')+'</td><td class="mono up">'+level(r,'tp1')+'</td><td class="tiny">'+escHtml(r.data_source||r.source||'unavailable')+'</td></tr>';
   }).join('')+'</tbody></table></div><div class="tiny faint" style="margin-top:5px">Updated '+new Date().toLocaleTimeString()+' · technical references only; no order was placed.</div>';
   targets.forEach(el=>el.innerHTML=html);
 }

@@ -979,7 +979,8 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         <div class="view-head">
           <div><h1>Signal Analyzer</h1><p class="sub">Multi-timeframe confluence (1m / 5m / 1h) into one validated decision with risk levels.</p>
             <details class="tiny faint" style="margin-top:6px"><summary style="cursor:pointer">How the confidence score is computed (quality score — NOT a probability of profit)</summary>
-            <div style="margin-top:6px;max-width:640px">Technical confluence score, 0–100: <b>15</b> base + <b>7</b> per confirming timeframe (up to 5) + up to <b>25</b> for bias strength (5×|avg bias|, capped) + <b>20</b> when the multi-timeframe signal is confirmed; overall cap 93 (WAIT signals capped at 45). Index CFD reads use <b>50 + 8×|signal score|</b>, capped 90. Formula is fixed and shown here so the number is explainable and stable — it is a setup-quality/confluence score, not a calibrated chance of profit.</div>
+            <div style="margin-top:6px;max-width:640px">Technical confluence score, 0–100: <b>15</b> base + <b>7</b> per confirming timeframe (up to 5) + up to <b>25</b> for bias strength (5×|avg bias|, capped) + <b>20</b> when the multi-timeframe signal is confirmed; overall cap 93 (WAIT signals capped at 45). Index CFD reads use <b>50 + 8×|signal score|</b>, capped 90. Formula is fixed and shown here so the number is explainable and stable — it is a setup-quality/confluence score, not a calibrated chance of profit.
+            <div style="margin-top:6px"><b>It then moves with the market.</b> A BUY or SELL is followed from the price it was first read at: up to <b>30</b> points come off as the live price moves from that entry toward the stop, and up to <b>15</b> are added as it moves toward target 1 (a move in the signal's direction uses up part of the target distance, so the score rises half as fast as it falls). The sentence under the score gives the distance in pips (dollars for gold) and when the signal was first read. At the stop or at target 1 that reading is over and the next analysis starts a new one. Daily index readings have no entry, stop or target, so their score moves only when a daily vote changes. Alerts and Sniper filters use the score as read.</div></div>
             </details>
           </div>
           <span class="pill hidden" id="azBudget">AI today —</span>
@@ -1219,7 +1220,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           </div>
           <div class="hint">Selected markets only. Entry, SL, TP1 and timeframe are references from the displayed data source; “—” means no verified level was supplied. Exit-touch alerts are not guaranteed fills, and daily index fallback has no intraday exit-touch alerts.</div>
           <div class="tbl-wrap" style="margin-top:8px">
-            <table class="tbl"><thead><tr><th>Notify</th><th>Market</th><th>Signal</th><th>Timeframe</th><th>Entry</th><th>SL</th><th>TP1</th><th>Source</th><th>View</th></tr></thead><tbody id="sniperWatchList"><tr><td colspan="9" class="faint">Loading selected markets…</td></tr></tbody></table>
+            <table class="tbl"><thead><tr><th>Notify</th><th>Market</th><th>Signal</th><th>Confidence</th><th>Timeframe</th><th>Entry</th><th>SL</th><th>TP1</th><th>Source</th><th>View</th></tr></thead><tbody id="sniperWatchList"><tr><td colspan="10" class="faint">Loading selected markets…</td></tr></tbody></table>
           </div>
         </div>
         <div class="card" style="margin-bottom:14px">
@@ -1227,7 +1228,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <div id="sniperSelectedDetail" class="empty"><b>No market selected</b>Choose the eye icon beside a market to view its current signal details.</div>
         </div>
         <div class="card">
-          <div class="card-head"><div><h3>Live Sniper setups</h3><div class="sub">The same source-labelled setups shown in alerts and the Automation panel.</div></div></div>
+          <div class="card-head"><div><h3>Live Sniper setups</h3><div class="sub">The same source-labelled setups shown in alerts and the Automation panel. Confidence moves with the price since each setup was first read; it is a score, not a chance of profit.</div></div></div>
           <div id="sniperSignalList"><div class="tiny faint">Start monitoring to populate Sniper setups.</div></div>
         </div>
       </section>
@@ -1257,6 +1258,9 @@ input[type=range].range{accent-color:var(--brand); width:220px}
             <div class="card" style="background:var(--surface-2)">
               <div class="row between"><span class="faint tiny">TECHNICAL SIGNAL</span><span id="goldSignalBadge" class="badge gray">WAITING</span></div>
               <h2 id="goldSignal" style="font-size:32px;margin-top:10px">—</h2>
+              <div class="row between" style="margin-top:8px"><span class="faint tiny">CONFIDENCE</span><b class="mono" id="goldConfidence" style="font-size:20px">—</b></div>
+              <div class="conf-bar" style="margin-top:6px"><i id="goldConfidenceBar" style="width:0%"></i></div>
+              <div class="tiny faint" id="goldConfidenceNote" style="margin:6px 0 8px;line-height:1.45">The score appears with the first analysis.</div>
               <div class="tiny faint" id="goldVotes">No verified timeframe votes yet.</div>
               <div class="tiny faint" id="goldSignalUpdated" style="margin-top:6px">Last analysis: —</div>
             </div>
@@ -1277,7 +1281,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
             <div class="card"><h4 class="az-h">BUY / SELL PRESSURE</h4><p class="muted small" id="goldPressure">Waiting for M1/M5/H1 votes.</p><p class="hint tiny">This is indicator/timeframe confluence, not exchange order-book or actual buyer/seller volume.</p></div>
             <div class="card"><h4 class="az-h">READOUT &amp; RISKS</h4><p class="muted small" id="goldRationale">No signal yet. If data is unavailable or timeframes disagree, the monitor stands aside.</p><ul class="az-risks" id="goldRisks"></ul></div>
           </div>
-          <div class="hint tiny" style="margin-top:12px">Levels are technical reference values, not instructions or guaranteed fills. A BUY/SELL is shown only with confirmation; otherwise the result is WAIT. Review after the next M5 candle close; this is not a fixed expiry or holding-time guarantee. The monitor runs while AURUM is open and reachable after you open this Gold/USD panel; it cannot alert when the app/browser is closed.</div>
+          <div class="hint tiny" style="margin-top:12px">Levels are technical reference values, not instructions or guaranteed fills. A BUY/SELL is shown only with confirmation; otherwise the result is WAIT. Review after the next M5 candle close; this is not a fixed expiry or holding-time guarantee. The monitor runs while AURUM is open and reachable after you open this Gold/USD panel; it cannot alert when the app/browser is closed. Confidence is the timeframe-agreement score of the analysis, marked down as the live price moves from the first-read entry toward the stop and up as it moves toward TP 1. It is a score, not a chance of profit.</div>
         </div>
         <div class="grid c2">
           <div class="card">
