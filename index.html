@@ -4,8 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
-<title>Fredrick TRADING — Trading Workspace</title>
-<meta name="manifest" href="/manifest.webmanifest">
+<title>Shelricktech — Trading Workspace</title>
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://s3.tradingview.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' wss://ws.derivws.com wss://api.derivws.com https://*.supabase.co; frame-src https://www.tradingview.com https://s.tradingview.com; font-src 'self' data:; object-src 'none'; base-uri 'self'">
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#0a0e16">
@@ -570,6 +569,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
 </style>
 </head>
 <body>
+<noscript><div role="alert" style="padding:14px 16px;text-align:center;font-size:14px;line-height:1.5;background:var(--surface-2);color:var(--text);border-bottom:1px solid var(--border)">This app needs JavaScript. Enable JavaScript in your browser settings, then reload this page.</div></noscript>
 <!-- ============ AUTH ============ -->
 <div class="auth" id="authScreen">
   <div class="auth-brand">
@@ -584,7 +584,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
       <div class="card" style="margin-top:10px;padding:12px 14px;background:rgba(224,180,92,.06);border-color:rgba(224,180,92,.25)">
         <div class="tiny faint">TODAY'S BEST MARKET TO FORECAST ON</div>
         <div id="authBestBody" style="margin-top:4px"></div>
-        <div class="tiny faint" style="margin-top:6px">Live scan &middot; updates as markets move &middot; indices are analysis-only (CFD via Exness).</div>
+        <div class="tiny faint" style="margin-top:6px">Live scan of six major forex pairs, read again every 10 minutes &middot; an index read from daily closes has its own line and is not ranked against them &middot; indices are analysis-only (CFD via Exness).</div>
       </div>
     </div>
     <div class="auth-foot" id="authFoot">Real market data &middot; trading activates only when you connect your own account.</div>
@@ -658,8 +658,8 @@ input[type=range].range{accent-color:var(--brand); width:220px}
     <button class="btn" id="mobPortfolioBtn" type="button">Portfolio</button>
   </div>
   <aside class="sidebar" id="sidebar">
-    <div class="side-logo"><span class="mark" id="brandMark">F</span>
-      <div><span id="brandName">FREDRICK</span><span class="tag" id="brandTag">TRADING</span></div>
+    <div class="side-logo"><span class="mark" id="brandMark">S</span>
+      <div><span id="brandName">Shelricktech</span><span class="tag" id="brandTag">INVESTMENT</span></div>
     </div>
     <nav class="nav" id="mainNav" aria-label="Main">
       <div class="nav-label">Workspace</div>
@@ -727,7 +727,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
 
   <div class="main">
     <header class="topbar">
-      <button class="icon-btn hamburger" id="hamburger" aria-label="Open menu">
+      <button class="icon-btn hamburger" id="hamburger" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
       <div class="grow">
@@ -828,6 +828,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           </select>
         </div>
         <p class="hint" id="mktHoursNote" style="margin:-6px 0 10px"></p>
+        <p class="hint hidden" id="mktScanStatus" style="margin:-4px 0 10px"></p>
         <div class="card flush">
           <div class="tbl-wrap">
             <table class="tbl" id="mktTable">
@@ -1767,8 +1768,8 @@ input[type=range].range{accent-color:var(--brand); width:220px}
                 <button class="btn sm" id="notifBtn">Enable</button>
               </div>
               <div class="set-row">
-                <div><div class="t">WhatsApp signal number</div><div class="d">International format, digits only (e.g. 2547XXXXXXXX). News signals get a one-tap WhatsApp share; auto-send requires Meta's paid Cloud API (bring credentials and I'll wire it).</div></div>
-                <input class="input mono" id="waNumber" inputmode="numeric" placeholder="2547…" style="width:180px">
+                <div><div class="t">WhatsApp signal number</div><div class="d">Share buttons open WhatsApp with this number. The built-in Shelricktech number is 254721752212; to use another one on this device, type it here (international format, digits only). Auto-send requires Meta's paid Cloud API.</div></div>
+                <input class="input mono" id="waNumber" inputmode="numeric" placeholder="254721752212" style="width:180px">
               </div>
               <div class="set-row">
                 <div><div class="t">Auto-send to WhatsApp</div><div class="d" id="waAutoStatus">Checking server…</div></div>
@@ -1794,7 +1795,10 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div class="card-head"><h3>About</h3></div>
               <ul class="info-list">
                 <li><span class="k">Workspace</span><span class="v">AURUM 2.0 · live</span></li>
+                <li><span class="k">Mode</span><span class="v" id="aboutMode">Full workspace</span></li>
+                <li><span class="k">Trading &amp; accounts</span><span class="v" id="aboutTrading">Through the broker you connect in this app</span></li>
                 <li><span class="k">Market data</span><span class="v" id="aboutFeed">Deriv live feed</span></li>
+                <li><span class="k">Signal analysis</span><span class="v" id="aboutAnalysis">Exness MT5 first · labelled Deriv / Yahoo fallback</span></li>
                 <li><span class="k">Charts / news</span><span class="v">TradingView official widgets</span></li>
                 <li><span class="k">Storage</span><span class="v">Browser localStorage</span></li>
               </ul>
@@ -1909,6 +1913,33 @@ body.compact .tbl th{padding:7px 12px}
 .flash-up{animation:flashUp .7s ease-out}
 .flash-down{animation:flashDown .7s ease-out}
 </style>
+<!-- Startup guard. If the application module below fails to load, or throws
+     while starting, the static page would look normal but no button would
+     respond. This small classic script (no dependencies, old-browser safe)
+     says so and offers a reload. src/main.js sets window.__aurumAppStarted as
+     its last statement. -->
+<script>
+(function(){
+  function check(){
+    if(window.__aurumAppStarted||document.getElementById('startupNotice'))return;
+    var bar=document.createElement('div');
+    bar.id='startupNotice';
+    bar.setAttribute('role','alert');
+    bar.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;background:#8a6d1a;color:#fff;padding:8px 14px;font-size:13px;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap';
+    var text=document.createElement('span');
+    text.textContent='The app did not start correctly, so the controls on this page will not respond. Reload the page. If this keeps happening, update your browser or clear the saved data for this site.';
+    var button=document.createElement('button');
+    button.type='button';
+    button.className='btn primary sm';
+    button.textContent='Reload';
+    button.onclick=function(){ location.reload(); };
+    bar.appendChild(text);
+    bar.appendChild(button);
+    document.body.appendChild(bar);
+  }
+  window.addEventListener('load',function(){ setTimeout(check,3000); });
+})();
+</script>
 <script type="module" src="/src/main.js"></script>
 
 </body>
