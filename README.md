@@ -348,6 +348,46 @@ failed. The cause is in Cloudflare's build log and has not been established.
 A red preview mark on a pull request is not the result of the production
 publish: #3 was published after its preview had failed.
 
+### Bringing in a package made outside this repository
+
+A package (ZIP) prepared elsewhere is a copy of the project from the day it was
+made. Only the files changed there are new; every other file in it is an older
+copy. Uploading the whole package to `main` ("Add files via upload") replaces
+the newer files of the repository with those older copies, and the upload is
+published like any other commit on `main`.
+
+This happened on 12 November 2026 with the package described in
+`CLOUDFLARE_STAGING_GITHUB_HANDOFF.md`. It had been made from the copy of
+10 November, and its upload put back the page, icons, price feed,
+`package.json` and `wrangler.jsonc` of that day. The live site followed within
+minutes. Afterwards the files the package had really changed were kept, the one
+file changed on both sides (`src/main.js`) was merged, and the rest was
+restored.
+
+To bring such a package in:
+
+1. Find what the package changed by comparing it with the commit it was made
+   from, not with `main`. A file that is identical to that older commit was not
+   changed by the package.
+2. Put only the changed files on a branch. Merge a file that both sides changed
+   (`git merge-file <current> <older commit's copy> <package's copy>`); do not
+   replace it.
+3. Run `npm run build` and `npm test`, commit the rebuilt `dist/`, and open a
+   pull request.
+
+**Open item.** The package of 12 November also changed files in `bridge/`:
+a new `START_MT5_IF_CLOSED.ps1`, and `SETUP_AND_RUN.bat`, `AUTO_START.bat` and
+`mt5_bridge.py`. That folder was not uploaded. The launcher texts and
+`tests/localHosting.test.mjs` already describe it, so two tests in that file
+are reported as `# TODO` until `bridge/START_MT5_IF_CLOSED.ps1` is in the
+repository, and count as failures again from then on. Until then
+`START_ALL_LOCAL.bat` from this repository runs the bridge scripts of
+10 November. They do not contain the steps its banner now names (starting MT5
+when it is closed, opening the app in Chrome), and that bridge has no
+`/local-config` route, so the page does not receive the bridge token. Nothing
+in `bridge/` has changed here since 10 November, so uploading that one folder
+from the package replaces nothing newer.
+
 ### What the configuration does
 
 - **Routing.** `/api` and `/api/*` always run the Worker. Other requests are

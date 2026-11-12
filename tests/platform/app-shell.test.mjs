@@ -2,8 +2,9 @@
  * App shell — generic frontend stability checks.
  *
  * Scope: page-level behaviour only (startup guard, <noscript>, connectivity
- * notices, service-worker registration errors, navigation semantics, and
- * keeping client-held AI keys away from the Cloudflare host).
+ * notices, service-worker registration errors, navigation semantics, keeping
+ * client-held AI keys away from the Cloudflare host, and which pages may ask
+ * the PC bridge's app server for its settings).
  *
  * The hosted-mode test boots the real application bundle in jsdom on a
  * *.workers.dev address and wires its fetch() to the real Worker code with
@@ -196,7 +197,11 @@ before(async () => {
    from a Cloudflare host and its same-origin requests are answered by the real
    Worker code; { origin, offlineApi: true } boots it as the PC-local app with
    no API server reachable. */
-async function bootHostedApp({ origin = HOSTED_ORIGIN, offlineApi = false } = {}) {
+/* `localConfig`, when given, answers GET /local-config on the page's own
+   origin with { status, body }: an object is sent as JSON, a string as plain
+   text. It stands in for the PC bridge's app server, which is not the API, so
+   it answers even when `offlineApi` is set. */
+async function bootHostedApp({ origin = HOSTED_ORIGIN, offlineApi = false, localConfig = null } = {}) {
   const worker = createReadOnlyWorker({
     requestImpl: async () => { throw new Error('stub provider is offline'); },
     fetchImpl: async () => { throw new Error('stub provider is offline'); },
@@ -245,6 +250,15 @@ async function bootHostedApp({ origin = HOSTED_ORIGIN, offlineApi = false } = {}
         for (const [name, value] of Object.entries(init.headers || {})) headers[name.toLowerCase()] = String(value);
         const record = { path: url.pathname, origin: url.origin, method: init.method || 'GET', headers, status: null };
         requests.push(record);
+        if (localConfig && url.origin === origin && url.pathname === '/local-config') {
+          const answer = localConfig();
+          const asText = typeof answer.body === 'string';
+          record.status = answer.status;
+          if (closing) return new Promise(() => {});
+          return new Response(asText ? answer.body : JSON.stringify(answer.body), {
+            status: answer.status, headers: { 'content-type': asText ? 'text/plain; charset=utf-8' : 'application/json' }
+          });
+        }
         if (offlineApi || url.origin !== origin) throw new TypeError('network is disabled in tests');
         const response = await worker.fetch(new Request(url, { method: record.method, headers: { ...headers, origin }, body: init.body }), env);
         record.status = response.status;
@@ -500,5 +514,93 @@ test('PC-local mode: same watchlist subscriptions as the cloud viewer, the proxy
     assert.equal(app.doc.querySelector('#feedText').textContent, 'Deriv live feed', 'live once a valid tick has arrived');
   } finally {
     await app.close();
+  }
+});
+
+/* ---------------------------------------------------------------- bridge settings from the PC's own app server */
+
+/* The page opened at http://127.0.0.1:8788 may ask the app server that served
+   it for the bridge token and the Exness server name (GET /local-config), so
+   the user need not copy them from bridge_token.txt. Every value below is
+   written by the test; no bridge, broker or account is involved. */
+const PC_APP = 'http://127.0.0.1:8788';
+const HANDED_OVER = { bridgeToken: 'token-written-by-this-test', exnessServer: 'Server-Written-By-This-Test' };
+const settingsRequests = (app) => app.requests.filter((request) => request.path === '/local-config');
+const bridgeFields = (app) => ({
+  token: app.doc.querySelector('#mt5Token').value,
+  kept: app.window.sessionStorage.getItem('aurum_local_api_token'),
+  servers: ['exnessServer', 'mt5Server'].map((id) => app.doc.getElementById(id).value)
+});
+const UNTOUCHED = { token: '', kept: null, servers: ['', ''] };
+const started = async (app) => {
+  await app.waitFor(() => app.window.__aurumAppStarted === true, 'application start marker');
+  /* The request, if the page makes one, leaves while the script starts.
+     Give its answer time to be used before looking at the fields. */
+  await new Promise((r) => setTimeout(r, 100));
+};
+
+test('PC app on this PC: the bridge token offered by its own app server fills the empty field, for this tab only', async () => {
+  const app = await bootHostedApp({ origin: PC_APP, offlineApi: true, localConfig: () => ({ status: 200, body: HANDED_OVER }) });
+  try {
+    await app.waitFor(() => app.doc.querySelector('#mt5Token').value !== '', 'the bridge token field');
+    assert.deepEqual(bridgeFields(app), {
+      token: HANDED_OVER.bridgeToken, kept: HANDED_OVER.bridgeToken, servers: [HANDED_OVER.exnessServer, HANDED_OVER.exnessServer]
+    });
+    assert.equal(app.window.localStorage.getItem('aurum_local_api_token'), null, 'not kept beyond the tab session');
+    const asked = settingsRequests(app);
+    assert.equal(asked.length, 1, 'asked once');
+    assert.equal(asked[0].method, 'GET');
+    assert.equal(asked[0].origin, PC_APP, 'asked of the server that served the page');
+  } finally {
+    await app.close();
+  }
+});
+
+test('PC app on this PC: an answer without a token fills in the server name only', async () => {
+  const app = await bootHostedApp({ origin: PC_APP, offlineApi: true, localConfig: () => ({ status: 200, body: { bridgeToken: '', exnessServer: HANDED_OVER.exnessServer } }) });
+  try {
+    await app.waitFor(() => app.doc.getElementById('mt5Server').value !== '', 'the server field');
+    await started(app);
+    assert.deepEqual(bridgeFields(app), { token: '', kept: null, servers: [HANDED_OVER.exnessServer, HANDED_OVER.exnessServer] });
+  } finally {
+    await app.close();
+  }
+});
+
+test('PC app on this PC: an answer that is not usable changes nothing and is not reported as an error', async () => {
+  const answers = [
+    ['the bridge without this route answers every unknown path with its status text', { status: 200, body: 'AURUM bridge is UP' }],
+    ['a refusal is not used, whatever it carries', { status: 403, body: HANDED_OVER }],
+    ['an empty answer', { status: 200, body: {} }]
+  ];
+  for (const [label, answer] of answers) {
+    const app = await bootHostedApp({ origin: PC_APP, offlineApi: true, localConfig: () => answer });
+    try {
+      await started(app);
+      assert.equal(settingsRequests(app).length, 1, label + ': asked once, not repeated');
+      assert.deepEqual(bridgeFields(app), UNTOUCHED, label);
+      assert.deepEqual(app.problems.filter((line) => /local-config|JSON|Unexpected token/i.test(line)), [], label);
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test('only the page on this PC asks for the bridge settings: not the cloud site, not a phone on the home network, not another port', async () => {
+  const elsewhere = [
+    ['the Cloudflare site', HOSTED_ORIGIN, false],
+    ['the PC app opened from a phone through the PC\'s network address', 'http://192.168.1.20:8788', true],
+    ['the local API port', 'http://127.0.0.1:4100', true]
+  ];
+  for (const [label, origin, offlineApi] of elsewhere) {
+    /* The stand-in would hand the token over; the page must not ask. */
+    const app = await bootHostedApp({ origin, offlineApi, localConfig: () => ({ status: 200, body: HANDED_OVER }) });
+    try {
+      await started(app);
+      assert.equal(settingsRequests(app).length, 0, label + ': no request for the settings');
+      assert.deepEqual(bridgeFields(app), UNTOUCHED, label);
+    } finally {
+      await app.close();
+    }
   }
 });
