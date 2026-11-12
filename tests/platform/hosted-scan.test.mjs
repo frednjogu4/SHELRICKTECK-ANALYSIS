@@ -482,6 +482,53 @@ test('index CFDs: read by the cloud, reused for a minute, and "unavailable" with
   assert.equal(yahooDown.requests.length, 2, 'a failure is never reused');
 });
 
+test('index CFDs: the day a daily reading is from reaches the page as the cloud sent it', async () => {
+  const barTime = Math.floor(Date.UTC(2026, 10, 11, 14, 30) / 1000);
+  const fromCloud = (symbol, final) => ({
+    symbol, signal: 'WAIT', bias: 'neutral', confidence: 50, votes: 'fixture', tf: 'DAILY (index)', model: 'technical-daily',
+    source: YAHOO_SOURCE, data_source: YAHOO_SOURCE, daily_bar_time: barTime, daily_bar_final: final, ts: 1
+  });
+  const scanner = createHostedScanner({
+    fetchCandles: browserFeed().fetchCandles,
+    cloudScan: async () => new Map([['US30', fromCloud('US30', true)], ['NAS100', fromCloud('NAS100', false)], ['SPX500', fromCloud('SPX500', null)]])
+  });
+  const [us30, nas100, spx500] = await scanner.scan(['US30', 'NAS100', 'SPX500']);
+  for (const reading of [us30, nas100, spx500]) {
+    assert.equal(signalState(reading), 'daily', reading.symbol);
+    assert.equal(reading.data_source, YAHOO_SOURCE + CLOUD_SUFFIX, reading.symbol);
+    assert.equal(reading.daily_bar_time, barTime, reading.symbol);
+  }
+  assert.equal(us30.daily_bar_final, true);
+  assert.equal(nas100.daily_bar_final, false);
+  assert.equal(spx500.daily_bar_final, null);
+
+  /* A reading from a cloud that does not send the day yet is still a daily reading, without one. */
+  const older = createHostedScanner({
+    fetchCandles: browserFeed().fetchCandles,
+    cloudScan: async () => new Map([['US30', { symbol: 'US30', signal: 'WAIT', confidence: 50, tf: 'DAILY (index)', model: 'technical-daily', source: YAHOO_SOURCE }]])
+  });
+  const [plain] = await older.scan(['US30']);
+  assert.equal(signalState(plain), 'daily');
+  assert.equal('daily_bar_time' in plain, false);
+});
+
+test('the day of an index reading is not a clock: a daily bar never decides whether a Deriv market is live', async () => {
+  /* The newest 1-minute candles are four minutes old: live. An index reading in the same scan
+     names a daily bar a full day ahead of them; were that taken for "now", every market here
+     would be called stale. */
+  const feed = browserFeed({ ageSec: 240 });
+  const ahead = nowSec() + 86400;
+  const scanner = createHostedScanner({
+    fetchCandles: feed.fetchCandles,
+    cloudScan: async () => new Map([['US30', { symbol: 'US30', signal: 'WAIT', confidence: 50, tf: 'DAILY (index)', model: 'technical-daily', source: YAHOO_SOURCE, daily_bar_time: ahead, daily_bar_final: false }]])
+  });
+  const readings = await scanner.scan(['EUR/USD', 'VOL 100', 'US30']);
+  assert.equal(signalState(readings[0]), 'live');
+  assert.equal(signalState(readings[1]), 'live');
+  assert.equal(signalState(readings[2]), 'daily');
+  assert.equal(readings[2].daily_bar_time, ahead);
+});
+
 test('the cloud refuses or does not answer (rate limit, network): index readings say why, Deriv readings are unaffected', async () => {
   const scanner = createHostedScanner({
     fetchCandles: browserFeed().fetchCandles,

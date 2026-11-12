@@ -29,6 +29,7 @@ import { build } from 'esbuild';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { createReadOnlyWorker } from '../../cloudflare/worker.js';
 import { DERIV_INSTRUMENTS, INDEX_INSTRUMENTS, derivCandleRows, basePriceFor, yahooChartFixture, nowSec } from './helpers/market-fixtures.mjs';
+import { tradingDayText } from '../../src/bestpick.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
@@ -43,6 +44,13 @@ const TEST_KEYS = { claude: 'TEST-CLAUDE-KEY-VALUE', openai: 'TEST-OPENAI-KEY-VA
 const BROWSER_SOURCE = 'source: Deriv public candles · analysed in this browser';
 const CLOUD_DERIV_SOURCE = 'source: Deriv public candles · AURUM cloud analysis';
 const CLOUD_INDEX_SOURCE = 'source: Yahoo Finance public daily data · AURUM cloud analysis';
+/* The best-market panel: the six live markets it ranks, the three indices of its daily line, and its sentences. */
+const PICK_MARKETS = DERIV_SYMBOLS.slice(0, 6);
+const PICK_INDICES = ['NAS100', 'US30', 'SPX500'];
+const NO_SETUP = 'No directional setup right now \u2014 the pick appears the moment the live scan finds one.';
+const TEN_MINUTES = 10 * 60 * 1000;
+const NOT_ESTIMATED = ' Nothing is estimated \u2014 the pick appears when the scan finds one.';
+const READ_INSIDE = ' Inside the workspace this browser reads the live markets itself.';
 /* What a row with a reading starts with. Which of these it is depends on the fixture and is not asserted. */
 const READING = /^(Buy \d+%|Sell \d+%|▲ Lean up|▼ Lean down|Wait)/;
 
@@ -64,11 +72,16 @@ before(async () => {
  *   yahoo         'ok' | 'down'             what the Worker's Yahoo provider does
  *   candleAgeSec  how old the newest candle is, on both sides
  *   ticks         answer every price subscription with one tick
+ *   yahooBars     options for the Yahoo fixture: { newestBarAt, session } (see market-fixtures.mjs)
+ *   rewriteScan   (results) => results, applied to what the Worker answers to /api/signals/scan:
+ *                 lets a test hand the page a reading of its own writing for one market
+ *   scanTakesMs   page time that passes while a scan request is answered
+ *   scanGate      () => Promise, awaited before a scan request is answered
  * `pcApi`, when given, replaces the Worker: the page then runs as the PC app
  * and `pcApi(path, body)` answers its API requests with { status, body }.
  */
 async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null } = {}) {
-  const state = { browserDeriv: 'ok', cloudDeriv: 'ok', yahoo: 'ok', candleAgeSec: 0, ticks: false, ...world };
+  const state = { browserDeriv: 'ok', cloudDeriv: 'ok', yahoo: 'ok', candleAgeSec: 0, ticks: false, yahooBars: {}, rewriteScan: null, scanTakesMs: 0, scanGate: null, ...world };
   const problems = [];
   const warnings = [];
   const requests = [];
@@ -88,8 +101,11 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null } = {}
     },
     fetchImpl: async () => {
       if (state.yahoo !== 'ok') throw new Error('Yahoo Finance HTTP 503');
-      return Response.json(yahooChartFixture());
+      return Response.json(yahooChartFixture(state.yahooBars));
     },
+    /* One clock for the page and the cloud: when a test moves the page's time on, the
+       Worker's caches age with it instead of answering with what they read "minutes ago". */
+    now: () => Date.now() + clock.shiftMs,
     log: () => {}
   });
   const allow = { limit: async () => ({ success: true }) };
@@ -157,12 +173,21 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null } = {}
         const record = { path: url.pathname, method: init.method || 'GET', body, status: null, afterEntering: entered };
         requests.push(record);
         if (url.origin !== origin) throw new TypeError('network is disabled in tests');
+        const isScan = url.pathname === '/api/signals/scan';
+        if (isScan) {
+          clock.shiftMs += state.scanTakesMs;
+          if (state.scanGate) await state.scanGate();
+        }
         let response;
         if (pcApi) {
           const answer = pcApi(url.pathname, body) || { status: 404, body: { error: 'not_part_of_this_test' } };
           response = new Response(JSON.stringify(answer.body), { status: answer.status || 200, headers: { 'content-type': 'application/json' } });
         } else {
           response = await worker.fetch(new Request(url, { method: record.method, headers: { ...headers, origin }, body: init.body }), env);
+          if (isScan && state.rewriteScan && response.ok) {
+            const answer = await response.json();
+            response = Response.json({ ...answer, results: state.rewriteScan(answer.results) });
+          }
         }
         record.status = response.status;
         /* Once the test is tearing the page down, leave late requests pending
@@ -203,8 +228,21 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null } = {}
       levels: !!(td && td.querySelector('.market-levels'))
     };
   };
+  /* The best-market panel ('authBestBody' on the sign-in screen, 'ovBest' in the workspace), line by line. */
+  const panel = (id) => {
+    const el = doc.getElementById(id);
+    const liveLine = el && el.querySelector('.bp-live');
+    const dailyLine = el && el.querySelector('.bp-daily');
+    const describe = (line) => ({
+      text: line ? line.textContent : '',
+      symbol: line && line.querySelector('b') ? line.querySelector('b').textContent : '',
+      direction: line && line.querySelector('.badge.buy') ? 'BUY' : line && line.querySelector('.badge.sell') ? 'SELL' : '',
+      title: line ? line.getAttribute('title') || '' : ''
+    });
+    return { text: el ? el.textContent : '', ready: !!liveLine, live: describe(liveLine), daily: describe(dailyLine), hasDaily: !!dailyLine };
+  };
   return {
-    window, doc, state, requests, sockets, problems, warnings, click, waitFor, row,
+    window, doc, state, requests, sockets, problems, warnings, click, waitFor, row, panel,
     /** Moves the page's clock forward. */
     advanceClock(ms) { clock.shiftMs += ms; },
     /** Runs the page's repeating timers of the given period once, as if the period had passed. */
@@ -500,26 +538,287 @@ test('sign-in screen: no connection to Deriv is opened; the first scan is answer
   } finally { await app.close(); }
 });
 
-test('best-market panel: markets that could not be read are reported as such, not as "no setup"', async () => {
+/* ---------------------------------------------------------------- the best-market panel */
+
+/*
+ * The report: the panel showed "US30 BUY 82%" from morning to night. US30 is
+ * read once a day from daily closes, and a directional daily reading scores
+ * 74, 82 or 90, more than a live 1m/5m/1h reading can reach. The pick is now
+ * made among the live markets; the index has a line of its own, dated by the
+ * daily bar it comes from.
+ *
+ * The Yahoo fixture rises by the same amount every day, so its daily reading
+ * is a BUY by plain arithmetic; that direction is relied on, a score never is.
+ */
+
+test('best-market panel: the daily index reading has a line of its own, dated by its bar — it no longer stands where the pick goes', async () => {
+  /* The newest daily bar is two days old and its session ended that day: a close. */
+  const DAY = 86400;
+  const barAt = Math.floor(nowSec() / DAY) * DAY - 2 * DAY + 14.5 * 3600;
+  const app = await bootApp({ world: { yahooBars: { newestBarAt: barAt, session: { start: barAt, end: barAt + 6.5 * 3600 } } } });
+  try {
+    const check = (id, where) => {
+      const panel = app.panel(id);
+      /* First line: a live market, or the sentence that none has a setup. Which of the two
+         depends on the fixture and is not asserted. An index it is not. */
+      for (const symbol of INDEX_SYMBOLS) assert.ok(!panel.live.text.includes(symbol), `${where}: ${symbol} is not on the first line`);
+      assert.ok(!/index CFD|Yahoo|Daily index trend/.test(panel.live.text), `${where}: nothing of a daily reading on the first line`);
+      if (panel.live.direction) {
+        assert.ok(PICK_MARKETS.includes(panel.live.symbol), `${where}: the pick is one of the live markets`);
+        assert.match(panel.live.text, /source: Deriv public candles .+ · \d\d:\d\d:\d\d$/, `${where}: the pick says when it was read`);
+      } else assert.equal(panel.live.text, NO_SETUP, where);
+
+      /* Second line: the index, with the day of its data instead of a clock time. */
+      assert.ok(panel.hasDaily, `${where}: the daily line is shown`);
+      assert.ok(PICK_INDICES.includes(panel.daily.symbol), `${where}: one of the three indices`);
+      assert.equal(panel.daily.direction, 'BUY', where);
+      assert.match(panel.daily.text, new RegExp('^Daily index trend · daily close of ' + tradingDayText(barAt) + ' ' + panel.daily.symbol
+        + ' BUY \\d+% index CFD · analysis only votes .+ · source: Yahoo Finance public daily data · AURUM cloud analysis$'), where);
+      assert.ok(!/\d\d:\d\d:\d\d/.test(panel.daily.text), `${where}: no clock time on the daily line`);
+      assert.match(panel.daily.title, /^A once-a-day reading from daily closing prices\./, `${where}: the line explains itself on hover`);
+    };
+
+    await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
+    check('authBestBody', 'sign-in screen');
+    assert.deepEqual(app.sockets, [], 'still no connection to Deriv from the sign-in screen');
+
+    /* Inside the workspace the pick is read again, in this browser. The index line is the same. */
+    await app.enter();
+    await app.waitFor(() => app.window.__aurumDiagnostics().scans >= 3, 'the pick repeated after entering');
+    await new Promise((r) => setTimeout(r, 40));
+    check('ovBest', 'workspace');
+    assert.equal(app.doc.getElementById('authBestBody').textContent, app.doc.getElementById('ovBest').textContent, 'both panels show the same lines');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('best-market panel, the reported case: an index that scores higher than every live market is no longer the pick', async () => {
+  /* On the sign-in screen every reading is the cloud's. This test writes them itself: GBP/USD
+     is SELL 61 and the other five live markets wait. Its candle time stays the fixture's, so
+     it is live. The three indices are left as the Worker read them: BUY, and — like every
+     directional daily reading — at 74 or more. Before the change the pick was the index. */
+  const rewriteScan = (results) => results.map((reading) => {
+    if (reading.error || INDEX_SYMBOLS.includes(reading.symbol)) return reading;
+    if (reading.symbol === 'GBP/USD') return { ...reading, signal: 'SELL', bias: 'bearish', confidence: 61, votes: 'written by the test' };
+    return { ...reading, signal: 'WAIT', bias: 'neutral', confidence: 30, votes: 'written by the test' };
+  });
+  const app = await bootApp({ world: { rewriteScan } });
+  try {
+    await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
+    const panel = app.panel('authBestBody');
+    assert.equal(panel.live.symbol, 'GBP/USD');
+    assert.equal(panel.live.direction, 'SELL');
+    assert.match(panel.live.text, /^GBP\/USD SELL 61% votes written by the test · source: Deriv public candles · AURUM cloud analysis · \d\d:\d\d:\d\d$/);
+
+    assert.ok(PICK_INDICES.includes(panel.daily.symbol));
+    assert.equal(panel.daily.direction, 'BUY');
+    const indexScore = Number(/ BUY (\d+)% /.exec(panel.daily.text)[1]);
+    assert.ok(indexScore > 61, `the index scores ${indexScore}, more than the pick, and is still not the pick`);
+    assert.match(panel.daily.text, /^Daily index trend /);
+
+    /* The panel's read still raises the signal alerts it always did: the new direction is
+       remembered per market, so that it is announced once and not at every read. */
+    assert.equal(app.window.localStorage.getItem('aurum_signalAlert_GBP/USD'), JSON.stringify('SELL|Deriv public candles \u00b7 AURUM cloud analysis|levels-v1'));
+    assert.equal(app.window.localStorage.getItem('aurum_signalAlert_EUR/USD'), JSON.stringify('WAIT|Deriv public candles \u00b7 AURUM cloud analysis|levels-v1'));
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('best-market panel: while the index session is open the line says the bar is not final; without a session from Yahoo it only names the bar', async () => {
+  const forming = nowSec() - 60;
+  const fixedDay = Math.floor(Date.UTC(2026, 10, 11, 14, 30) / 1000);
+  const cases = [
+    [{ newestBarAt: forming, session: { start: forming, end: forming + 3600 } }, tradingDayText(forming) + ', session open \u2014 not final'],
+    [{ newestBarAt: fixedDay }, 'daily bar of Wed 11 Nov']
+  ];
+  for (const [yahooBars, day] of cases) {
+    const app = await bootApp({ world: { yahooBars } });
+    try {
+      await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
+      const { daily } = app.panel('authBestBody');
+      assert.ok(daily.text.startsWith('Daily index trend · ' + day + ' ' + daily.symbol + ' BUY '), `"${day}" in: ${daily.text}`);
+      assert.ok(!daily.text.includes('daily close of'), 'a bar that is not known to be final is not called a close');
+      assert.deepEqual(app.problems, []);
+    } finally { await app.close(); }
+  }
+});
+
+test('best-market panel: markets that could not be read are reported as such on their own line, not as "no setup"', async () => {
   const app = await bootApp({ world: { cloudDeriv: 'down', yahoo: 'down' } });
   try {
     /* Sign-in screen: the cloud is the only source here and reaches neither Deriv nor Yahoo. */
-    const onSignIn = app.doc.getElementById('authBestBody');
-    await app.waitFor(() => /could be read/.test(onSignIn.textContent), 'the sign-in screen panel');
-    assert.equal(onSignIn.textContent, 'No market could be read right now: 9 unavailable. Nothing is estimated \u2014 the pick appears when the scan finds one.');
+    await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
+    const onSignIn = app.panel('authBestBody');
+    /* The cloud could not reach the feed: the line also says who reads these markets next. */
+    assert.equal(onSignIn.live.text, 'No live market could be read right now: 6 unavailable.' + NOT_ESTIMATED + READ_INSIDE);
+    assert.equal(onSignIn.daily.text, 'Daily index trend: not read right now (3 unavailable). Nothing is estimated.');
     assert.deepEqual(app.sockets, [], 'still no connection to Deriv from the sign-in screen');
 
     /* Inside the workspace the pick is read again, this time with this browser's own candles:
-       six markets are readable now, the three index CFDs are not. The panel shows a pick or
-       says which markets were not read; it no longer claims that nothing could be read. */
+       the six live markets are readable now, the three index CFDs still are not. The first
+       line shows a pick or says that there is no setup; it reports nothing as unread. */
     await app.enter();
-    const inside = app.doc.getElementById('ovBest');
-    const picked = () => !!inside.querySelector('.badge.buy, .badge.sell');
-    await app.waitFor(() => picked() || /Not read: /.test(inside.textContent), 'the pick repeated after entering');
-    if (!picked()) assert.equal(inside.textContent, 'No directional setup in the markets that could be read. Not read: 3 unavailable. Nothing is estimated \u2014 the pick appears when the scan finds one.');
-    assert.ok(!/No market could be read/.test(inside.textContent));
-    assert.equal(app.doc.getElementById('authBestBody').textContent, inside.textContent, 'both panels show the same pick');
+    await app.waitFor(() => !/No live market could be read/.test(app.panel('ovBest').live.text), 'the pick repeated after entering');
+    const inside = app.panel('ovBest');
+    if (!inside.live.direction) assert.equal(inside.live.text, NO_SETUP);
+    assert.ok(!/Not read|could be read/.test(inside.live.text));
+    assert.equal(inside.daily.text, 'Daily index trend: not read right now (3 unavailable). Nothing is estimated.');
+    assert.equal(app.doc.getElementById('authBestBody').textContent, app.doc.getElementById('ovBest').textContent, 'both panels show the same lines');
     assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('best-market panel: "this browser reads them inside" is said only where entering can change something', async () => {
+  /* Markets that are closed (old candles) on the sign-in screen: entering does not open them, so nothing is promised. */
+  const closed = await bootApp({ world: { candleAgeSec: 2 * 86400 } });
+  try {
+    await closed.waitFor(() => closed.panel('authBestBody').ready, 'the sign-in screen panel');
+    assert.equal(closed.panel('authBestBody').live.text, 'No live market could be read right now: 6 stale (market closed or feed paused).' + NOT_ESTIMATED);
+    assert.match(closed.panel('authBestBody').daily.text, /^Daily index trend /, 'the daily line does not depend on the live feed');
+    assert.deepEqual(closed.problems, []);
+  } finally { await closed.close(); }
+
+  /* Neither the cloud nor this browser reaches the feed. On the sign-in screen the sentence
+     is there; inside, where the browser has tried and failed as well, it is gone. */
+  const app = await bootApp({ world: { cloudDeriv: 'down', browserDeriv: 'down' } });
+  try {
+    await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
+    assert.equal(app.panel('authBestBody').live.text, 'No live market could be read right now: 6 unavailable.' + NOT_ESTIMATED + READ_INSIDE);
+    await app.enter();
+    await app.waitFor(() => app.window.__aurumDiagnostics().scans >= 3, 'the pick repeated after entering');
+    await app.waitFor(() => !app.panel('ovBest').live.text.includes(READ_INSIDE), 'the sentence is withdrawn inside');
+    assert.equal(app.panel('ovBest').live.text, 'No live market could be read right now: 6 unavailable.' + NOT_ESTIMATED);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('best-market panel: nothing to name on either line — each says what was read, what was not, and which day the indices are from', async () => {
+  /* Written by the test: two live markets could not be read and the other four wait;
+     two indices have no direction and the third could not be read. */
+  const DAY = 86400;
+  const barAt = Math.floor(nowSec() / DAY) * DAY - 3 * DAY + 14.5 * 3600;
+  const failed = (symbol) => ({ symbol, error: 'FEED_ERROR', detail: 'written by the test', source: 'unavailable', data_source: 'unavailable' });
+  const rewriteScan = (results) => results.map((reading) => {
+    if (reading.error) return reading;
+    if (['EUR/USD', 'USD/CAD', 'SPX500'].includes(reading.symbol)) return failed(reading.symbol);
+    return { ...reading, signal: 'WAIT', bias: 'neutral', confidence: 30 };
+  });
+  const app = await bootApp({ world: { rewriteScan, yahooBars: { newestBarAt: barAt, session: { start: barAt, end: barAt + 6.5 * 3600 } } } });
+  try {
+    await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
+    const panel = app.panel('authBestBody');
+    assert.equal(panel.live.text, 'No directional setup in the live markets that could be read. Not read: 2 unavailable.' + NOT_ESTIMATED + READ_INSIDE);
+    assert.equal(panel.daily.text, 'Daily index trend \u00b7 daily close of ' + tradingDayText(barAt) + ': no direction on NAS100, US30. Not read: 1 unavailable.');
+    assert.equal(panel.live.direction + panel.daily.direction, '', 'no BUY or SELL badge anywhere');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('best-market panel: indices read from different days — the "no direction" line names no day rather than one of them', async () => {
+  /* Each index has its own daily series in the cloud, kept for 15 minutes: around the opening
+     bell one can still be yesterday's close while another is already today's forming bar. */
+  const DAY = 86400;
+  const barAt = Math.floor(nowSec() / DAY) * DAY - 3 * DAY + 14.5 * 3600;
+  const rewriteScan = (results) => results.map((reading) => {
+    if (reading.error) return reading;
+    const waiting = { ...reading, signal: 'WAIT', bias: 'neutral', confidence: 30 };
+    return reading.symbol === 'US30' ? { ...waiting, daily_bar_time: barAt + DAY, daily_bar_final: false } : waiting;
+  });
+  const app = await bootApp({ world: { rewriteScan, yahooBars: { newestBarAt: barAt, session: { start: barAt, end: barAt + 6.5 * 3600 } } } });
+  try {
+    await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
+    assert.equal(app.panel('authBestBody').daily.text, 'Daily index trend: no direction on NAS100, US30, SPX500.');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('best-market panel: read again at every tick of its 10-minute timer — not at every second one', async () => {
+  /* A read takes 4 seconds here. The page's timer ticks once per period, so a tick comes
+     10 minutes after the previous read STARTED, which is 9 min 56 s after it ended. The
+     panel used to ask for "10 minutes since the last result" as well, found each such tick
+     4 seconds short and skipped it: it was read every 20 minutes. */
+  const app = await bootApp({ world: { scanTakesMs: 4000 } });
+  try {
+    const asked = () => app.requests.filter((r) => r.path === '/api/signals/scan').length;
+    const finished = () => app.window.__aurumDiagnostics().scans;
+    const settle = () => new Promise((r) => setTimeout(r, 60));
+    await app.waitFor(() => app.panel('authBestBody').ready, 'the first read');
+    assert.equal(asked(), 1, 'no read besides the first before the timer ticks');
+    await settle();
+    assert.equal(asked(), 1);
+
+    for (const reads of [2, 3, 4]) {
+      app.advanceClock(TEN_MINUTES - 4000); /* the 4 seconds of the read itself have already passed */
+      app.runIntervals(TEN_MINUTES);
+      await app.waitFor(() => asked() === reads, `read ${reads}: at the tick, 10 minutes after the previous read started`);
+      await app.waitFor(() => finished() === reads, `read ${reads} has finished`);
+      await settle();
+      assert.equal(asked(), reads, 'one read per tick');
+      /* Each read brought current readings: the first line reports nothing as stale or unread. */
+      const panel = app.panel('authBestBody');
+      if (!panel.live.direction) assert.equal(panel.live.text, NO_SETUP, `read ${reads}`);
+      assert.match(panel.daily.text, /^Daily index trend /, `read ${reads}`);
+      assert.equal(app.window.__aurumDiagnostics().lastScan.live, 6, `read ${reads}: six live readings`);
+    }
+    assert.deepEqual(app.sockets, [], 'all of it on the sign-in screen, without a connection to Deriv');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('best-market panel: a repeated read keeps the previous lines, with their time, until its own result replaces them; a tick during a read starts no second one', async () => {
+  /* Readings written by the test, so that the first line has a pick and a time to watch. */
+  const written = (pick, direction, score) => (results) => results.map((reading) => {
+    if (reading.error || INDEX_SYMBOLS.includes(reading.symbol)) return reading;
+    if (reading.symbol === pick) return { ...reading, signal: direction, bias: direction === 'BUY' ? 'bullish' : 'bearish', confidence: score, votes: 'written by the test' };
+    return { ...reading, signal: 'WAIT', bias: 'neutral', confidence: 30, votes: 'written by the test' };
+  });
+  const app = await bootApp({ world: { rewriteScan: written('GBP/USD', 'SELL', 61) } });
+  try {
+    const asked = () => app.requests.filter((r) => r.path === '/api/signals/scan').length;
+    const settle = () => new Promise((r) => setTimeout(r, 60));
+    const timeOf = (text) => /(\d\d:\d\d:\d\d)$/.exec(text)[1];
+    await app.waitFor(() => app.panel('authBestBody').ready, 'the first read');
+    const before = app.panel('authBestBody');
+    assert.equal(before.live.symbol, 'GBP/USD');
+    assert.ok(before.hasDaily);
+
+    /* The next read is held back by the test, and will name another market. */
+    let release = () => {};
+    app.state.scanGate = () => new Promise((resolve) => { release = resolve; });
+    app.state.rewriteScan = written('AUD/USD', 'BUY', 66);
+    app.advanceClock(TEN_MINUTES);
+    app.runIntervals(TEN_MINUTES);
+    await app.waitFor(() => asked() === 2, 'the repeated read is under way');
+    await settle();
+    assert.equal(app.panel('authBestBody').text, before.text, 'the lines of the previous read are still shown, with the time of that read');
+
+    /* Another tick while that read is still running: no second request, nothing redrawn differently. */
+    app.runIntervals(TEN_MINUTES);
+    await settle();
+    assert.equal(asked(), 2);
+    assert.equal(app.panel('authBestBody').text, before.text);
+
+    app.state.scanGate = null;
+    release();
+    await app.waitFor(() => app.panel('authBestBody').live.symbol === 'AUD/USD', 'the new result replaces the lines');
+    const after = app.panel('authBestBody');
+    assert.equal(after.live.direction, 'BUY');
+    assert.match(after.live.text, /^AUD\/USD BUY 66% /);
+    assert.notEqual(timeOf(after.live.text), timeOf(before.live.text), 'and carries the time of the new read');
+    assert.ok(after.hasDaily);
+    assert.equal(app.doc.getElementById('ovBest').textContent, after.text, 'the workspace copy of the panel follows');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('best-market panel: before the very first result it says that it is reading, and shows no line', async () => {
+  const app = await bootApp({ world: { scanGate: () => new Promise(() => {}) } });
+  try {
+    await app.waitFor(() => app.requests.some((r) => r.path === '/api/signals/scan'), 'the first read is under way');
+    const panel = app.panel('authBestBody');
+    assert.equal(panel.text, 'Scanning live markets\u2026');
+    assert.equal(panel.ready, false);
+    assert.equal(panel.hasDaily, false);
   } finally { await app.close(); }
 });
 
@@ -700,9 +999,121 @@ test('PC app: scans go to the local API as before — no candle connection from 
     assert.ok(app.sockets[0].sent.every((message) => message.style === 'ticks'));
     assert.ok(app.doc.getElementById('mktScanStatus').classList.contains('hidden'), 'the cloud viewer status line stays hidden');
     assert.equal(app.doc.getElementById('aboutAnalysis').textContent, 'Exness MT5 first · labelled Deriv / Yahoo fallback');
-    /* The best-market panel keeps the PC wording, although one of its markets failed: the local API said WAIT for the others. */
-    assert.equal(app.doc.getElementById('authBestBody').textContent, 'No directional setup right now \u2014 the pick appears the moment the live scan finds one.');
+    /* The best-market panel keeps the PC wording on its first line, although one of its markets
+       failed: the local API said WAIT for the others. The three indices are labelled as the
+       daily fallback they are in the PC app, and stand on the second line. */
+    assert.equal(app.panel('authBestBody').live.text, NO_SETUP);
+    assert.equal(app.panel('authBestBody').daily.text, 'Daily index trend: no direction on NAS100, US30, SPX500.');
     assert.deepEqual(app.warnings.filter((line) => line.startsWith('[aurum]')), []);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
+});
+
+test('PC app, best-market panel: the pick is a live market; a daily index reading from the local API gets its own line', async () => {
+  /* Readings written by the test, in the two shapes the local API answers with. US30 scores
+     90 on the daily scale; the strongest live market is GBP/USD at 61. */
+  const mtf = (symbol, signal, confidence) => ({
+    symbol, signal, bias: signal === 'BUY' ? 'bullish' : signal === 'SELL' ? 'bearish' : 'neutral', confidence, votes: 'live reading written by the test',
+    data_ok: true, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv public candles',
+    wait_reason: signal === 'WAIT' ? 'MTF_NO_ALIGNMENT' : null, wait_detail: signal === 'WAIT' ? 'written by the test' : null
+  });
+  const daily = (symbol, signal, confidence) => ({
+    symbol, signal, bias: signal === 'BUY' ? 'bullish' : signal === 'SELL' ? 'bearish' : 'neutral', confidence, votes: 'daily reading written by the test',
+    data_ok: true, entry: null, stop_loss: null, tp1: null, tp2: null, tf: 'DAILY (index)', model: 'technical-daily', source: 'Yahoo Finance public daily data',
+    wait_reason: signal === 'WAIT' ? 'daily_no_setup' : null, wait_detail: signal === 'WAIT' ? 'written by the test' : null
+  });
+  const answers = {
+    'GBP/USD': mtf('GBP/USD', 'SELL', 61), 'AUD/USD': mtf('AUD/USD', 'BUY', 57),
+    NAS100: daily('NAS100', 'WAIT', 58), US30: daily('US30', 'BUY', 90), SPX500: daily('SPX500', 'BUY', 74)
+  };
+  const pcApi = (path, body) => {
+    if (path === '/api/health') return { status: 200, body: { ok: true } };
+    if (path === '/api/signals/scan') return { status: 200, body: { results: body.symbols.map((symbol) => answers[symbol] || mtf(symbol, 'WAIT', 20)) } };
+    return null;
+  };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi });
+  try {
+    await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
+    const panel = app.panel('authBestBody');
+    const fallback = ' · fallback (Exness unavailable: Exness bridge is not connected in this tab.)';
+
+    assert.equal(panel.live.symbol, 'GBP/USD', 'the strongest live market, not the index that scores 90');
+    assert.equal(panel.live.direction, 'SELL');
+    assert.ok(panel.live.text.startsWith('GBP/USD SELL 61% votes live reading written by the test · source: Deriv public candles' + fallback + ' · '), panel.live.text);
+    assert.match(panel.live.text, / · \d\d:\d\d:\d\d$/);
+
+    /* The local API does not send the day of its daily bar: the line names no day, and no clock time either. */
+    assert.equal(panel.daily.text, 'Daily index trend US30 BUY 90% index CFD · analysis only votes daily reading written by the test · source: Yahoo Finance public daily data' + fallback);
+    assert.equal(panel.daily.symbol, 'US30');
+    assert.equal(panel.daily.direction, 'BUY');
+
+    assert.equal(app.sockets.length, 0, 'the sign-in screen opens no socket in the PC app either');
+    assert.deepEqual(app.warnings.filter((line) => line.startsWith('[aurum]')), []);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('best-market panel: text from a reading is shown as text — markup in it is never parsed, a score that is not a number shows as 0', async () => {
+  const votes = 'votes <b id="injected-by-votes">bold</b> <img src=x onerror="window.__injected=1">';
+  const pcApi = (path, body) => {
+    if (path === '/api/health') return { status: 200, body: { ok: true } };
+    if (path === '/api/signals/scan') {
+      return {
+        status: 200,
+        body: {
+          results: body.symbols.map((symbol) => (PICK_INDICES.includes(symbol)
+            ? { symbol, signal: 'BUY', bias: 'bullish', confidence: '<i id="injected-by-score">90</i>', votes, data_ok: true, tf: 'DAILY (index)', model: 'technical-daily', source: 'Yahoo <u id="injected-by-source">Finance</u>' }
+            : { symbol, signal: 'SELL', bias: 'bearish', confidence: '<i id="injected-by-score-2">61</i>', votes, data_ok: true, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv <u id="injected-by-source-2">candles</u>' }))
+        }
+      };
+    }
+    return null;
+  };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi });
+  try {
+    await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
+    const panel = app.panel('authBestBody');
+    assert.ok(panel.live.direction && panel.daily.direction, 'both lines show a reading');
+    for (const id of ['injected-by-votes', 'injected-by-score', 'injected-by-score-2', 'injected-by-source', 'injected-by-source-2']) {
+      assert.equal(app.doc.getElementById(id), null, `${id}: no element was created from a reading`);
+    }
+    for (const el of [app.doc.getElementById('authBestBody'), app.doc.getElementById('ovBest')]) {
+      assert.equal(el.querySelectorAll('img, i, u, script').length, 0);
+    }
+    assert.equal(app.window.__injected, undefined, 'no handler from a reading ran');
+    assert.ok(panel.live.text.includes(votes), 'the text itself is shown, tags and all');
+    assert.ok(panel.daily.text.includes(votes));
+    assert.match(panel.live.text, / SELL 0% /, 'a score that is not a number is shown as 0, not inserted');
+    assert.match(panel.daily.text, / BUY 0% /);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('PC app, best-market panel: an index the local API could not read is said so on the daily line; the first line keeps the PC wording', async () => {
+  const reading = (symbol) => ({
+    symbol, signal: 'WAIT', bias: 'neutral', confidence: 20, votes: 'written by the test', data_ok: true,
+    tf: PICK_INDICES.includes(symbol) ? 'DAILY (index)' : 'MTF 1m/5m/1h', model: PICK_INDICES.includes(symbol) ? 'technical-daily' : 'technical',
+    source: PICK_INDICES.includes(symbol) ? 'Yahoo Finance public daily data' : 'Deriv public candles', wait_reason: 'written by the test', wait_detail: 'written by the test'
+  });
+  const failed = (symbol) => ({ symbol, error: 'FEED_ERROR', detail: 'written by the test', source: 'unavailable', data_source: 'unavailable' });
+  const cases = [
+    [['SPX500'], 'Daily index trend: no direction on NAS100, US30. Not read: 1 unavailable.'],
+    [PICK_INDICES, 'Daily index trend: not read right now (3 unavailable). Nothing is estimated.']
+  ];
+  for (const [unreadable, dailyLine] of cases) {
+    const pcApi = (path, body) => {
+      if (path === '/api/health') return { status: 200, body: { ok: true } };
+      if (path === '/api/signals/scan') return { status: 200, body: { results: body.symbols.map((symbol) => (unreadable.includes(symbol) || symbol === 'USD/JPY' ? failed(symbol) : reading(symbol))) } };
+      return null;
+    };
+    const app = await bootApp({ origin: PC_ORIGIN, pcApi });
+    try {
+      await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
+      const panel = app.panel('authBestBody');
+      /* USD/JPY failed as well: the PC app's first line does not count unread markets, as before. */
+      assert.equal(panel.live.text, NO_SETUP);
+      assert.equal(panel.daily.text, dailyLine);
+      assert.deepEqual(app.problems, []);
+    } finally { await app.close(); }
+  }
 });

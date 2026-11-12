@@ -62,6 +62,7 @@ Keep the GitHub repo private, use the `cloudflare-staging` Worker name, and do n
 
 - The Worker is technical-only; `/api/signals/usage` reports zero AI spend, and `/api/signals/history` is empty (no database is connected).
 - Yahoo index data is daily and remains labelled; it is not M1/M5/H1 data and does not invent entry/SL/TP levels.
+- A daily index reading names the bar it comes from (`daily_bar_time`, `daily_bar_final`). The best-market panel shows that day on a line of its own and picks among the live readings only; see "Signals on the cloud viewer" in `README.md`.
 - News, six-role pipeline, AI engines, account/PAT, trading, and other non-migrated routes are intentionally unavailable.
 - The UI remains analysis-only in the public staging preview. Deriv read-only credentials must be a dedicated Read-only Classic token; never enter a token with Trade, Payments, or Admin scopes. The token is sent from this tab directly to Deriv (not Cloudflare) and is cleared on sign-out/tab close. Revoke it in Deriv if you no longer need it.
 - No Cloudflare deployment or remote database provisioning is performed by this change.
