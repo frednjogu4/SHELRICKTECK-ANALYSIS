@@ -63,29 +63,42 @@ const chgOf=I=>{ if(I.p==null||I.open==null)return null; return ((I.p-I.open)/I.
 const signalRuns=createSignalTracker(), goldRuns=createSignalTracker();
 const NO_LEVELS_NOTE='Daily reading with no entry, stop or target: this score moves only when one of its daily votes changes.';
 function liveReading(symbol){const I=bySym[symbol];return signalRuns.read(symbol,I&&I.p!=null?I.p:null);}
-function liveScore(r){const live=r&&r.symbol?liveReading(r.symbol):null;return live?live.confidence:(Number(r&&r.confidence)||0);}
 function liveNoteText(live,symbol,short){const I=bySym[symbol],digits=(I&&I.d)||2;return describeLive(live,{short:!!short,time:timeStr,price:v=>fmtPx(v,digits)});}
-/* The sentence beside a reading's score: how far the market has moved since it was first read. */
-function liveNoteFor(r,short){
-  if(!r||r.error||!(r.signal==='BUY'||r.signal==='SELL'))return '';
-  const live=liveReading(r.symbol);
-  if(live)return liveNoteText(live,r.symbol,short);
-  return short?'':NO_LEVELS_NOTE;
+const hasLevels=r=>Number(r&&r.entry)>0&&Number(r&&r.stop_loss)>0&&Number(r&&r.tp1)>0;
+/* What the page shows for one reading: its score and its sentence as the market stands now.
+   A reading on screen can be older than the newest analysis of its market (the scanner cards
+   are a snapshot until Refresh). When the newest analysis no longer says the same, the card
+   keeps its own score and says so; it never borrows the numbers of a different reading. */
+function liveView(symbol,side,base,levels,short){
+  const directional=side==='BUY'||side==='SELL';
+  const live=directional?liveReading(symbol):null;
+  if(live&&live.signal===side)return {score:live.confidence,note:liveNoteText(live,symbol,short)};
+  if(!directional)return {score:base,note:''};
+  if(!levels)return {score:base,note:short?'':NO_LEVELS_NOTE};
+  return {score:base,note:short?'newer reading differs':'A newer analysis no longer reads '+side+' on this market: refresh to see it.'};
 }
-/* '<b data-live-conf="EUR/USD">75%</b>': a score that paintLiveConfidence() keeps current between renders. */
-function liveScoreHtml(r,tag='b'){return '<'+tag+' data-live-conf="'+escHtml(r.symbol)+'">'+liveScore(r)+'%</'+tag+'>';}
-function liveNoteHtml(r,short){return '<div class="tiny faint" data-live-note="'+escHtml(r.symbol)+'"'+(short?' data-live-short="1"':'')+'>'+escHtml(liveNoteFor(r,short))+'</div>';}
+const liveViewOf=(r,short)=>liveView(r.symbol,r.signal,Number(r.confidence)||0,hasLevels(r),short);
+function liveScore(r){return r&&r.symbol?liveViewOf(r).score:(Number(r&&r.confidence)||0);}
+/* The sentence beside a reading's score: how far the market has moved since it was first read. */
+function liveNoteFor(r,short){return r&&!r.error?liveViewOf(r,short).note:'';}
+/* What paintLiveConfidence() needs to redo that computation on every tick. `role` is Conf, Bar or Note. */
+function setLiveData(el,r,role){el.dataset['live'+role]=r.symbol;el.dataset.liveSide=r.signal||'';el.dataset.liveBase=String(Number(r.confidence)||0);el.dataset.liveLevels=hasLevels(r)?'1':'0';}
+function liveData(r,role,short){return ' data-live-'+role+'="'+escHtml(r.symbol)+'" data-live-side="'+escHtml(r.signal||'')+'" data-live-base="'+(Number(r.confidence)||0)+'" data-live-levels="'+(hasLevels(r)?1:0)+'"'+(short?' data-live-short="1"':'');}
+/* '<b data-live-conf="EUR/USD" …>75%</b>': a score that paintLiveConfidence() keeps current between renders. */
+function liveScoreHtml(r,tag='b'){return '<'+tag+liveData(r,'conf')+'>'+liveScore(r)+'%</'+tag+'>';}
+function liveNoteHtml(r,short){return '<div class="tiny faint"'+liveData(r,'note',short)+'>'+escHtml(liveNoteFor(r,short))+'</div>';}
+/* Runs on every price tick: rewrites the scores, bars and sentences already on the page. */
+function paintLiveConfidence(){
+  const view=(el,symbol)=>liveView(symbol,el.dataset.liveSide,Number(el.dataset.liveBase)||0,el.dataset.liveLevels==='1',el.dataset.liveShort==='1');
+  $$('[data-live-conf]').forEach(el=>{el.textContent=view(el,el.dataset.liveConf).score+'%';});
+  $$('[data-live-bar]').forEach(el=>{el.style.width=view(el,el.dataset.liveBar).score+'%';});
+  $$('[data-live-note]').forEach(el=>{el.textContent=view(el,el.dataset.liveNote).note;});
+  if(state.view==='gold')updateGoldConfidence();
+}
 /* Confidence cell of the Sniper tables: the live score and a short note for a BUY/SELL, the score as read for a WAIT, a dash when the reading carries no score. */
 function sniperConfidenceCell(r){
   if(!r||r.error||r.confidence==null||!Number.isFinite(Number(r.confidence)))return '—';
   return r.signal==='BUY'||r.signal==='SELL'?liveScoreHtml(r)+liveNoteHtml(r,true):escHtml(String(Number(r.confidence)))+'%';
-}
-/* Runs on every price tick: rewrites the scores, bars and sentences already on the page. */
-function paintLiveConfidence(){
-  $$('[data-live-conf]').forEach(el=>{const live=liveReading(el.dataset.liveConf);if(live)el.textContent=live.confidence+'%';});
-  $$('[data-live-bar]').forEach(el=>{const live=liveReading(el.dataset.liveBar);if(live)el.style.width=live.confidence+'%';});
-  $$('[data-live-note]').forEach(el=>{const live=liveReading(el.dataset.liveNote);if(live)el.textContent=liveNoteText(live,el.dataset.liveNote,el.dataset.liveShort==='1');});
-  if(state.view==='gold')updateGoldConfidence();
 }
 
 /* ---------- built-in WhatsApp number ----------
@@ -976,6 +989,9 @@ function wireFeed(){
     if(isCloudflareReadonlyMode())updateFeedPill(feed.feedStatus());
     const I=bySym[sym]; if(!I)return;
     I.p=q.px; I.open=q.open; I.hist=q.hist||I.hist; I.t=q.time;
+    /* live confidence: a stop or target crossed while the market is not on screen still ends its reading */
+    signalRuns.read(sym,q.px);
+    if(sym===GOLD_SYMBOL)goldRuns.read(GOLD_SYMBOL,goldLivePrice());
     tickN++;
     tickUI(); checkStops();
     /* first ~24 ticks: keep re-rendering so movers/signals settle as
@@ -1307,9 +1323,9 @@ function renderSignals(){
     card.querySelector('.sym-full').textContent=I.n;
     card.querySelector('.badge').textContent=sig.signal;
     const score=liveScore(sig);
-    const cb=card.querySelector('.conf-bar i'); cb.style.width=score+'%'; cb.dataset.liveBar=sig.symbol;
-    const cv=card.querySelector('.row.between b'); cv.textContent=score+'%'; cv.dataset.liveConf=sig.symbol;
-    const cn=card.querySelector('.sig-live'); cn.textContent=liveNoteFor(sig); cn.dataset.liveNote=sig.symbol;
+    const cb=card.querySelector('.conf-bar i'); cb.style.width=score+'%'; setLiveData(cb,sig,'Bar');
+    const cv=card.querySelector('.row.between b'); cv.textContent=score+'%'; setLiveData(cv,sig,'Conf');
+    const cn=card.querySelector('.sig-live'); cn.textContent=liveNoteFor(sig); setLiveData(cn,sig,'Note');
     card.querySelector('[data-l="e"]').textContent=fmtPx(sig.entry,I.d);
     card.querySelector('[data-l="s"]').textContent=fmtPx(sig.stop_loss,I.d);
     card.querySelector('[data-l="t"]').textContent=fmtPx(sig.tp1,I.d);

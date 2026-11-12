@@ -1359,3 +1359,110 @@ test('live confidence, Gold monitor: a gold price that has gone stale no longer 
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
+
+/* The scanner cards are a snapshot until Refresh; other views analyse the same markets again in the meantime. */
+const liveCard = (app, symbol) => {
+  const el = [...app.doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === symbol);
+  return el ? { direction: el.querySelector('.badge').textContent, score: el.querySelector('[data-live-conf]').textContent, bar: el.querySelector('.conf-bar i').style.width, note: el.querySelector('.sig-live').textContent } : null;
+};
+/* The local API stand-in, with the EUR/USD reading chosen by the test at each moment. */
+const liveApiWith = (eurusd) => (path, body) => {
+  const answer = liveScanApi(path, body);
+  return path === '/api/signals/scan' ? { ...answer, body: { results: answer.body.results.map((r) => (r.symbol === 'EUR/USD' ? eurusd() : r)) } } : answer;
+};
+
+test('live confidence: a card older than the newest analysis of its market keeps its own score and says so', async () => {
+  let eur = LIVE_BUY;
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveApiWith(() => eur), world: { ticks: true } });
+  try {
+    await app.enter();
+    await app.open('signals');
+    await app.waitFor(() => liveCard(app, 'EUR/USD') && liveCard(app, 'EUR/USD').score === '75%', 'the BUY card at the live price');
+
+    /* The Markets table analyses every market again, and now reads EUR/USD as WAIT. The card still says BUY. */
+    const superseded = { direction: 'BUY', score: '70%', bar: '70%', note: 'A newer analysis no longer reads BUY on this market: refresh to see it.' };
+    eur = liveWait('EUR/USD');
+    await app.open('markets');
+    await app.waitFor(() => /^Wait/.test(app.row('EUR/USD').badge), 'the newer reading in the Markets table');
+    pushTick(app, 'frxEURUSD', EUR_TICK + 3 * PIP);
+    assert.deepEqual(liveCard(app, 'EUR/USD'), superseded, 'the next tick does not leave the old sentence standing');
+    await app.open('signals');
+    assert.deepEqual(liveCard(app, 'EUR/USD'), superseded, 'nor does drawing the card again');
+
+    /* Later the market is read as SELL: the BUY card does not borrow the SELL reading's numbers. */
+    eur = { ...LIVE_BUY, signal: 'SELL', bias: 'bearish', mtf_signal: 'SELL_CONFIRMED', confidence: 64, entry: EUR_TICK + 6 * PIP, price: EUR_TICK + 6 * PIP, stop_loss: EUR_TICK + 18 * PIP, tp1: EUR_TICK - 12 * PIP, tp2: EUR_TICK - 26 * PIP };
+    app.advanceClock(91000);
+    await app.open('markets');
+    await app.waitFor(() => /^Sell/.test(app.row('EUR/USD').badge), 'the SELL reading in the Markets table');
+    pushTick(app, 'frxEURUSD', EUR_TICK);
+    assert.equal(app.row('EUR/USD').badge, 'Sell 69%', 'the Markets row shows the SELL at the live price: 64 + 5');
+    assert.deepEqual(liveCard(app, 'EUR/USD'), superseded);
+
+    /* Refresh: the card is the SELL now, with its own numbers. */
+    await app.open('signals');
+    app.click(app.doc.getElementById('refreshSigs'));
+    await app.waitFor(() => liveCard(app, 'EUR/USD') && liveCard(app, 'EUR/USD').direction === 'SELL', 'the refreshed card');
+    assert.equal(liveCard(app, 'EUR/USD').score, '69%');
+    assert.match(liveCard(app, 'EUR/USD').note, /^6\.0 pips with this SELL \u00b7 33% of the way to target 1 /);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('live confidence: a stop crossed while the market is nowhere on screen still ends the reading', async () => {
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, world: { ticks: true } });
+  try {
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxEURUSD')), 'the price stream');
+    await app.waitFor(() => app.doc.querySelector('[data-live-conf="EUR/USD"]'), 'the first scan of the workspace');
+    /* Whether a reading has ended must not depend on a card or a row happening to be in the
+       document when the price crosses its stop. The Overview lists only three readings and the
+       other views draw a market once they are opened: stand on a view that draws none, and take
+       every element of this market away. */
+    await app.open('learn');
+    const onPage = () => app.doc.querySelectorAll('[data-live-conf="EUR/USD"], [data-live-bar="EUR/USD"], [data-live-note="EUR/USD"]');
+    onPage().forEach((el) => el.remove());
+    assert.equal(onPage().length, 0);
+
+    /* The price goes through the stop, and comes back to where it was. */
+    pushTick(app, 'frxEURUSD', EUR_TICK - 19 * PIP);
+    pushTick(app, 'frxEURUSD', EUR_TICK);
+    assert.equal(onPage().length, 0, 'nothing was drawn in between');
+
+    /* The card is drawn again from the same reading: it is over, not "6 pips with". */
+    await app.open('signals');
+    await app.waitFor(() => liveCard(app, 'EUR/USD'), 'the card');
+    assert.equal(liveCard(app, 'EUR/USD').score, '40%');
+    assert.match(liveCard(app, 'EUR/USD').note, /^Stop level reached at /);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('live confidence, Gold monitor: a stop crossed while another view is open still ends the reading', async () => {
+  const sell = {
+    symbol: 'XAU/USD', signal: 'SELL', bias: 'bearish', confidence: 71, mtf_signal: 'SELL_CONFIRMED', votes: 'written by the test', data_ok: true,
+    entry: GOLD_TICK + 3, price: GOLD_TICK + 3, stop_loss: GOLD_TICK + 18, tp1: GOLD_TICK - 19.5, tp2: GOLD_TICK - 37, rationale: 'written by the test', risks: [], model: 'technical'
+  };
+  const pcApi = (path, body) => (path === '/api/signals/analyze' ? { status: 200, body: { ...sell, latest_candle_time: nowSec() } } : liveScanApi(path, body));
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi, world: { ticks: true } });
+  try {
+    await app.enter();
+    const text = (id) => app.doc.getElementById(id).textContent;
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await app.open('gold');
+    await app.waitFor(() => text('goldSignal') === 'SELL', 'the first gold analysis');
+    assert.equal(text('goldConfidence'), '73%');
+
+    /* On another view, gold goes through the stop and comes back. The monitor's score is not being drawn. */
+    await app.open('learn');
+    pushTick(app, 'frxXAUUSD', GOLD_TICK + 19);
+    pushTick(app, 'frxXAUUSD', GOLD_TICK);
+    assert.equal(text('goldConfidence'), '73%', 'the Gold view is not redrawn while it is closed');
+
+    await app.open('gold');
+    assert.equal(text('goldSignal'), 'SELL', 'the same analysis is still on screen');
+    assert.equal(text('goldConfidence'), '41%');
+    assert.match(text('goldConfidenceNote'), /^Stop level reached at /);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
