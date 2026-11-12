@@ -60,36 +60,42 @@ const chgOf=I=>{ if(I.p==null||I.open==null)return null; return ((I.p-I.open)/I.
    Scan readings are followed market by market; the Gold monitor reads gold from a
    source of its own and keeps its own run. Display only: alerts and Sniper filters
    keep using the score as read. It is a score, never a chance of profit. */
-const signalRuns=createSignalTracker(), goldRuns=createSignalTracker();
+/* The prices streaming into this page come from Deriv. A reading made from Exness candles has
+   Exness levels: it is measured against the Exness price that came with its latest analysis,
+   never against a Deriv tick, so its score moves at each analysis instead of at each tick. */
+const STREAM_FEED='stream';
+const feedOfReading=r=>r&&r.model==='technical-exness'?'exness':STREAM_FEED;
+const signalRuns=createSignalTracker({feedOf:feedOfReading}), goldRuns=createSignalTracker();
 const NO_LEVELS_NOTE='Daily reading with no entry, stop or target: this score moves only when one of its daily votes changes.';
-function liveReading(symbol){const I=bySym[symbol];return signalRuns.read(symbol,I&&I.p!=null?I.p:null);}
-function liveNoteText(live,symbol,short){const I=bySym[symbol],digits=(I&&I.d)||2;return describeLive(live,{short:!!short,time:timeStr,price:v=>fmtPx(v,digits)});}
+function liveReading(symbol){const I=bySym[symbol];return signalRuns.read(symbol,I&&I.p!=null?I.p:null,STREAM_FEED);}
+function liveNoteText(live,symbol,short){const I=bySym[symbol],digits=(I&&I.d)||2;return describeLive(live,{short:!!short,time:timeStr,price:v=>fmtPx(v,digits),sampled:at=>'measured at the Exness price of '+at+', updated at each analysis'});}
 const hasLevels=r=>Number(r&&r.entry)>0&&Number(r&&r.stop_loss)>0&&Number(r&&r.tp1)>0;
 /* What the page shows for one reading: its score and its sentence as the market stands now.
    A reading on screen can be older than the newest analysis of its market (the scanner cards
-   are a snapshot until Refresh). When the newest analysis no longer says the same, the card
-   keeps its own score and says so; it never borrows the numbers of a different reading. */
-function liveView(symbol,side,base,levels,short){
+   are a snapshot until Refresh). When the newest analysis is a different reading (another
+   direction, another venue, WAIT or a failure), the card keeps its own score and says so; it
+   never borrows the numbers of a different reading. */
+function liveView(symbol,side,base,levels,short,feedName){
   const directional=side==='BUY'||side==='SELL';
   const live=directional?liveReading(symbol):null;
-  if(live&&live.signal===side)return {score:live.confidence,note:liveNoteText(live,symbol,short)};
+  if(live&&live.signal===side&&live.feed===feedName)return {score:live.confidence,note:liveNoteText(live,symbol,short)};
   if(!directional)return {score:base,note:''};
   if(!levels)return {score:base,note:short?'':NO_LEVELS_NOTE};
-  return {score:base,note:short?'newer reading differs':'A newer analysis no longer reads '+side+' on this market: refresh to see it.'};
+  return {score:base,note:short?'not the newest reading':'This '+side+' reading is no longer the newest for this market: refresh to see the latest.'};
 }
-const liveViewOf=(r,short)=>liveView(r.symbol,r.signal,Number(r.confidence)||0,hasLevels(r),short);
+const liveViewOf=(r,short)=>liveView(r.symbol,r.signal,Number(r.confidence)||0,hasLevels(r),short,feedOfReading(r));
 function liveScore(r){return r&&r.symbol?liveViewOf(r).score:(Number(r&&r.confidence)||0);}
 /* The sentence beside a reading's score: how far the market has moved since it was first read. */
 function liveNoteFor(r,short){return r&&!r.error?liveViewOf(r,short).note:'';}
 /* What paintLiveConfidence() needs to redo that computation on every tick. `role` is Conf, Bar or Note. */
-function setLiveData(el,r,role){el.dataset['live'+role]=r.symbol;el.dataset.liveSide=r.signal||'';el.dataset.liveBase=String(Number(r.confidence)||0);el.dataset.liveLevels=hasLevels(r)?'1':'0';}
-function liveData(r,role,short){return ' data-live-'+role+'="'+escHtml(r.symbol)+'" data-live-side="'+escHtml(r.signal||'')+'" data-live-base="'+(Number(r.confidence)||0)+'" data-live-levels="'+(hasLevels(r)?1:0)+'"'+(short?' data-live-short="1"':'');}
+function setLiveData(el,r,role){el.dataset['live'+role]=r.symbol;el.dataset.liveSide=r.signal||'';el.dataset.liveBase=String(Number(r.confidence)||0);el.dataset.liveLevels=hasLevels(r)?'1':'0';el.dataset.liveFeed=feedOfReading(r);}
+function liveData(r,role,short){return ' data-live-'+role+'="'+escHtml(r.symbol)+'" data-live-side="'+escHtml(r.signal||'')+'" data-live-base="'+(Number(r.confidence)||0)+'" data-live-levels="'+(hasLevels(r)?1:0)+'" data-live-feed="'+feedOfReading(r)+'"'+(short?' data-live-short="1"':'');}
 /* '<b data-live-conf="EUR/USD" …>75%</b>': a score that paintLiveConfidence() keeps current between renders. */
 function liveScoreHtml(r,tag='b'){return '<'+tag+liveData(r,'conf')+'>'+liveScore(r)+'%</'+tag+'>';}
 function liveNoteHtml(r,short){return '<div class="tiny faint"'+liveData(r,'note',short)+'>'+escHtml(liveNoteFor(r,short))+'</div>';}
 /* Runs on every price tick: rewrites the scores, bars and sentences already on the page. */
 function paintLiveConfidence(){
-  const view=(el,symbol)=>liveView(symbol,el.dataset.liveSide,Number(el.dataset.liveBase)||0,el.dataset.liveLevels==='1',el.dataset.liveShort==='1');
+  const view=(el,symbol)=>liveView(symbol,el.dataset.liveSide,Number(el.dataset.liveBase)||0,el.dataset.liveLevels==='1',el.dataset.liveShort==='1',el.dataset.liveFeed);
   $$('[data-live-conf]').forEach(el=>{el.textContent=view(el,el.dataset.liveConf).score+'%';});
   $$('[data-live-bar]').forEach(el=>{el.style.width=view(el,el.dataset.liveBar).score+'%';});
   $$('[data-live-note]').forEach(el=>{el.textContent=view(el,el.dataset.liveNote).note;});
@@ -990,7 +996,7 @@ function wireFeed(){
     const I=bySym[sym]; if(!I)return;
     I.p=q.px; I.open=q.open; I.hist=q.hist||I.hist; I.t=q.time;
     /* live confidence: a stop or target crossed while the market is not on screen still ends its reading */
-    signalRuns.read(sym,q.px);
+    signalRuns.read(sym,q.px,STREAM_FEED);
     if(sym===GOLD_SYMBOL)goldRuns.read(GOLD_SYMBOL,goldLivePrice());
     tickN++;
     tickUI(); checkStops();

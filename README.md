@@ -343,6 +343,24 @@ The scores update on every price tick, without a new scan. Readings are
 followed in the page's memory only: after a reload a reading is followed from
 the first analysis the page makes.
 
+**One venue's levels are never measured with another venue's price.** The
+prices streaming into the page come from Deriv. In the PC app with Exness
+connected, a scanner reading made from Exness candles has Exness levels, so
+it is measured against the Exness price that came with its latest analysis
+and the sentence ends with `measured at the Exness price of 14:07:12, updated
+at each analysis`. Such a score moves at each analysis, not at each tick. If
+Exness then fails and the market is read from the fallback, that is a new
+reading with its own levels. The Gold monitor asks the terminal for the
+Exness gold price every ten seconds while its view is open; a tick older
+than two minutes is not treated as a live price.
+
+**A card is one reading.** The scanner cards stay as they were read until
+Refresh, while other views read the same markets again. When the newest
+analysis of a market is a different reading, the card shows its own score as
+read and `This BUY reading is no longer the newest for this market: refresh
+to see the latest.` A stop or target is noticed on every tick, whether or
+not that market is on screen at the time.
+
 **What a replay of the rule showed (November 2026).** The 1m/5m/1h rule and
 its levels (stop 1.5 × ATR of the 5-minute candles, target 1 at 2.25 × ATR, so
 a reward of 1.5 for a risk of 1) were replayed minute by minute, with the

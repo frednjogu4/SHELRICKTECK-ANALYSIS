@@ -97,18 +97,27 @@ export function liveConfidence(run, price) {
 /**
  * Follows readings market by market.
  *
- *   observe(reading)   tell the tracker what the latest analysis said
- *   read(key, price)   the live score for a market at a price, or null when it has no run
- *   forget(key)        drop a market's run
+ *   observe(reading)         tell the tracker what the latest analysis said
+ *   read(key, price, feed)   the live score for a market at a price, or null when it has no run
+ *   forget(key)              drop a market's run
  *
  * `key` defaults to the reading's symbol; a caller that reads the same market
  * from a second source keeps a tracker of its own.
+ *
+ * Feeds. Two venues do not quote the same price, so a reading's levels are only
+ * compared with prices of the venue its candles came from. `feedOf(reading)`
+ * names that venue, and `read()` names the venue of the price it is given. When
+ * the two differ the price is set aside: the run answers with the newest price
+ * of its own venue instead, which is the one that came with its latest analysis
+ * (`sampledAt` in the answer says when). Such a run moves at each analysis, not
+ * at each tick. A reading of the same direction from another venue starts a new
+ * run, with its own levels.
  */
-export function createSignalTracker({ now = () => Date.now() } = {}) {
+export function createSignalTracker({ now = () => Date.now(), feedOf = () => '' } = {}) {
   const runs = new Map();
 
-  function view(run, live) {
-    return { ...live, symbol: run.symbol, signal: run.signal, entry: run.entry, stop_loss: run.stop_loss, tp1: run.tp1, startedAt: run.startedAt, endedAt: run.endedAt };
+  function view(run, live, sampledAt = 0) {
+    return { ...live, symbol: run.symbol, signal: run.signal, entry: run.entry, stop_loss: run.stop_loss, tp1: run.tp1, startedAt: run.startedAt, endedAt: run.endedAt, feed: run.feed, sampledAt };
   }
 
   function end(run, live) {
@@ -128,31 +137,39 @@ export function createSignalTracker({ now = () => Date.now() } = {}) {
         stop_loss: Number(reading && reading.stop_loss),
         tp1: Number(reading && reading.tp1),
         base: clampScore(reading && reading.confidence),
-        startedAt: now(), endedAt: 0, ended: '', endMove: 0
+        feed: String((reading && feedOf(reading)) || ''),
+        startedAt: now(), endedAt: 0, ended: '', endMove: 0, sample: 0, sampleAt: 0
       };
       /* WAIT, an error, or a reading without levels (the daily index readings): nothing to follow. */
       if (!reading || reading.error || !levelsOf(run).ok) { runs.delete(id); return null; }
+      /* The price that came with the analysis, from the venue its candles came from. */
+      run.sample = Number(reading.price) > 0 ? Number(reading.price) : run.entry;
+      run.sampleAt = run.startedAt;
       const current = runs.get(id);
-      if (current && !current.ended && current.signal === run.signal) {
-        /* The analysis' own price is one more sample: a stop or target crossed between two looks ends the run too. */
-        const sample = Number(reading.price) > 0 ? Number(reading.price) : run.entry;
-        const live = liveConfidence(current, sample);
-        if (live.state !== 'stop' && live.state !== 'target') { current.base = run.base; return current; }
+      if (current && !current.ended && current.signal === run.signal && current.feed === run.feed) {
+        /* That price is one more sample: a stop or target crossed between two looks ends the run too. */
+        const live = liveConfidence(current, run.sample);
+        if (live.state !== 'stop' && live.state !== 'target') {
+          current.base = run.base; current.sample = run.sample; current.sampleAt = run.sampleAt;
+          return current;
+        }
       }
       runs.set(id, run);
       return run;
     },
 
-    read(key, price) {
+    read(key, price, feed = '') {
       const run = runs.get(key);
       if (!run) return null;
+      const own = String(feed || '') === run.feed;
+      const sampledAt = own ? 0 : run.sampleAt;
       if (run.ended) {
         const confidence = clampScore(run.base + (run.ended === 'stop' ? -AGAINST_POINTS : WITH_POINTS));
-        return view(run, { ok: true, base: run.base, confidence, state: run.ended, move: run.endMove, share: 1 });
+        return view(run, { ok: true, base: run.base, confidence, state: run.ended, move: run.endMove, share: 1 }, sampledAt);
       }
-      const live = liveConfidence(run, price);
+      const live = liveConfidence(run, own ? price : run.sample);
       if (live.state === 'stop' || live.state === 'target') end(run, live);
-      return view(run, live);
+      return view(run, live, sampledAt);
     },
 
     forget(key) { runs.delete(key); },
@@ -164,10 +181,17 @@ export function createSignalTracker({ now = () => Date.now() } = {}) {
  * The sentence shown beside a live score.
  *
  * @param {object} live   what tracker.read() returned
- * @param {{time?:(ms:number)=>string, price?:(value:number)=>string, short?:boolean}} [format]
+ * @param {{time?:(ms:number)=>string, price?:(value:number)=>string, short?:boolean, sampled?:(at:string, live:object)=>string}} [format]
+ *   sampled  the closing words when the score was measured at the price of the latest analysis
+ *            rather than at a live price (see "Feeds" above)
  */
-export function describeLive(live, { time = (ms) => new Date(ms).toISOString().slice(11, 16), price = (value) => String(value), short = false } = {}) {
+export function describeLive(live, { time = (ms) => new Date(ms).toISOString().slice(11, 16), price = (value) => String(value), short = false, sampled = (at) => 'price of the ' + at + ' analysis' } = {}) {
   if (!live) return '';
+  const sentence = describeMove(live, { time, price, short });
+  return !short && sentence && live.sampledAt ? sentence + ' \u00b7 ' + sampled(time(live.sampledAt), live) : sentence;
+}
+
+function describeMove(live, { time, price, short }) {
   const moved = formatMove(live.symbol, live.move);
   if (short) {
     if (live.state === 'with') return moved + ' with';

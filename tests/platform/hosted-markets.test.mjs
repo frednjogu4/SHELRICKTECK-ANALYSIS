@@ -30,6 +30,8 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 import { createReadOnlyWorker } from '../../cloudflare/worker.js';
 import { DERIV_INSTRUMENTS, INDEX_INSTRUMENTS, derivCandleRows, basePriceFor, yahooChartFixture, nowSec } from './helpers/market-fixtures.mjs';
 import { tradingDayText } from '../../src/bestpick.js';
+import { runDeterministicAnalysis } from '../../server/lib/analyzer.js';
+import { localDecision } from '../../server/lib/localdecision.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
@@ -80,7 +82,7 @@ before(async () => {
  * `pcApi`, when given, replaces the Worker: the page then runs as the PC app
  * and `pcApi(path, body)` answers its API requests with { status, body }.
  */
-async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null } = {}) {
+async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, bridgeApi = null } = {}) {
   const state = { browserDeriv: 'ok', cloudDeriv: 'ok', yahoo: 'ok', candleAgeSec: 0, ticks: false, yahooBars: {}, rewriteScan: null, scanTakesMs: 0, scanGate: null, ...world };
   const problems = [];
   const warnings = [];
@@ -138,6 +140,9 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null } = {}
       window.WebSocket = function (url) {
         const entry = { url: String(url), sent: [], socket: this };
         sockets.push(entry);
+        /* The local MT5 bridge listens on the PC app's own address; a test that needs it passes
+           `bridgeApi(frame)`, which answers one bridge frame. Every other socket is Deriv's. */
+        const toBridge = !!bridgeApi && new URL(entry.url).host === new URL(origin).host;
         this.readyState = 0;
         this.close = () => { this.readyState = 3; };
         this.send = (raw) => {
@@ -145,6 +150,11 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null } = {}
           entry.sent.push(message);
           window.setTimeout(() => {
             if (this.readyState !== 1) return;
+            if (toBridge) {
+              const answer = bridgeApi(message) || { type: 'error', message: 'not part of this test' };
+              if (this.onmessage) this.onmessage({ data: JSON.stringify({ id: message.id, ...answer }) });
+              return;
+            }
             /* The feed has gone down since this connection opened: it is dropped instead of answering. */
             if (state.browserDeriv === 'down') { this.readyState = 3; if (this.onclose) this.onclose({ code: 1006 }); return; }
             if (!this.onmessage) return;
@@ -158,7 +168,7 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null } = {}
         };
         window.setTimeout(() => {
           if (this.readyState !== 0) return;
-          if (state.browserDeriv === 'down') { this.readyState = 3; if (this.onerror) this.onerror({}); if (this.onclose) this.onclose({ code: 1006 }); return; }
+          if (!toBridge && state.browserDeriv === 'down') { this.readyState = 3; if (this.onerror) this.onerror({}); if (this.onclose) this.onclose({ code: 1006 }); return; }
           this.readyState = 1;
           if (this.onopen) this.onopen({});
         }, 0);
@@ -1193,6 +1203,10 @@ test('live confidence, scanner cards: the score moves with the price since the r
     assert.deepEqual(shown('US30'), { score: '90%', bar: '90%', note: NO_LEVELS });
     /* WAIT has nothing to follow. */
     assert.deepEqual(shown('GBP/USD'), { score: '20%', bar: '20%', note: '' });
+    /* Both are left as they are when the next tick repaints the page. */
+    pushTick(app, 'frxEURUSD', EUR_TICK);
+    assert.deepEqual(shown('US30'), { score: '90%', bar: '90%', note: NO_LEVELS });
+    assert.deepEqual(shown('GBP/USD'), { score: '20%', bar: '20%', note: '' });
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -1219,9 +1233,10 @@ test('live confidence, Markets and Overview: the same reading shows the same sco
 test('live confidence, Sniper alerts: both tables carry a Confidence column, and the detail line gives the full sentence', async () => {
   /* One more reading: a SELL that arrives without a score. */
   const noScore = { symbol: 'AUD/USD', signal: 'SELL', bias: 'bearish', mtf_signal: 'SELL_CONFIRMED', votes: 'written by the test', data_ok: true, entry: 60, price: 60, stop_loss: 60.0012, tp1: 59.9982, tp2: 59.9968, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv public candles' };
+  let eur = LIVE_BUY;
   const pcApi = (path, body) => {
     const answer = liveScanApi(path, body);
-    return path === '/api/signals/scan' ? { ...answer, body: { results: answer.body.results.map((r) => (r.symbol === 'AUD/USD' ? noScore : r)) } } : answer;
+    return path === '/api/signals/scan' ? { ...answer, body: { results: answer.body.results.map((r) => (r.symbol === 'AUD/USD' ? noScore : r.symbol === 'EUR/USD' ? eur : r)) } } : answer;
   };
   const app = await bootApp({ origin: PC_ORIGIN, pcApi, world: { ticks: true } });
   try {
@@ -1232,11 +1247,12 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     const watchTable = doc.getElementById('sniperWatchList').closest('table');
     assert.deepEqual(headers(watchTable), ['Notify', 'Market', 'Signal', 'Confidence', 'Timeframe', 'Entry', 'SL', 'TP1', 'Source', 'View']);
 
-    /* Choose three markets: one with a BUY, one the scan reads as WAIT, one whose reading has no score. */
+    /* Choose four markets: one with a BUY, one the scan reads as WAIT, one whose reading has no score,
+       and an index with a daily BUY that has no entry, stop or target. */
     app.click(doc.getElementById('sniperPickerToggle'));
     const rowOf = (symbol) => { const box = doc.querySelector('[data-sniper-watch="' + symbol + '"]'); return box ? box.closest('tr') : null; };
     await app.waitFor(() => rowOf('EUR/USD') && rowOf('EUR/USD').querySelector('[data-live-conf]'), 'a scanned row for EUR/USD');
-    for (const symbol of ['EUR/USD', 'GBP/USD', 'AUD/USD']) {
+    for (const symbol of ['EUR/USD', 'GBP/USD', 'AUD/USD', 'US30']) {
       const box = doc.querySelector('[data-sniper-watch="' + symbol + '"]');
       box.checked = true;
       box.dispatchEvent(new app.window.Event('change', { bubbles: true }));
@@ -1246,15 +1262,17 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     assert.equal(cells('EUR/USD').length, headers(watchTable).length, 'one cell under every header');
     assert.equal(cells('GBP/USD')[3], '20%', 'a WAIT shows the score as read, with nothing to follow');
     assert.equal(cells('AUD/USD')[3], '\u2014', 'a reading without a score shows a dash, not 0%');
+    assert.equal(cells('US30')[3], '90%', 'a daily reading shows its score as read: there is no level to measure from');
 
-    /* The setups table lists the BUY and the SELL, not the WAIT. */
+    /* The setups table lists the BUYs and the SELL, not the WAIT. */
     const setups = () => doc.querySelector('#sniperSignalList table');
     assert.deepEqual(headers(setups()), ['Market', 'Signal', 'Confidence', 'Timeframe', 'Entry', 'SL', 'TP1', 'Source']);
     const setupCells = (symbol) => { const tr = [...setups().querySelectorAll('tbody tr')].find((el) => el.children[0].textContent === symbol); return tr ? [...tr.children].map((td) => td.textContent) : null; };
-    assert.equal(setups().querySelectorAll('tbody tr').length, 2);
+    assert.equal(setups().querySelectorAll('tbody tr').length, 3);
     assert.equal(setupCells('EUR/USD').length, 8);
     assert.equal(setupCells('EUR/USD')[2], '75%6.0 pips with');
     assert.equal(setupCells('AUD/USD')[2], '\u2014');
+    assert.equal(setupCells('US30')[2], '90%');
     assert.equal(setupCells('GBP/USD'), null);
 
     /* The eye icon: the detail line. */
@@ -1271,6 +1289,20 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     assert.equal(setupCells('EUR/USD')[2], '55%6.0 pips against');
     assert.match(detail.textContent, /Confidence: 55% \u00b7 Source: /);
     assert.match(detail.querySelector('[data-live-note]').textContent, /^6\.0 pips against this BUY \u00b7 50% of the way to the stop /);
+    assert.equal(cells('US30')[3], '90%', 'the daily reading is left as it was');
+    assert.equal(setupCells('US30')[2], '90%');
+    assert.equal(cells('GBP/USD')[3], '20%');
+
+    /* The scanner reads EUR/USD again, as WAIT. These tables still hold the BUY of the last market scan:
+       its row shows the score as read and says that it is not the newest reading. */
+    eur = liveWait('EUR/USD');
+    await app.open('signals');
+    app.click(doc.getElementById('refreshSigs'));
+    await app.waitFor(() => liveCard(app, 'EUR/USD') && liveCard(app, 'EUR/USD').direction === 'WAIT', 'the newer reading on the scanner card');
+    pushTick(app, 'frxEURUSD', EUR_TICK);
+    assert.equal(cells('EUR/USD')[2], 'BUY', 'the row is still the BUY');
+    assert.equal(cells('EUR/USD')[3], '70%not the newest reading');
+    assert.equal(setupCells('EUR/USD')[2], '70%not the newest reading');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -1380,7 +1412,7 @@ test('live confidence: a card older than the newest analysis of its market keeps
     await app.waitFor(() => liveCard(app, 'EUR/USD') && liveCard(app, 'EUR/USD').score === '75%', 'the BUY card at the live price');
 
     /* The Markets table analyses every market again, and now reads EUR/USD as WAIT. The card still says BUY. */
-    const superseded = { direction: 'BUY', score: '70%', bar: '70%', note: 'A newer analysis no longer reads BUY on this market: refresh to see it.' };
+    const superseded = { direction: 'BUY', score: '70%', bar: '70%', note: 'This BUY reading is no longer the newest for this market: refresh to see the latest.' };
     eur = liveWait('EUR/USD');
     await app.open('markets');
     await app.waitFor(() => /^Wait/.test(app.row('EUR/USD').badge), 'the newer reading in the Markets table');
@@ -1463,6 +1495,198 @@ test('live confidence, Gold monitor: a stop crossed while another view is open s
     assert.equal(text('goldSignal'), 'SELL', 'the same analysis is still on screen');
     assert.equal(text('goldConfidence'), '41%');
     assert.match(text('goldConfidenceNote'), /^Stop level reached at /);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* ---- the PC app with Exness connected ----
+   The local MT5 bridge is written by the test. It knows the markets a test gives it, each with
+   candles on a price level of its own (EUR/USD near 1.08 and gold near 4000, while the stand-in
+   Deriv stream quotes them at 50 and a few hundred). The reading is then made by the
+   application's real rule from those candles.
+
+   These tests are about which price a reading is measured against, not about what the rule
+   concludes. They need a reading with a direction, so they ask the rule itself which of a few
+   plain series it reads as BUY or SELL, and take the entry, the target and the score from its
+   answer. */
+const BRIDGE_TF = { M1: 60, M5: 300, H1: 3600 };
+const BRIDGE_SHAPES = [{ slope: -0.0004, wobble: 0.002 }, { slope: 0.0008, wobble: 0 }, { slope: -0.0008, wobble: 0 }, { slope: 0.0004, wobble: 0.002 }];
+function bridgeCandles(timeframe, shape, level) {
+  const period = BRIDGE_TF[timeframe], newest = Math.floor(nowSec() / period) * period;
+  return Array.from({ length: 120 }, (_unused, i) => {
+    const mid = level * (1 + shape.slope * i + shape.wobble * Math.sin(i / 7));
+    const open = mid * 0.9998, close = mid * 1.0002;
+    return { time: newest - (119 - i) * period, open: Number(open.toFixed(6)), high: Number((close * 1.0004).toFixed(6)), low: Number((open * 0.9996).toFixed(6)), close: Number(close.toFixed(6)) };
+  });
+}
+/* A market for the bridge: the first series the rule reads as a direction, and what the rule says about it. */
+function bridgeMarket(symbol, { name, level, digits }) {
+  for (const shape of BRIDGE_SHAPES) {
+    const sets = { m1: bridgeCandles('M1', shape, level), m5: bridgeCandles('M5', shape, level), h1: bridgeCandles('H1', shape, level) };
+    const decision = localDecision(runDeterministicAnalysis(symbol, sets));
+    if (decision.signal === 'BUY' || decision.signal === 'SELL') {
+      /* `price` is the terminal's quote at this moment (a test moves it); `known` is whether the terminal has the market. */
+      return { name, level, digits, shape, decision, price: decision.entry, known: true, third: decision.entry + (decision.tp1 - decision.entry) / 3 };
+    }
+  }
+  return assert.fail('the rule reads none of the bridge fixtures as BUY or SELL any more: add a series that it does');
+}
+/* `markets` is keyed by the name the application asks the bridge for. */
+const exnessBridge = (markets) => (frame) => {
+  const account = { balance: 1000, equity: 1000, margin_free: 1000, currency: 'USD', leverage: 100 };
+  const market = (asked) => (markets[asked] && markets[asked].known ? markets[asked] : null);
+  if (frame.type === 'ping') return { type: 'pong' };
+  if (frame.type === 'login') return { type: 'logged', account: '10000001', server: frame.server, ...account };
+  if (frame.type === 'account') return { type: 'account', ...account };
+  if (frame.type === 'positions') return { type: 'positions', list: [] };
+  if (frame.type === 'history') {
+    const m = market(frame.symbol);
+    return m ? { type: 'history', symbol: m.name, timeframe: frame.timeframe, candles: bridgeCandles(frame.timeframe, m.shape, m.level) }
+      : { type: 'error', message: 'Symbol is not available in the connected MT5 terminal.' };
+  }
+  if (frame.type === 'quote') {
+    const half = (m) => 10 ** -m.digits;
+    return { type: 'quotes', quotes: (frame.symbols || []).map(market).filter(Boolean).map((m) => ({ symbol: m.name, bid: m.price - half(m), ask: m.price + half(m), time: nowSec(), digits: m.digits })) };
+  }
+  return null;
+};
+async function connectExness(app) {
+  await app.open('settings');
+  app.doc.getElementById('mt5Login').value = '10000001';
+  app.doc.getElementById('mt5Server').value = 'Written-By-The-Test';
+  app.doc.getElementById('mt5Pass').value = 'written by the test';
+  app.click(app.doc.querySelector('.conn-btn[data-conn="mt5"]'));
+  await app.waitFor(() => /^\s*Connected/.test(app.doc.getElementById('mt5Status').textContent), 'the Exness connection');
+}
+const EXNESS_SAMPLED = ' \u00b7 measured at the Exness price of ' + CLOCK + ', updated at each analysis$';
+
+test('live confidence, Exness connected: a reading made from Exness candles is measured at the Exness price of its analysis, never at a Deriv tick', async () => {
+  const eur = bridgeMarket('EUR/USD', { name: 'EURUSDm', level: 1.08, digits: 5 });
+  const { signal: direction, confidence: base } = eur.decision;
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, bridgeApi: exnessBridge({ 'EUR/USD': eur }), world: { ticks: true } });
+  try {
+    await app.enter();
+    await connectExness(app);
+    const source = () => { const el = [...app.doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === 'EUR/USD'); return el ? el.querySelector('.sig-why').textContent : ''; };
+    const rescan = async (wanted, label) => {
+      app.click(app.doc.getElementById('refreshSigs'));
+      await app.waitFor(() => wanted(liveCard(app, 'EUR/USD') || {}), label);
+    };
+    await app.open('signals');
+    await rescan(() => /source: Exness MT5 local candles/.test(source()), 'the EUR/USD card read from Exness candles');
+
+    /* The terminal quotes the entry itself: no move yet, and the card says which price it was measured at. */
+    const first = liveCard(app, 'EUR/USD');
+    assert.equal(first.direction, direction);
+    assert.equal(first.score, base + '%');
+    assert.match(first.note, new RegExp('^No move yet \u00b7 first read at ' + eur.decision.entry.toFixed(5).replace('.', '\\.') + ', ' + CLOCK + EXNESS_SAMPLED));
+
+    /* The Deriv stream quotes this market at 50: far beyond any level of the Exness reading. Nothing moves. */
+    pushTick(app, 'frxEURUSD', EUR_TICK + 3 * PIP);
+    pushTick(app, 'frxEURUSD', EUR_TICK);
+    assert.deepEqual(liveCard(app, 'EUR/USD'), first);
+
+    /* The next analysis comes with an Exness price a third of the way to target 1: 15 x 1/3 = 5 points on. */
+    eur.price = eur.third;
+    await rescan((card) => / 33% of the way to target 1 /.test(card.note || ''), 'the score moved by the Exness price of the second analysis');
+    const second = liveCard(app, 'EUR/USD');
+    assert.equal(second.direction, direction);
+    assert.equal(second.score, (base + 5) + '%');
+    assert.equal(second.bar, (base + 5) + '%');
+    assert.match(second.note, new RegExp('^\\d+\\.\\d pips with this ' + direction + ' \u00b7 33% of the way to target 1 \u00b7 first read at .* \u00b7 score as read ' + base + '%' + EXNESS_SAMPLED));
+
+    /* The terminal loses the market: the next reading comes from the fallback, on the stream's venue.
+       It is a new reading with its own levels, and from here on it moves with the stream. */
+    eur.known = false;
+    await rescan(() => /fallback \(Exness unavailable/.test(source()), 'the fallback reading');
+    const third = liveCard(app, 'EUR/USD');
+    assert.equal(third.direction, 'BUY');
+    assert.equal(third.score, '75%', '70 as read, 6 of 18 pips toward its own target');
+    assert.match(third.note, new RegExp('^6\\.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 49\\.99940, ' + CLOCK + ' \u00b7 score as read 70%$'));
+    pushTick(app, 'frxEURUSD', EUR_TICK - 12 * PIP);
+    assert.equal(liveCard(app, 'EUR/USD').score, '55%', '6 of 12 pips toward its stop: 70 - 15');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('live confidence, Exness connected: a card read on the stream\'s venue does not take over the numbers of a newer Exness reading', async () => {
+  const eur = bridgeMarket('EUR/USD', { name: 'EURUSDm', level: 1.08, digits: 5 });
+  /* Same direction on both venues, so that only the venue tells the two readings apart. */
+  const direction = eur.decision.signal, side = direction === 'BUY' ? 1 : -1;
+  /* The stream-venue reading, written by the test: scored 70, read 6 pips before the price the feed ticks at. */
+  const streamReading = {
+    ...LIVE_BUY, signal: direction, bias: side > 0 ? 'bullish' : 'bearish', mtf_signal: direction + '_CONFIRMED',
+    entry: EUR_TICK - side * 6 * PIP, price: EUR_TICK - side * 6 * PIP, stop_loss: EUR_TICK - side * 18 * PIP, tp1: EUR_TICK + side * 12 * PIP, tp2: EUR_TICK + side * 26 * PIP
+  };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveApiWith(() => streamReading), bridgeApi: exnessBridge({ 'EUR/USD': eur }), world: { ticks: true } });
+  try {
+    await app.enter();
+    await app.open('signals');
+    await app.waitFor(() => liveCard(app, 'EUR/USD') && liveCard(app, 'EUR/USD').score === '75%', 'the stream-venue card at the live price');
+    assert.equal(liveCard(app, 'EUR/USD').direction, direction);
+
+    /* Exness is connected, and the Markets table reads the market again: from Exness candles this time. */
+    await connectExness(app);
+    await app.open('markets');
+    await app.waitFor(() => /Exness MT5 local candles/.test(app.row('EUR/USD').source), 'the Exness reading in the Markets table');
+    assert.equal(app.row('EUR/USD').badge, (direction === 'BUY' ? 'Buy ' : 'Sell ') + eur.decision.confidence + '%', 'the same direction, read on the other venue');
+
+    /* The card is still the stream-venue reading. It shows its own score as read, and says it is not the newest. */
+    pushTick(app, 'frxEURUSD', EUR_TICK);
+    assert.deepEqual(liveCard(app, 'EUR/USD'), {
+      direction, score: '70%', bar: '70%',
+      note: 'This ' + direction + ' reading is no longer the newest for this market: refresh to see the latest.'
+    });
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('live confidence, Gold monitor on Exness: the score follows the Exness gold price, not the Deriv tick', async () => {
+  const gold = bridgeMarket('XAU/USD', { name: 'XAUUSDm', level: 4000, digits: 2 });
+  const { signal: direction, confidence: base } = gold.decision;
+  /* The Gold monitor asks the bridge for "XAUUSD". */
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, bridgeApi: exnessBridge({ XAUUSD: gold }), world: { ticks: true } });
+  try {
+    await app.enter();
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    const shown = () => ({ score: text('goldConfidence'), bar: doc.getElementById('goldConfidenceBar').style.width, note: text('goldConfidenceNote') });
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the Deriv gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await connectExness(app);
+    await app.open('gold');
+    await app.waitFor(() => text('goldSignal') === direction, 'the gold analysis from Exness candles');
+    assert.match(text('goldFeedStatus'), /^LIVE ANALYSIS \u00b7 Exness MT5 local candles/);
+
+    /* The terminal quotes the entry itself. */
+    const first = shown();
+    assert.equal(first.score, base + '%');
+    assert.match(first.note, /^No move yet \u00b7 first read at /);
+
+    /* Deriv quotes gold at a few hundred here: far beyond every level of this reading. Nothing moves. */
+    pushTick(app, 'frxXAUUSD', GOLD_TICK + 5);
+    pushTick(app, 'frxXAUUSD', GOLD_TICK);
+    assert.deepEqual(shown(), first);
+
+    /* The terminal's price goes a third of the way to target 1; the monitor asks for it every ten seconds. */
+    gold.price = gold.third;
+    app.advanceClock(11000);
+    app.runIntervals(10000);
+    await app.waitFor(() => / 33% of the way to target 1 /.test(text('goldConfidenceNote')), 'the Exness gold price at the next poll');
+    assert.equal(text('goldConfidence'), (base + 5) + '%');
+    assert.equal(doc.getElementById('goldConfidenceBar').style.width, (base + 5) + '%');
+    assert.match(text('goldConfidenceNote'), new RegExp('^\\$\\d+\\.\\d\\d with this ' + direction + ' \u00b7 33% of the way to target 1 \u00b7 first read at .* \u00b7 score as read ' + base + '%$'));
+
+    /* Auto-refresh off, so the analysis stays on screen; then the terminal's tick is more than
+       two minutes old at the next poll. An old price is not a live price. */
+    const auto = doc.getElementById('goldAuto');
+    auto.checked = false;
+    auto.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+    app.advanceClock(130000);
+    app.runIntervals(10000);
+    await app.waitFor(() => /^No live price right now /.test(text('goldConfidenceNote')), 'the stale Exness tick');
+    assert.equal(text('goldSignal'), direction, 'the analysis is still shown');
+    assert.equal(text('goldConfidence'), base + '%', 'the score as read');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });

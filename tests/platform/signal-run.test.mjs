@@ -264,3 +264,106 @@ test('the sentence gives gold in dollars and an index in points', () => {
   tracker.observe({ symbol: 'VOL 75', signal: 'BUY', entry: 1000, stop_loss: 990, tp1: 1015, confidence: 60 });
   assert.equal(describeLive(tracker.read('VOL 75', 995), { short: true }), '5.00 points against');
 });
+
+/* ---- two venues: a reading is measured against prices of the venue its candles came from ---- */
+
+/* The page's price stream is one venue; a reading marked `venue: 'broker'` came from another. */
+const twoVenues = (clock) => createSignalTracker({ now: () => clock.at, feedOf: (reading) => reading.venue || 'stream' });
+/* A broker BUY read at 1.0850, with the broker's own price at that moment: 1.0851. */
+const BROKER_BUY = { ...BUY, venue: 'broker', price: 1.0851 };
+
+test('a price from another venue does not move a reading: it stands at the price that came with its analysis', () => {
+  const clock = { at: Date.UTC(2026, 10, 12, 14, 5) };
+  const tracker = twoVenues(clock);
+  tracker.observe(BROKER_BUY);
+
+  /* The stream quotes this market far beyond the broker reading's target, then far beyond its stop. */
+  clock.at += 60000;
+  for (const streamPrice of [1.0990, 1.0700, 49.9994]) {
+    const live = tracker.read('EUR/USD', streamPrice, 'stream');
+    assert.equal(live.state, 'with', 'not "target 1 reached", not "stop reached"');
+    assert.ok(Math.abs(live.move - 0.0001) < 1e-9, 'one pip: the broker price 1.0851 against the entry 1.0850');
+    assert.equal(live.confidence, 71, '70 + 15 x 1/18');
+    assert.equal(live.feed, 'broker');
+    assert.equal(live.sampledAt, Date.UTC(2026, 10, 12, 14, 5), 'the answer says when that price was taken');
+    assert.equal(live.endedAt, 0);
+  }
+  /* A price of its own venue is used as given, and the answer does not claim to be a sample. */
+  const own = tracker.read('EUR/USD', 1.0856, 'broker');
+  assert.equal(own.confidence, 75);
+  assert.equal(own.sampledAt, 0);
+});
+
+test('such a reading moves when the next analysis brings a new price of its own venue', () => {
+  const clock = { at: Date.UTC(2026, 10, 12, 14, 5) };
+  const tracker = twoVenues(clock);
+  tracker.observe(BROKER_BUY);
+
+  /* One minute later the analysis repeats BUY with new levels and a broker price 6 pips above the first entry. */
+  clock.at += 60000;
+  tracker.observe({ ...BROKER_BUY, entry: 1.0856, stop_loss: 1.0844, tp1: 1.0874, price: 1.0856, confidence: 72 });
+  const live = tracker.read('EUR/USD', 49.9994, 'stream');
+  assert.equal(live.entry, 1.0850, 'still measured from the first reading');
+  assert.equal(live.state, 'with');
+  assert.equal(live.confidence, 77, 'the newest score, 72, plus 15 x 6/18');
+  assert.equal(live.sampledAt, clock.at, 'the price of the second analysis');
+  assert.equal(live.startedAt, clock.at - 60000);
+
+  /* The next one finds the broker price beyond the first reading's stop: that reading is over, a new one starts. */
+  clock.at += 60000;
+  tracker.observe({ ...BROKER_BUY, entry: 1.0836, stop_loss: 1.0824, tp1: 1.0854, price: 1.0837, confidence: 66 });
+  const next = tracker.read('EUR/USD', 49.9994, 'stream');
+  assert.equal(next.entry, 1.0836);
+  assert.equal(next.startedAt, clock.at);
+  assert.equal(next.confidence, 67, '66 + 15 x 1/18');
+});
+
+test('a reading without a price of its own stands at its entry until the next analysis', () => {
+  const clock = { at: Date.UTC(2026, 10, 12, 14, 5) };
+  const tracker = twoVenues(clock);
+  tracker.observe({ ...BUY, venue: 'broker' });
+  const live = tracker.read('EUR/USD', 1.0990, 'stream');
+  assert.equal(live.state, 'flat');
+  assert.equal(live.confidence, 70);
+});
+
+test('the same direction read from another venue is a new reading, with its own levels', () => {
+  const clock = { at: Date.UTC(2026, 10, 12, 14, 5) };
+  const tracker = twoVenues(clock);
+  tracker.observe(BROKER_BUY);
+
+  /* The broker is unavailable at the next look, and the market is read from the stream's venue: BUY again,
+     5 pips lower. That price lies between the broker reading's stop and target: only the venue makes it a new reading. */
+  clock.at += 60000;
+  tracker.observe({ ...BUY, entry: 1.0845, stop_loss: 1.0833, tp1: 1.0863, price: 1.0845, confidence: 64 });
+  const live = tracker.read('EUR/USD', 1.0851, 'stream');
+  assert.equal(live.feed, 'stream');
+  assert.equal(live.entry, 1.0845, 'not the broker reading\'s 1.0850');
+  assert.equal(live.startedAt, clock.at);
+  assert.equal(live.confidence, 69, '64 + 15 x 6/18');
+  assert.equal(live.sampledAt, 0, 'a stream price, used as given');
+
+  /* And back: the broker answers again, with the same direction. Its reading starts anew as well. */
+  clock.at += 60000;
+  tracker.observe({ ...BROKER_BUY, entry: 1.0848, stop_loss: 1.0836, tp1: 1.0866, price: 1.0848, confidence: 68 });
+  const back = tracker.read('EUR/USD', 1.0851, 'stream');
+  assert.equal(back.feed, 'broker');
+  assert.equal(back.entry, 1.0848);
+  assert.equal(back.confidence, 68, 'the stream price is set aside again: no move yet');
+});
+
+test('the sentence says when a score was measured at the price of an analysis', () => {
+  const clock = { at: Date.UTC(2026, 10, 12, 14, 5) };
+  const tracker = twoVenues(clock);
+  tracker.observe({ ...BROKER_BUY, price: 1.0856 });
+  clock.at += 3 * 60000;
+  const live = tracker.read('EUR/USD', 49.9994, 'stream');
+  const format = { price: (value) => value.toFixed(5) };
+  const sentence = '6.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 1.08500, 14:05 \u00b7 score as read 70%';
+
+  assert.equal(describeLive(live, format), sentence + ' \u00b7 price of the 14:05 analysis');
+  assert.equal(describeLive(live, { ...format, sampled: (at) => 'broker price of ' + at }), sentence + ' \u00b7 broker price of 14:05');
+  assert.equal(describeLive(live, { short: true }), '6.0 pips with', 'the short form has no room for it');
+  /* A live price of its own venue: nothing is added. */
+  assert.equal(describeLive(tracker.read('EUR/USD', 1.0856, 'broker'), format), sentence);
+});
