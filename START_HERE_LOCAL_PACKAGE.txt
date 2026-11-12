@@ -4,10 +4,9 @@ This is the COMPLETE local package, not the small patch ZIP.
 
 1. Extract the full ZIP to a normal folder, such as Downloads\FREDRICK_AURUM_LOCAL_READY. Do not run anything from inside the ZIP preview.
 2. Open the extracted FREDRICK_AURUM_LOCAL_READY folder. Confirm you see START_ALL_LOCAL.bat, package.json, server\server.js, and bridge\requirements.txt together.
-3. Keep Exness MetaTrader 5 open and logged in.
-4. Double-click START_ALL_LOCAL.bat once. It installs/checks local requirements, starts the API and bridge, and writes logs under logs\. Keep the console open.
-5. When the console reports the local app server and bridge are listening, visit http://127.0.0.1:8788/app in Chrome or Edge. If the app was already open, close it and reopen/hard-refresh.
-6. For Sniper alerts: the list starts with selected markets only. Click Add markets to search/select more; click Hide unselected when done.
+3. Double-click START_ALL_LOCAL.bat once. It starts Exness MT5 only if no MT5 terminal is already running (an open terminal is never closed or restarted), then installs/checks local requirements and starts the API and bridge. If it finds multiple MT5 installs, choose the Exness terminal once from the console prompt. It opens the local app automatically after the bridge answers on its trading port; keep the bridge window open.
+4. After MT5 has started (or an existing terminal is left untouched) and the bridge responds, the launcher opens a fresh Chrome tab at http://127.0.0.1:8788/app. It does not close/restart Chrome. On this PC, the local bridge token is filled into the current tab automatically; you only need to enter your Exness account/password (and server if it is not already known) and your Deriv PAT/App ID details. The token and credentials stay local/session-only. If no Chrome tab opens, visit that URL manually.
+5. For Sniper alerts: the list starts with selected markets only. Click Add markets to search/select more; click Hide unselected when done.
 
 Privacy and safety
 - The Exness bridge and API run on this PC/private LAN only. Do not port-forward them or expose them to the public internet.

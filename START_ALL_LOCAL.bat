@@ -23,8 +23,8 @@ if not exist "%~dp0package.json" (
 
 echo ============================================================
 echo  Fredrick TRADING - one-click local startup
-echo  Starts/checks the local API, then the private MT5 bridge.
-echo  Once it reports listening, open the local app URL shown below.
+echo  Starts MT5 only if closed, then checks the API and private bridge.
+echo  It opens a fresh Chrome tab once the local app on port 8788 is ready.
 echo  Nothing is exposed publicly; keep this window open.
 echo ============================================================
 echo.

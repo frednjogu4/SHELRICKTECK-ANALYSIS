@@ -23,7 +23,7 @@ if errorlevel 1 (
 powershell -NoProfile -Command "try{$j=Invoke-RestMethod 'http://127.0.0.1:4100/api/health' -TimeoutSec 2;if($j.ok -eq $true -and $j.live_feed -eq 'deriv-public'){exit 0}}catch{};exit 1" >nul 2>&1
 if not errorlevel 1 exit /b 0
 if not exist node_modules\express\package.json (
-  echo [1/2] Installing production Node dependencies (first run needs internet)...
+  echo [1/2] Installing production Node dependencies. First run needs internet.
   call npm ci --omit=dev --no-audit --no-fund
   if errorlevel 1 (
     echo [X] npm install failed. Check internet and re-run START_LOCAL_API.bat.
