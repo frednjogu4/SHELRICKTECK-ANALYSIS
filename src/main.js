@@ -26,6 +26,7 @@ import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudS
 import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
 import { candleHistory } from './derivhistory.js';
 import { createHostedScanner, signalState, summarizeReadings } from './hostedscan.js';
+import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
 
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));
@@ -1072,24 +1073,42 @@ function renderAuthDaily(){
   const m=document.getElementById('authMotivation');
   if(m)m.innerHTML=quoteHtml();
 }
-let bestPick={at:0,item:null,busy:false,unread:'',readable:0};
-async function refreshBestPick(force){
+/* Today's best market. Two lines, because two kinds of reading reach this panel and
+   their scores are not on one scale (src/bestpick.js):
+     - the pick: the strongest BUY/SELL among the LIVE readings (1m/5m/1h), with the
+       time it was read;
+     - the daily index trend: the strongest daily index reading, with the day its
+       newest bar belongs to. It is never ranked against the live markets. */
+const BEST_PICK_INDICES=['NAS100','US30','SPX500'];
+const BEST_PICK_EVERY_MS=10*60*1000;
+let bestPick={at:0,item:null,daily:null,dailyRead:[],dailyUnread:'',busy:false,unread:'',readable:0,unreachable:0};
+/* Reads the panel's markets once. It runs at start-up, on every tick of the 10-minute
+   timer near the end of this file, and once more when the visitor enters the workspace:
+   the timer is the schedule. (A second condition used to stand here, "at least 10 minutes
+   since the last result". A tick comes 10 minutes after the previous read STARTED, a few
+   seconds short of that, so every second tick was skipped and the panel was read every
+   20 minutes.) */
+async function refreshBestPick(){
   if(bestPick.busy)return;
-  if(Date.now()-bestPick.at<10*60*1000&&!force){ renderBestPick(); return; }
   bestPick.busy=true; renderBestPick();
-  try{
-    const syms=INSTR.slice(0,6).map(I=>I.s).concat(['NAS100','US30','SPX500']);
-    const results=await scanSignalsPreferred(syms);
-    const dirs=results.filter(r=>!r.error&&(r.signal==='BUY'||r.signal==='SELL'));
-    bestPick.item=dirs.length?dirs.reduce((a,b)=>((b.confidence||0)>(a.confidence||0)?b:a)):null;
-    /* Cloud viewer: a market that could not be read (stale, no data, unavailable) is not a market
-       without a setup. The counts are shown when there is no pick. Readings of the PC app carry
-       no such state, so its wording stays as it was. */
-    const counts=summarizeReadings(results);
-    bestPick.unread=scanIssuesText(counts); bestPick.readable=counts.live+counts.daily;
-    bestPick.at=Date.now();
-    emitSignalAlerts(results);
-  }catch(e){ bestPick.item=null; bestPick.unread=''; bestPick.readable=0; bestPick.at=Date.now(); }
+  const syms=INSTR.slice(0,6).map(I=>I.s).concat(BEST_PICK_INDICES);
+  /* A scan answers with one reading per symbol and reports a market it could not read inside
+     that reading. Should the scan itself fail, the panel is filled from an empty list. */
+  let results=[];
+  try{ results=await scanSignalsPreferred(syms); }catch(e){}
+  const pick=splitBestPick(results,BEST_PICK_INDICES);
+  bestPick.item=pick.live; bestPick.daily=pick.daily; bestPick.dailyRead=pick.dailyRead;
+  /* Cloud viewer: a market that could not be read (stale, no data, unavailable) is not a market
+     without a setup. Each line reports its own unread markets when it has nothing to show.
+     Readings of the PC app carry no such state, so the wording of its first line stays as it was. */
+  const counts=summarizeReadings(pick.liveSide);
+  bestPick.unread=scanIssuesText(counts); bestPick.readable=counts.live; bestPick.unreachable=counts.unavailable;
+  /* An index that could not be read is said so on the daily line in both apps: this line
+     is new, and an index missing from it without a word would read as "no direction". */
+  const unreadIndices=pick.dailySide.filter(r=>r.error).length;
+  bestPick.dailyUnread=unreadIndices?unreadIndices+' unavailable':'';
+  bestPick.at=Date.now();
+  try{ emitSignalAlerts(results); }catch(e){}
   bestPick.busy=false; renderBestPick();
 }
 /* Cloud viewer: the pick shown on the sign-in screen was read by the AURUM cloud
@@ -1098,21 +1117,48 @@ async function refreshBestPick(force){
 function repickAfterEntering(){
   if(!isCloudflareReadonlyMode())return;
   if(bestPick.busy){ setTimeout(repickAfterEntering,1500); return; }
-  refreshBestPick(true);
+  refreshBestPick();
 }
 const INDEX_ONLY=['NAS100','US30','SPX500','US100','NASDAQ'];
+const INDEX_BADGE=' <span class="badge gray">index CFD · analysis only</span>';
+const DAILY_TREND_NOTE='A once-a-day reading from daily closing prices. It changes only while the index\u2019s own market is open, and its score (50 + 8 per check) is not comparable with the live markets above.';
+/* First line: the strongest live reading, or why there is none. */
+function bestPickLiveHtml(){
+  const it=bestPick.item;
+  if(!it&&!bestPick.unread)return '<span class="tiny faint">No directional setup right now \u2014 the pick appears the moment the live scan finds one.</span>';
+  if(!it){
+    /* Sign-in screen of the cloud viewer: every reading there is the cloud's (no connection to
+       Deriv is opened before the visitor enters). Where the cloud could not reach the feed,
+       the visitor is told who reads the markets next. A closed market gets no such sentence:
+       entering does not open it. */
+    const next=bestPick.unreachable&&!enteredWorkspace?' Inside the workspace this browser reads the live markets itself.':'';
+    return '<span class="tiny faint">'+(bestPick.readable?'No directional setup in the live markets that could be read. Not read: ':'No live market could be read right now: ')+escHtml(bestPick.unread)+'. Nothing is estimated \u2014 the pick appears when the scan finds one.'+next+'</span>';
+  }
+  return '<b>'+escHtml(it.symbol)+'</b> <span class="badge '+(it.signal==='BUY'?'buy':'sell')+'">'+escHtml(it.signal)+'</span> <b>'+(Number(it.confidence)||0)+'%</b>'
+    +(INDEX_ONLY.includes(it.symbol)?INDEX_BADGE:'')
+    +' <span class="tiny faint">votes '+escHtml(it.votes||'\u2014')+' \u00b7 source: '+escHtml(it.data_source||it.source||'unavailable')+' \u00b7 '+timeStr(bestPick.at)+'</span>';
+}
+/* Second line: the daily index trend. Its label carries the day of the bar it comes from,
+   where the reading says it (the PC app's local API does not). '' when the scan brought no
+   daily index reading at all (the PC app with every index read live from MT5). */
+function bestPickDailyHtml(){
+  const d=bestPick.daily, read=bestPick.dailyRead||[], unread=bestPick.dailyUnread;
+  const open='<div class="bp-daily" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border-soft)" title="'+escHtml(DAILY_TREND_NOTE)+'">';
+  const label=day=>'Daily index trend'+(day?' \u00b7 '+escHtml(day):'');
+  if(d)return open+'<span class="tiny faint">'+label(dailyBarText(d))+'</span> <b>'+escHtml(d.symbol)+'</b> <span class="badge '+(d.signal==='BUY'?'buy':'sell')+'">'+escHtml(d.signal)+'</span> <b>'+(Number(d.confidence)||0)+'%</b>'
+    +INDEX_BADGE
+    +' <span class="tiny faint">votes '+escHtml(d.votes||'\u2014')+' \u00b7 source: '+escHtml(d.data_source||d.source||'unavailable')+'</span></div>';
+  if(read.length)return open+'<span class="tiny faint">'+label(sharedDailyBarText(read))+': no direction on '+escHtml(read.map(r=>r.symbol).join(', '))+'.'+(unread?' Not read: '+escHtml(unread)+'.':'')+'</span></div>';
+  if(unread)return open+'<span class="tiny faint">Daily index trend: not read right now ('+escHtml(unread)+'). Nothing is estimated.</span></div>';
+  return '';
+}
 function renderBestPick(){
   for(const id of ['authBestBody','ovBest']){
     const el=document.getElementById(id); if(!el)continue;
-    if(bestPick.busy&&!bestPick.item){ el.innerHTML='<span class="tiny faint">Scanning live markets\u2026</span>'; continue; }
-    const it=bestPick.item;
-    if(!it){ el.innerHTML='<span class="tiny faint">'+(bestPick.unread
-        ?(bestPick.readable?'No directional setup in the markets that could be read. Not read: ':'No market could be read right now: ')+escHtml(bestPick.unread)+'. Nothing is estimated \u2014 the pick appears when the scan finds one.'
-        :'No directional setup right now \u2014 the pick appears the moment the live scan finds one.')+'</span>'; continue; }
-    const ix=INDEX_ONLY.includes(it.symbol);
-    el.innerHTML='<b>'+escHtml(it.symbol)+'</b> <span class="badge '+(it.signal==='BUY'?'buy':'sell')+'">'+escHtml(it.signal)+'</span> <b>'+(it.confidence||0)+'%</b>'
-      +(ix?' <span class="badge gray">index CFD · analysis only</span>':'')
-      +' <span class="tiny faint">votes '+escHtml(it.votes||'\u2014')+' \u00b7 source: '+escHtml(it.data_source||it.source||'unavailable')+' \u00b7 '+timeStr(bestPick.at)+'</span>';
+    /* Only the very first scan shows a placeholder: a later one keeps the previous lines on
+       screen until its own result replaces them. */
+    if(bestPick.busy&&!bestPick.at){ el.innerHTML='<span class="tiny faint">Scanning live markets\u2026</span>'; continue; }
+    el.innerHTML='<div class="bp-live">'+bestPickLiveHtml()+'</div>'+bestPickDailyHtml();
   }
 }
 function renderOvDaily(){
@@ -5019,7 +5065,7 @@ function scheduleDerivSync(){
 }
 scheduleDerivSync();
 renderAuthDaily(); renderOvDaily(); refreshBestPick();
-setInterval(()=>{ try{ refreshBestPick(); }catch(e){} },10*60*1000);
+setInterval(()=>{ try{ refreshBestPick(); }catch(e){} },BEST_PICK_EVERY_MS);
 
 /* --- activity login: any real use of the app (click/key) quietly restores
    the Deriv session from this computer's remembered token if the server

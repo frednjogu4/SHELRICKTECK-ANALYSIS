@@ -44,16 +44,35 @@ export function basePriceFor(code) {
   return 50 + (index < 0 ? 0 : index) * 13;
 }
 
-/** Yahoo chart JSON with 80 daily bars, as the Worker's index reader expects it. */
-export function yahooChartFixture() {
+/**
+ * Yahoo chart JSON with 80 daily bars, as the Worker's index reader expects it.
+ *
+ * The closes rise by the same amount every day, so the daily index reading of
+ * this series is a BUY by plain arithmetic (price above every average, a
+ * positive 20-day change, no losing day): a test may rely on that direction,
+ * never on a particular score.
+ *
+ *   newestBarAt  epoch second of the newest bar (default: now)
+ *   session      { start, end } epoch seconds: the regular session Yahoo reports
+ *                as current. Left out, the answer carries no session, as the
+ *                fixture always did.
+ *   newestClose  null puts a bar without prices at the end, the way Yahoo lists
+ *                a day that has no trade yet
+ */
+export function yahooChartFixture({ newestBarAt = nowSec(), session = null, newestClose } = {}) {
   const timestamp = [], open = [], high = [], low = [], close = [];
-  const now = nowSec();
   for (let i = 0; i < 80; i++) {
     const c = 4000 + i * 2;
-    timestamp.push(now - (79 - i) * 86400);
+    timestamp.push(newestBarAt - (79 - i) * 86400);
     open.push(c - 1); high.push(c + 3); low.push(c - 2); close.push(c);
   }
-  return { chart: { result: [{ timestamp, indicators: { quote: [{ open, high, low, close, volume: close.map(() => 1000) }] } }] } };
+  if (newestClose === null) {
+    timestamp.push(newestBarAt + 86400);
+    open.push(null); high.push(null); low.push(null); close.push(null);
+  }
+  const result = { timestamp, indicators: { quote: [{ open, high, low, close, volume: close.map(() => 1000) }] } };
+  if (session) result.meta = { currentTradingPeriod: { regular: { start: session.start, end: session.end } } };
+  return { chart: { result: [result] } };
 }
 
 /**

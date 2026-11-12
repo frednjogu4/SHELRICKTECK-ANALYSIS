@@ -181,6 +181,38 @@ function publicSymbol(code, row = {}) {
   };
 }
 
+/**
+ * What the newest daily bar of a Yahoo chart answer is: `time` is its epoch
+ * second (0 when there is none) and `final` says whether it is a close.
+ *
+ *   true   the bar's session had ended when the series was read
+ *   false  the bar was still forming: its session was open at that moment
+ *   null   Yahoo's answer does not allow either statement
+ *
+ * Yahoo's `meta.currentTradingPeriod.regular` is the session the exchange is
+ * in, or the next one it will open. A bar from an earlier day than that
+ * session is a close. A bar of the session's own day is a close once the
+ * session has ended and is forming while it is open. Bars are compared with
+ * the session by UTC day: the index sessions read here (New York, Frankfurt,
+ * London) do not cross midnight UTC, and the comparison then holds whether
+ * Yahoo stamps a bar with the session's open or with its latest trade.
+ */
+function dailyBarInfo(json, candles, readAtMs) {
+  const newest = candles[candles.length - 1];
+  const time = Number(newest && newest.time) > 0 ? Number(newest.time) : 0;
+  const regular = json?.chart?.result?.[0]?.meta?.currentTradingPeriod?.regular;
+  const start = Number(regular?.start);
+  const end = Number(regular?.end);
+  /* A missing or unusable session: `end > start` is false for anything that is not two
+     ordered numbers, and a start of 0 is a day long before any bar (answered below). */
+  if (!time || !(end > start)) return { time, final: null };
+  const utcDay = (seconds) => Math.floor(seconds / 86400);
+  const readAt = readAtMs / 1000;
+  if (utcDay(time) < utcDay(start)) return { time, final: true };
+  if (utcDay(time) > utcDay(start)) return { time, final: null };
+  return { time, final: readAt >= end ? true : readAt >= start ? false : null };
+}
+
 function freshCandles(candles, minimum = 50) {
   if (candles.length < minimum) throw new Error('Deriv returned fewer than ' + minimum + ' usable candles');
   return candles;
@@ -233,18 +265,23 @@ function createReadOnlyWorker({
     return { quote: Number(tick.quote), epoch: Number(tick.epoch) || null };
   }
 
+  /* The daily series of an index and what its newest bar is: `{ candles, bar }`,
+     kept for 15 minutes. `bar` is worked out when the series is read, not when
+     it is served, so it always describes the candles it comes with. */
   async function fetchYahooIndex(symbol) {
     const cached = yahooCache.get(symbol);
-    if (cached && now() - cached.at < 15 * 60 * 1000) return cached.candles;
+    if (cached && now() - cached.at < 15 * 60 * 1000) return cached;
     const ticker = INDEX_YAHOO[symbol];
     if (!ticker) throw new Error('No approved public daily-data fallback for ' + symbol);
     const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(ticker) + '?interval=1d&range=1y';
     const res = await fetchImpl(url, { headers: { accept: 'application/json', 'user-agent': 'Mozilla/5.0 (compatible; aurum-indices)' }, signal: AbortSignal.timeout(9000) });
     if (!res.ok) throw new Error('Yahoo Finance HTTP ' + res.status);
-    const candles = parseYahooChart(await res.json());
+    const json = await res.json();
+    const candles = parseYahooChart(json);
     if (candles.length < 60) throw new Error('Yahoo Finance returned insufficient daily history');
-    yahooCache.set(symbol, { at: now(), candles });
-    return candles;
+    const entry = { at: now(), candles, bar: dailyBarInfo(json, candles, now()) };
+    yahooCache.set(symbol, entry);
+    return entry;
   }
 
   /* `failures`, when given, collects one entry per market that could not be
@@ -254,7 +291,7 @@ function createReadOnlyWorker({
     if (!symbol) return null;
     try {
       if (INDEX_YAHOO[symbol]) {
-        const candles = await fetchYahooIndex(symbol);
+        const { candles, bar } = await fetchYahooIndex(symbol);
         const sig = indexDailySignal(candles, { sma, rsi });
         if (!sig.ok) throw new Error('Insufficient daily history');
         const source = 'Yahoo Finance public daily data';
@@ -264,7 +301,11 @@ function createReadOnlyWorker({
           wait_reason: sig.signal === 'WAIT' ? 'daily_no_setup' : null,
           wait_detail: sig.signal === 'WAIT' ? 'Daily indicators are mixed — no directional edge today.' : null,
           confidence: sig.confidence, entry: null, stop_loss: null, tp1: null, tp2: null,
-          tf: 'DAILY (index)', model: 'technical-daily', source, data_source: source, ts: now()
+          tf: 'DAILY (index)', model: 'technical-daily', source, data_source: source,
+          /* The day this reading speaks for: the newest daily bar it was computed
+             from, and whether that bar was a close or still forming. `ts` is only
+             the moment of this answer. */
+          daily_bar_time: bar.time, daily_bar_final: bar.final, ts: now()
         };
       }
       const [m1, m5, h1] = await Promise.all([

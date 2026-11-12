@@ -199,6 +199,59 @@ browser again at once. Readings from the Worker are reused for 20 seconds
 (index readings for a minute), so the scans a page makes when it opens fit
 inside the Worker's rate limit of 8 scan requests a minute.
 
+**The best-market panel** ("Today's best market to forecast on", on the sign-in
+screen and on the Overview) has two lines, because two kinds of reading reach
+it and their scores are not on one scale:
+
+| Line | What it shows | Scale |
+|---|---|---|
+| The pick | the strongest BUY or SELL among the **live** readings of six major forex pairs (EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CHF, USD/CAD), with the time it was read | 1m/5m/1h reading: 15 + 7 per timeframe + up to 25 for bias + 20 when confirmed; at most 81 with three timeframes |
+| Daily index trend | the strongest BUY or SELL among the **daily** readings of NAS100, US30 and SPX500, with the day its newest bar belongs to | five checks on daily closes: 50 + 8 per net check, so a BUY or SELL is always 74, 82 or 90 |
+
+Until 2026-11 both kinds were ranked together. A daily reading of 82 or 90
+beat every live market, and it only changes when a daily bar does, so the
+panel named the same index from morning to night and through the weekend. A
+daily reading no longer competes for the pick.
+
+The daily line says which day it speaks for, instead of the time the page last
+asked:
+
+- `Daily index trend · daily close of Wed 11 Nov`: that day's session had
+  ended when the data was read. Nothing changes until the next session opens.
+- `Daily index trend · Thu 12 Nov, session open — not final`: today's bar was
+  still forming, so the reading can still change.
+- `Daily index trend · daily bar of Wed 11 Nov`: Yahoo's answer did not say
+  which of the two it is.
+- `Daily index trend`, without a day: the reading carries no bar time. That is
+  the PC app, whose local API does not send one.
+
+The day is the UTC date of the bar; the sessions read here do not cross
+midnight UTC, so it is the trading day wherever the page is opened. When there
+is nothing to name, each line says what was read and what was not
+(`No live market could be read right now: 6 stale (market closed or feed paused). …`,
+`Daily index trend: not read right now (3 unavailable). Nothing is estimated.`).
+In the PC app an index that Exness MT5 delivers live is a live market and
+competes for the pick like the others.
+
+The panel is read when the page opens, every 10 minutes after that, and once
+more when the visitor enters the workspace. (It used to be read every 20
+minutes: the 10-minute timer was combined with a check for "10 minutes since
+the last result", which every second tick missed by the few seconds a read
+takes.) A repeated read keeps the previous lines on screen until its own
+result replaces them.
+
+For this the Worker's index readings (`/api/signals/scan` and
+`/api/signals/analyze`) carry two fields more:
+
+| Field | Meaning |
+|---|---|
+| `daily_bar_time` | epoch second of the newest daily bar the reading was computed from; `0` when the bar has no usable time |
+| `daily_bar_final` | `true`: the bar's session had ended when the series was read. `false`: it was still forming. `null`: Yahoo's answer does not allow either statement |
+
+Both describe the daily series as it was read from Yahoo. The Worker keeps a
+series for 15 minutes, so a reading taken just before the close says "not
+final" until the series is read again. `ts` remains the moment of the answer.
+
 **Finding out why a market has no reading.**
 
 - In the page: hover the badge. The reason is the text Deriv, the browser or
@@ -222,10 +275,13 @@ about the visitor: market names, counts, durations and error text only.
 **Still read through the Worker**, and therefore still failing whenever Deriv
 refuses the Worker:
 
-- The best-market panel on the sign-in screen. When no market can be read it
-  says so (`No market could be read right now: 9 unavailable. …`) instead of
-  "no setup", and the pick is read again in the browser once the visitor is
-  inside.
+- The pick of the best-market panel on the sign-in screen. When no live market
+  can be read it says so, and says who reads them next
+  (`No live market could be read right now: 6 unavailable. … Inside the workspace this browser reads the live markets itself.`)
+  instead of "no setup"; the pick is read again in the browser once the
+  visitor is inside. The last sentence is left out for markets that are closed,
+  because entering does not open them. The panel's daily index line does not
+  depend on Deriv.
 - The full Deriv catalogue under "Broker-discovered markets" and the analysis
   of a market picked from it. They say so
   (`Deriv catalogue unavailable: You have reached the rate limit for active_symbols.`)
