@@ -251,7 +251,10 @@ Each step is its own pull request. "Ships if" is the evidence required.
    bridge quote, event exposure from `src/newsimpact.js` and the calendar,
    both computed on the server; an unreadable calendar is UNKNOWN. This will
    block orders on the PC when the calendar cannot be read or a release is
-   near. Needs your word.
+   near. In the same step the PC news list loses the order button beside a
+   keyword chip (B8): `biasFor` stays, if at all, as a label that says it is a
+   word match, and a headline no longer opens an order ticket. Needs your
+   word.
 4. **Exposure and limits** (`server/lib/riskgate.js`, `src/sizer.js`): one
    position per correlated group, loss limit over a week, spread against the
    stop distance at entry; every limit configurable; tick value and contract
