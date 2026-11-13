@@ -267,6 +267,15 @@ Each step is its own pull request. "Ships if" is the evidence required.
 6. **Timeframes** (`server/lib/confluence.js`, new; candle reads for M15 and
    H4 in `src/derivhistory.js` and the Worker): a matrix on the page first;
    a higher-timeframe veto only with the same replay evidence.
+   (Later, 13 November 2026: steps 5 and 6 exist as a label. The Market state
+   view, `src/marketstate.js`, shows trend, structure and volatility for M5,
+   M15, H1 and H4 from finished candles, with Wilder ADX and ATR. It lives in
+   `src/` and is computed in the browser; the PC server and the Worker do not
+   use it and no reading changed. The replay these two steps ask for was run
+   (`scripts/state-replay.mjs`; README, "Market state"): alerts with the
+   4-hour trend reached target 1 first in 41.1% of cases, against it in
+   38.9%, and 42.9% is needed after the spread. Neither a filter nor a veto
+   ships on that evidence.)
 7. **Evidence groups and REJECTED** (`server/lib/localdecision.js`): trend,
    momentum, structure, volatility and event exposure each count once; a
    reading that fails a hard condition is REJECTED with its reasons.

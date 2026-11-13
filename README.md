@@ -684,6 +684,149 @@ only, a calendar that ends in March 2023; other markets and other currencies
 were not measured and get the same period as a precaution; spreads, which
 widen at a release, are not in the price bars.
 
+### Market state: trend, structure and volatility on four timeframes
+
+The **Market state** view (`src/marketstate.js`, drawn in `src/main.js`)
+describes one market on the 4-hour, 1-hour, 15-minute and 5-minute chart. Each
+timeframe has a card with a small chart and three lines, and every line comes
+with the figures it was read from:
+
+| Line | States | Read from |
+|---|---|---|
+| Trend | **Uptrend**: EMA 20 above EMA 50 above EMA 200, close above EMA 50, ADX 14 at 25 or more. **Downtrend**: the reverse. **Range**: ADX below 20, whatever order the averages are in. **Unclear**: everything else | The close, EMA 20 / 50 / 200 and ADX 14 of the last finished candle; for how many candles the state has held |
+| Structure | Higher highs and higher lows, lower highs and lower lows, higher highs and lower lows (widening), lower highs and higher lows (narrowing) | The last two swing highs and the last two swing lows, each with its price and time, and where the last close stands against them. A swing high is a candle whose high stands above the five candles before it and is not passed by the five after it |
+| Volatility | **Quiet**, **Normal**, **High**, **Extreme** | ATR 14 of the last finished candle against the 200 candles before it: quiet when fewer than 20 in 100 of them were smaller, high from 80, extreme from 95 |
+
+Above the cards one sentence puts the four trend states side by side, the
+larger picture first: `H4: unclear. H1 and M15: range. M5: downtrend.` When one
+timeframe is in an uptrend and another in a downtrend it says that the
+timeframes disagree and names them; it does not pick one. When a timeframe
+could not be read it says nothing about the whole.
+
+**It is a description, not a signal.** The Buy, Sell and Wait of the signal
+pages are computed without it, by the same code as before, and no alert, order
+ticket or risk check reads it. What a replay measured about it is below.
+
+**Finished candles only.** In every series the newest candle may still be
+forming and is never used; a state is "as of" the close of the candle before
+it, and the card names that close in Nairobi time. A state therefore changes
+at most once per candle of its timeframe, and a swing that has been drawn
+never moves: it needs five finished candles after it, and from then on it
+depends on no later candle. The figures follow the definitions a chart uses
+(EMA seeded with a simple average, ATR and ADX with Wilder's smoothing), so
+they can be compared with TradingView or MetaTrader on the same candles.
+(The signal rule itself uses simpler versions of RSI and ATR, see
+`docs/ANALYSIS_ENGINE_AUDIT.md` B2; this view does not share them and does not
+change them.)
+
+**Where the candles come from.** 600 candles per timeframe from Deriv's public
+feed: on the website this browser reads them itself, and the AURUM cloud is
+asked only for a series the browser could not get; in the PC app they come
+through the PC's own server (`POST /api/history/candles`). The card says
+which. The view is read when it is opened, when the market is changed, with
+**Read again**, and a few seconds after every 5-minute close while it stays
+open. At such a close only the series whose own candle may have finished are
+read again: the 5-minute series each time, the 4-hour series six times a day.
+When the feed does not show the candle after the close yet, the view asks
+again every half minute until it does. The PC's server answers twelve candle
+requests a minute and a full look is four, so a fourth full look within one
+minute is refused: its cards say "too many candle requests within one minute"
+until the next 5-minute close or **Read again**.
+
+**When there is no state.** Fewer than 400 finished candles, candles out of
+order, or a series that could not be read give "No state" with the reason, and
+nothing is filled in. When the newest 5-minute candle started ten minutes ago
+or earlier, the view says that the market is closed or the feed has paused,
+and that every state shown is as of the close named on its card, not the state
+now. When a later look fails, the states read before stay on screen, each
+marked "last look failed", and the feed is not called current. Index markets
+are not offered: this app has no intraday candles for them.
+
+**What a replay measured** (`scripts/state-replay.mjs`). The states were
+computed over gold from 2 January 2020 to 11 November 2026 exactly as the page
+computes them, at the close of every candle. How often each trend state
+occurred, and for how many candles in a row it lasted (the middle run):
+
+| Timeframe | Candles with a state | Uptrend | Downtrend | Range | Unclear | Middle run: up / down / range / unclear |
+|---|---|---|---|---|---|---|
+| M5 | 485,104 | 14.7% | 13.8% | 39.0% | 32.5% | 10 / 10 / 14 / 5 candles |
+| M15 | 161,743 | 16.1% | 14.6% | 36.2% | 33.1% | 10 / 11 / 14 / 5 candles |
+| H1 | 40,011 | 19.4% | 13.9% | 30.8% | 35.9% | 13 / 10 / 13 / 6 candles |
+| H4 | 10,114 | 20.2% | 11.4% | 30.0% | 38.5% | 10 / 11 / 11 / 6 candles |
+
+A trend is the state of about three candles in ten, and "unclear" is common
+and short-lived: with ADX between 20 and 25 the state can change from one
+candle to the next. Structure was "higher highs, higher lows" on 32 to 35% of
+candles, "lower highs, lower lows" on 28 to 30%, widening and narrowing on 18
+to 21% each. Volatility was quiet on 22 to 30%, normal on 47 to 58%, high on
+12 to 14% and extreme on 6 to 11%. The four swings a structure is read from
+lay within the 120 candles of the sketch in 99 cases of 100.
+
+Then the question that decides what the page may say: did the 1m/5m/1h rule do
+better in one state than in another? Every alert of the rule (the replay of
+[the section above](#the-confidence-score-and-how-it-moves-with-the-price))
+was matched with the state of each timeframe as of the 5-minute close the
+alert belongs to. "With" is a BUY in an uptrend or a SELL in a downtrend,
+"against" the reverse. 77,445 of the 82,069 alerts could be matched; the first
+4,624 fall before 599 four-hour candles existed.
+
+| Alerts of the rule on gold | Alerts | Target 1 first | Needed after a $0.25 spread | Per alert after the spread |
+|---|---|---|---|---|
+| All alerts | 77,445 | 39.6% | 42.8% | −$0.26 |
+| With the 4-hour trend | 12,614 | 41.1% | 42.9% | −$0.16 |
+| Against the 4-hour trend | 11,615 | 38.9% | 42.1% | −$0.30 |
+| 4-hour state: range | 23,303 | 38.9% | 43.7% | −$0.35 |
+| 4-hour state: unclear | 29,913 | 39.9% | 42.5% | −$0.21 |
+| With the 1-hour and the 4-hour trend | 6,065 | 41.5% | 42.6% | −$0.11 |
+| With the trend on all four timeframes | 784 | 43.6% | 41.1% | +$0.32 |
+
+"Needed" is the share at which a group breaks even, from its own average win
+and loss, after an assumed spread of $0.25 per alert (the same assumption as
+in the section above); before the spread it is 40%. "Per alert" is in dollars
+per ounce, which is the result of 0.01 lot.
+
+In words:
+
+- Alerts that pointed with the 4-hour trend reached target 1 about two points
+  more often than those against it (41.1% against 38.9%), and did so in five
+  of the seven years. With 12,000 alerts in a group a share is known to about
+  ±0.9 points at best (alerts close together in time are not independent of
+  each other), so the difference is probably not chance.
+- It is not enough. 42.9% is needed after the spread, and the group lost money
+  in six of the seven years. The 1-hour and the 4-hour trend together give
+  41.5% against the 42.6% needed, and a loss in five of the seven years.
+- Of the groups in the table, the one above break-even is the smallest: 784
+  alerts in seven years with the trend on all four timeframes, known to about
+  ±3.5 points. It lost in five of the seven years; its total comes from 2024
+  and 2026.
+- Splitting the alerts by structure or by volatility instead gave between
+  38.7% and 41.2% in every group of more than 1,000 alerts. One of those 32
+  groups came out above its break-even: alerts while 15-minute volatility
+  was "extreme" (41.2% of 3,591 against the 40.7% needed, +$0.09 per alert).
+  Among that many groups one above the line is what chance gives, and it was
+  not looked into further.
+
+So the state is shown as what it is, a description of the chart, and no
+filter, veto or score was built on it. The sentence under the heading of the
+view gives the 4-hour figures (`STATE_MEASURED` in `src/marketstate.js`;
+`tests/platform/market-state.test.mjs` keeps this table and the page equal).
+
+To repeat the run (the price data is not in this repository; it is the gold
+archive named in the section above):
+
+```
+node scripts/state-replay.mjs --data <folder of 1-minute CSV files> --symbol XAU/USD \
+     --from 2020-01-01 --to 2027-01-01 --spread 0.25
+```
+
+Limits: one market; a price series that is neither Deriv's nor Exness's; the
+archive's bars are on broker time until mid-2025, so its 4-hour candles start
+at other hours than Deriv's; the thresholds (ADX 25 and 20, five candles,
+200 candles) are the usual textbook values and were not tuned on this data,
+which also means nobody has shown that they are the best ones. Not verified
+anywhere: the view against Deriv's live feed. The tests use written candles,
+and the pictures taken while building it used the gold archive.
+
 ### Before any deployment
 
 ```bash
@@ -1009,6 +1152,7 @@ src/main.js           app logic (feed wiring, scanner, trading, notifications)
 src/marketdata.js     Deriv public WS engine (reconnect + watchdog)
 src/derivhistory.js   cloud viewer: Deriv public candle history over one paced connection
 src/hostedscan.js     cloud viewer: signal scan in the browser, with one state per reading
+src/marketstate.js    Market state view: trend, structure and volatility per timeframe (a description, not a signal)
 src/tradingview.js    Advanced Chart / timeline / calendar mounts
 src/notify.js         notifications engine
 src/vault.js          AI key vault (localStorage, x-ai-* headers)

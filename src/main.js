@@ -26,7 +26,8 @@ import { patternAnalyze, patternStudy, renderPatternChart, playbookHTML, perform
 import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudSignIn, cloudSignUp, cloudSignOut, cloudVerifyTables, cloudList, saveAnalysis, savePatternEvent, saveAlert, saveSignal } from './cloud.js';
 import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
 import { candleHistory } from './derivhistory.js';
-import { createHostedScanner, signalState, summarizeReadings, withheldReading } from './hostedscan.js';
+import { createHostedScanner, signalState, summarizeReadings, withheldReading, feedTimeMs, ageText } from './hostedscan.js';
+import { STATE_TIMEFRAMES, STATE_CANDLES, ADX_TREND, ADX_RANGE, VOL_WINDOW, timeframeState, summarizeStates, summaryText, feedFreshness, structureWords, eatMoment, TREND_WORDS, VOLATILITY_WORDS, UNAVAILABLE_WORDS, STATE_MEASURED_TEXT } from './marketstate.js';
 import { closedCandleSets, nextReadingCheck } from './closedcandles.js';
 import { measuredText, measuredLine, isDailyReading } from './measured.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
@@ -395,6 +396,7 @@ const VIEW_META={
   overview:['Overview','Workspace · everything at a glance'],
   markets:['Markets','All instruments · live Deriv prices'],
   trade:['Chart & Trade','Live TradingView chart · broker-routed orders'],
+  state:['Market state','Four timeframes · a description, not a signal'],
   signals:['Signal Analyzer','MTF confluence → validated decision'],
   sniper:['Sniper alerts','Choose markets · entry/exit notifications'],
   gold:['Gold / USD','Dedicated XAU/USD analysis · no orders'],
@@ -434,7 +436,7 @@ setInterval(()=>{ try{
   /* The calendar is read again while the News view or the chart stays open: a page left open over a
      week-end must not go on showing last week's releases, and a read that failed is tried again. */
   if((state.view==='news'||state.view==='trade')&&calendarDue())loadCalendar().then(()=>{ if(state.view==='news')paintNewsCal(); }).catch(()=>{}); /* the chart's line is redrawn by the next round, a second later */
-  if(state.view==='news')updateNewsTimeline(); else if(state.view==='trade')updateChartLevels();
+  if(state.view==='news')updateNewsTimeline(); else if(state.view==='trade')updateChartLevels(); else if(state.view==='state')msTick();
 }catch(e){} },1000);
 /* News view: a market named beside a headline or a release opens its chart. */
 document.addEventListener('click',e=>{
@@ -4710,11 +4712,208 @@ function renderWatchLive(){
   });
 }
 
+/* ================================================================
+   MARKET STATE: trend, structure and volatility on four timeframes.
+   A description, computed in src/marketstate.js from finished candles. It
+   takes no part in a signal, an alert or an order, and nothing here reads
+   or changes the readings of the signal pages.
+   ================================================================ */
+const MS_SHOWN=[...STATE_TIMEFRAMES].reverse(); /* the larger picture first */
+/* After a look that came just too early for the feed, the next one follows this soon. */
+const MS_RETRY_MS=30000;
+const msView={sym:'',shown:'',readings:{},sources:{},failed:{},readAt:{},run:0,busy:false,nextAt:0,wired:false};
+function msMarkets(){ return INSTR.filter(I=>DERIV_CODE_MAP[I.s]); }
+/* Candle times are the feed's: its clock when a recent tick tells it, this device's otherwise. */
+function msNowSec(){ return feedTimeMs(Date.now(),feed.feedClock())/1000; }
+function msInit(){
+  const sel=$('#msSym'); if(!sel)return;
+  if(!sel.options.length)sel.innerHTML=msMarkets().map(I=>'<option value="'+escHtml(I.s)+'">'+escHtml(I.s+' — '+I.n)+'</option>').join('');
+  if(!msView.wired){
+    msView.wired=true;
+    sel.onchange=()=>{ msView.sym=sel.value; msLoad({force:true}); };
+    $('#msBtn').onclick=()=>msLoad({force:true});
+    $('#msMeasured').textContent=STATE_MEASURED_TEXT;
+  }
+  /* First visit: the market of the chart when it has candles here, gold otherwise. */
+  if(!msView.sym){ const chart=state.chart&&state.chart.sym; msView.sym=DERIV_CODE_MAP[chart]?chart:DERIV_CODE_MAP['XAU/USD']?'XAU/USD':((msMarkets()[0]||{}).s||''); }
+  sel.value=msView.sym;
+  msRender();
+  msLoad();
+}
+/* Reads the timeframes whose state may have changed (all of them with `force`), then draws the view.
+   A look that is overtaken by a newer one (another market, Read again) draws nothing. */
+async function msLoad({force=false}={}){
+  const sym=msView.sym; if(!sym)return;
+  const run=++msView.run;
+  if(msView.shown!==sym){ msView.shown=sym; msView.readings={}; msView.sources={}; msView.failed={}; msView.readAt={}; }
+  msView.busy=true;
+  msView.nextAt=nextReadingCheck(Date.now(),STATE_TIMEFRAMES[0].seconds*1000);
+  msRender();
+  const read=async(tf)=>{
+    try{
+      const p=await historyCandles(sym,tf.seconds,STATE_CANDLES);
+      if(run!==msView.run)return;
+      msView.readings[tf.key]=timeframeState(p.candles,tf);
+      msView.sources[tf.key]=p.source;
+      msView.readAt[tf.key]=Date.now();
+      delete msView.failed[tf.key];
+    }catch(e){
+      if(run!==msView.run)return;
+      const said=String((e&&e.message)||e||'no answer').slice(0,160);
+      const detail=/rate.?limit|too many requests/i.test(said)?'too many candle requests within one minute; it is read again after the next 5-minute close':said;
+      /* A state already on screen stays what it was at its close; its card says that the new look failed. */
+      if(msView.readings[tf.key]&&msView.readings[tf.key].ok)msView.failed[tf.key]=detail;
+      else msView.readings[tf.key]={ok:false,timeframe:tf.key,label:tf.label,name:tf.name,seconds:tf.seconds,reason:'FEED',detail};
+    }
+  };
+  /* A series is read again when a candle of its timeframe may have finished since: the time that has
+     provably passed lies in a later period than the newest candle the series holds. */
+  const due=(tf,provenSec)=>{ const r=msView.readings[tf.key]; return force||!r||!r.ok||!!msView.failed[tf.key]||Math.floor(provenSec/tf.seconds)*tf.seconds>r.newestStart; };
+  const shortest=STATE_TIMEFRAMES[0];
+  const nowSec=msNowSec();
+  if(due(shortest,nowSec))await read(shortest);
+  if(run!==msView.run)return;
+  /* For the longer timeframes the newest 5-minute candle is the proof. On a closed market it does not
+     move, and they are not read again. */
+  const first=msView.readings[shortest.key];
+  const moving=!!(first&&first.newestStart>0&&!msView.failed[shortest.key]);
+  await Promise.all(STATE_TIMEFRAMES.slice(1).filter(tf=>due(tf,moving?first.newestStart:nowSec)).map(read));
+  if(run!==msView.run)return;
+  /* The newest candle the feed showed is the one that has just closed: the feed (or a copy of the
+     series kept for a minute) has not shown the next one yet. Look again soon, not at the next close. */
+  if(moving&&Math.floor(msNowSec()/shortest.seconds)*shortest.seconds-first.newestStart===shortest.seconds)msView.nextAt=Math.min(msView.nextAt,Date.now()+MS_RETRY_MS);
+  msView.busy=false;
+  msRender();
+}
+/* Called every second while the view is open: the line about the feed follows the clock, and a new
+   look is taken a few seconds after each 5-minute close. */
+function msTick(){
+  if(!msView.sym)return;
+  msFreshness();
+  if(msView.busy||Date.now()<msView.nextAt)return;
+  try{ if(document.hidden)return; }catch(e){}
+  msLoad();
+}
+/* How old the newest candle is, and what that means for the states on screen. It depends on the time,
+   not only on what was read: a feed that stops while the view is open turns into "closed or paused" here. */
+function msFreshness(){
+  const dot=$('#msFeedDot'), text=$('#msFeedText'), note=$('#msNote'); if(!dot||!text||!note)return;
+  const sym=msView.sym;
+  const read=STATE_TIMEFRAMES.map(tf=>msView.readings[tf.key]).filter(Boolean);
+  const fresh=feedFreshness(read,msNowSec());
+  /* The timeframe the freshness is judged by: the shortest one with candles. */
+  const by=STATE_TIMEFRAMES.find(tf=>tf.label===fresh.label);
+  const readAt=by&&msView.readAt[by.key]?' · read '+eatClock(msView.readAt[by.key])+' EAT':'';
+  let mark,line;
+  if(msView.busy){ mark='dot warn'; line='Reading…'; }
+  else if(!read.length){ mark='dot off'; line='Not read yet'; }
+  else if(fresh.ageSec==null){ mark='dot off'; line='No candles'; }
+  /* Whether the feed is current is not known when the look that would tell it failed. */
+  else if(by&&msView.failed[by.key]){ mark='dot warn'; line='Last look failed'+readAt; }
+  else if(fresh.current){ mark='dot live'; line='Feed current'+readAt; }
+  else { mark='dot warn'; line='Market closed or feed paused'; }
+  let words='';
+  if(fresh.ageSec!=null){
+    words=fresh.current
+      ?'The newest '+fresh.label+' candle started '+ageText(fresh.ageSec)+' ago. Each state is as of the close named on its card and changes at most once per candle of its timeframe.'
+      :'The newest '+fresh.label+' candle of '+sym+' started '+ageText(fresh.ageSec)+' ago, so the market is closed or the feed has paused. Each state below is as of the close named on its card, not the state now.';
+  }
+  const failed=MS_SHOWN.filter(tf=>msView.failed[tf.key]).map(tf=>tf.label);
+  if(failed.length)words+=(words?' ':'')+'The last look failed for '+failed.join(', ')+': the state shown there is the one read before.';
+  if(dot.className!==mark)dot.className=mark;
+  if(text.textContent!==line)text.textContent=line;
+  if(note.textContent!==words)note.textContent=words;
+  note.classList.toggle('warn',fresh.ageSec!=null&&!fresh.current);
+}
+function msRender(){
+  const grid=$('#msGrid'); if(!grid)return;
+  const sym=msView.sym, I=bySym[sym]||{}, dec=I.d==null?2:I.d, nowSec=msNowSec();
+  const readings=STATE_TIMEFRAMES.map(tf=>msView.readings[tf.key]||null);
+  const read=readings.filter(Boolean);
+  const sum=$('#msSummary');
+  if(read.length<readings.length)sum.textContent=msView.busy?'Reading '+sym+'…':'';
+  else sum.textContent=sym+' · '+summaryText(summarizeStates(readings));
+  msFreshness();
+  const ctx={px:(v)=>fmtPx(v,dec),when:(sec)=>escHtml(eatMoment(sec,nowSec))};
+  grid.innerHTML=MS_SHOWN.map(tf=>msCard(tf,msView.readings[tf.key],ctx)).join('');
+}
+function msCard(tf,r,ctx){
+  const open=(stateName,extra)=>'<article class="card ms-card" data-ms-tf="'+tf.key+'" data-ms-state="'+stateName+'"'+(extra||'')+' aria-label="'+tf.name+'">';
+  const title='<div><span class="ms-tf">'+tf.label+'</span><span class="faint">'+tf.name+'</span></div>';
+  if(!r)return open(msView.busy?'reading':'none')+'<div class="ms-card-head">'+title+'</div><div class="empty">'+(msView.busy?'<b>Reading…</b>The last '+STATE_CANDLES+' candles of this timeframe.':'<b>Not read yet</b>')+'</div></article>';
+  if(!r.ok){
+    const why=UNAVAILABLE_WORDS[r.reason]||UNAVAILABLE_WORDS.FEED;
+    const more=r.reason==='NOT_ENOUGH_CANDLES'?' '+r.have+' of the '+r.need+' needed.':r.detail?' ('+r.detail+')':'';
+    return open('unavailable')+'<div class="ms-card-head">'+title+'</div><div class="empty"><b>No state</b>'+escHtml(why+more)+' Nothing is estimated.</div></article>';
+  }
+  const t=r.trend, s=r.structure, v=r.volatility, px=ctx.px, when=ctx.when;
+  const source=msView.sources[tf.key]==='deriv-public'?'Deriv public candles, read through the AURUM API':'Deriv public candles, read by this browser';
+  const head='<div class="ms-card-head">'+title+'<div class="ms-asof">as of '+when(r.asOf)+' EAT · '+r.candles+' finished candles'+(msView.failed[tf.key]?' · last look failed':'')+'</div></div>';
+  /* trend */
+  const trendBadge={UP:['ms-up','▲ '],DOWN:['ms-down','▼ '],RANGE:['ms-flat','↔ '],UNCLEAR:['ms-flat','']}[t.state];
+  const n=t.candlesInState;
+  const held=t.sinceOpen?'for at least '+n+' candles':'for '+n+' candle'+(n===1?'':'s')+', since '+when(t.since);
+  const order={up:'EMA 20 above EMA 50 above EMA 200, close above EMA 50',down:'EMA 20 below EMA 50 below EMA 200, close below EMA 50',mixed:'averages and close not in one order'}[t.stack];
+  const strength=t.adx>=ADX_TREND?ADX_TREND+' or more':t.adx<ADX_RANGE?'below '+ADX_RANGE:'between '+ADX_RANGE+' and '+ADX_TREND;
+  const trend='<div class="ms-row"><dt>Trend</dt><dd><span class="badge '+trendBadge[0]+'">'+trendBadge[1]+TREND_WORDS[t.state]+'</span><span class="ms-held">'+held+'</span>'
+    +'<div class="ms-evidence">EMA 20 <b>'+px(t.ema20)+'</b> · EMA 50 <b>'+px(t.ema50)+'</b> · EMA 200 <b>'+px(t.ema200)+'</b> · close <b>'+px(r.price)+'</b>: '+order+'. ADX 14 <b>'+t.adx.toFixed(1)+'</b>: '+strength+'.</div></dd></div>';
+  /* structure */
+  const structBadge=s.state==='UP'?['ms-up','▲ ']:s.state==='DOWN'?['ms-down','▼ ']:['ms-flat',''];
+  const swing=(point)=>'<b>'+px(point.price)+'</b> ('+when(point.time)+')';
+  const place={above:'above the last swing high',below:'below the last swing low',inside:'between the last swing low and the last swing high'}[s.position];
+  const structure='<div class="ms-row"><dt>Structure</dt><dd><span class="badge '+structBadge[0]+'">'+structBadge[1]+escHtml(structureWords(s))+'</span>'
+    +'<div class="ms-evidence">'+(s.state==='UNKNOWN'
+      ?'Fewer than two swing highs and two swing lows in the candles read.'
+      :'Highs: '+swing(s.lastHigh)+' after '+swing(s.prevHigh)+'. Lows: '+swing(s.lastLow)+' after '+swing(s.prevLow)+'. Last close <b>'+px(r.price)+'</b>: '+place+'.')+'</div></dd></div>';
+  /* volatility */
+  const volBadge={QUIET:'ms-flat',NORMAL:'ms-flat',HIGH:'ms-warn',EXTREME:'ms-hot',UNKNOWN:'ms-flat'}[v.state];
+  const volatility='<div class="ms-row"><dt>Volatility</dt><dd><span class="badge '+volBadge+'">'+VOLATILITY_WORDS[v.state]+'</span>'
+    +'<div class="ms-evidence">'+(v.state==='UNKNOWN'
+      ?'ATR 14 <b>'+px(v.atr)+'</b>; too few candles to compare it with.'
+      :'ATR 14 <b>'+px(v.atr)+'</b> ('+v.atrPct.toFixed(2)+'% of the price): higher than in <b>'+Math.round(v.rank)+'%</b> of the '+VOL_WINDOW+' candles before it'+(v.ratio?', '+v.ratio.toFixed(1)+' times their middle value':'')+(v.change?', '+v.change:'')+'.')+'</div></dd></div>';
+  return open('ok',' data-ms-trend="'+t.state+'" data-ms-structure="'+s.state+'" data-ms-volatility="'+v.state+'"')+head+msSketch(tf,r)
+    +'<div class="ms-key"><span><i class="e50"></i>EMA 50</span><span><i class="e200"></i>EMA 200</span><span>HH, HL, LH, LL: a swing against the one before it</span></div>'
+    +'<dl class="ms-rows">'+trend+structure+volatility+'</dl><div class="ms-asof" style="margin-top:8px">'+source+'</div></article>';
+}
+/* The candles of one timeframe as high-low bars, with EMA 50 and EMA 200 and the swings the structure was read from. */
+function msSketch(tf,r){
+  const W=320,H=120,padX=8,padTop=15,padBottom=15;
+  const cs=r.sketch.candles,n=cs.length;
+  let lo=Infinity,hi=-Infinity;
+  for(const c of cs){ if(c.low<lo)lo=c.low; if(c.high>hi)hi=c.high; }
+  const span=hi>lo?hi-lo:(hi*0.001||1);
+  const X=(i)=>padX+(n>1?i/(n-1):0.5)*(W-2*padX), Y=(v)=>padTop+(1-(v-lo)/span)*(H-padTop-padBottom);
+  const f=(v)=>v.toFixed(1);
+  let up='',down='';
+  cs.forEach((c,i)=>{ const seg='M'+f(X(i))+' '+f(Y(c.high))+'V'+f(Y(c.low)); if(c.close>=c.open)up+=seg; else down+=seg; });
+  const line=(values)=>{ let d='',pen=false; values.forEach((v,i)=>{ if(typeof v!=='number'){ pen=false; return; } d+=(pen?'L':'M')+f(X(i))+' '+f(Y(v)); pen=true; }); return d; };
+  const width=Math.max(0.7,Math.min(1.6,((W-2*padX)/Math.max(1,n-1))*0.55)).toFixed(2);
+  let marks='',levels='';
+  const labelled={high:-99,low:-99}, lastOf={high:null,low:null};
+  for(const sw of r.sketch.swings){
+    const x=X(sw.index),y=Y(sw.price),high=sw.kind==='high';
+    lastOf[sw.kind]=sw;
+    marks+='<circle class="ms-swing" cx="'+f(x)+'" cy="'+f(y)+'" r="1.9"/>';
+    /* Marks that would run into the one before them on the same side are left out; the dot stays. */
+    if(x-labelled[sw.kind]>=15){ marks+='<text x="'+f(Math.min(W-9,Math.max(9,x)))+'" y="'+f(high?y-4.5:y+10.5)+'" text-anchor="middle">'+sw.mark+'</text>'; labelled[sw.kind]=x; }
+  }
+  for(const sw of [lastOf.high,lastOf.low])if(sw)levels+='<path class="ms-level" d="M'+f(X(sw.index))+' '+f(Y(sw.price))+'H'+f(W-padX)+'"/>';
+  const clip='msClip-'+tf.key;
+  return '<svg class="ms-sketch" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+tf.label+': the last '+n+' finished candles with EMA 50, EMA 200 and the swing highs and lows">'
+    +'<defs><clipPath id="'+clip+'"><rect x="0" y="0" width="'+W+'" height="'+H+'"/></clipPath></defs>'
+    +'<g fill="none" stroke-linecap="round" clip-path="url(#'+clip+')">'
+    +'<path class="ms-ema200" d="'+line(r.sketch.ema200)+'"/><path class="ms-ema50" d="'+line(r.sketch.ema50)+'"/>'
+    +levels
+    +'<path class="ms-bar-up" stroke-width="'+width+'" d="'+up+'"/><path class="ms-bar-down" stroke-width="'+width+'" d="'+down+'"/></g>'
+    +marks+'</svg>';
+}
+
 function render(view){
   switch(view){
     case 'overview': renderOverview(); break;
     case 'markets': renderMarkets(); break;
     case 'trade': updateTradeHeader(); syncSide(); break;
+    case 'state': msInit(); break;
     case 'signals': if(state.scanStatus==='idle')scanSignals(); else renderSignals(); break;
     case 'sniper': renderSniperView(); break;
     case 'gold': renderGold(); break;
