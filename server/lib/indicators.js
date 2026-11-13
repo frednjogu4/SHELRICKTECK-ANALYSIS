@@ -7,11 +7,8 @@
  *  - MACD: signal line is an EMA over the MACD *series*, computed with
  *    correct index alignment — the draft's `ema([...closes, macdLine])`
  *    mixed prices with one MACD value and produced meaningless numbers.
- *  - ATR: standard True Range (first candle excluded from the average).
- *
- * Documented simplifications (deterministic, testable, good enough for
- * confluence scoring): RSI uses a simple average of the last N changes
- * (Cutler's RSI) rather than Wilder smoothing; ATR uses SMA of TR.
+ *  - RSI and ATR use Wilder smoothing with an initial N-period seed.
+ *  - ATR uses standard True Range; the first candle has no true range.
  * ================================================================ */
 
 export function sma(values, period) {
@@ -39,19 +36,28 @@ export function ema(values, period) {
   return series ? series[series.length - 1] : null;
 }
 
-/** RSI over the last `period` price changes. Needs period+1 closes. */
+/** Wilder RSI. Seed with the first N changes, then use Wilder's recursive averages. */
 export function rsi(closes, period = 14) {
-  if (!Array.isArray(closes) || closes.length < period + 1 || period <= 0) return null;
-  let gains = 0;
-  let losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1];
-    if (d > 0) gains += d;
-    else losses -= d;
+  if (!Array.isArray(closes) || !Number.isInteger(period) || period <= 0 || closes.length < period + 1) return null;
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const change = Number(closes[i]) - Number(closes[i - 1]);
+    if (!Number.isFinite(change)) return null;
+    if (change > 0) avgGain += change;
+    else avgLoss -= change;
   }
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
-  if (avgGain === 0 && avgLoss === 0) return 50; // flat market
+  avgGain /= period;
+  avgLoss /= period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const change = Number(closes[i]) - Number(closes[i - 1]);
+    if (!Number.isFinite(change)) return null;
+    const gain = Math.max(change, 0);
+    const loss = Math.max(-change, 0);
+    avgGain = ((avgGain * (period - 1)) + gain) / period;
+    avgLoss = ((avgLoss * (period - 1)) + loss) / period;
+  }
+  if (avgGain === 0 && avgLoss === 0) return 50;
   if (avgLoss === 0) return 100;
   if (avgGain === 0) return 0;
   const rs = avgGain / avgLoss;
@@ -90,17 +96,27 @@ export function bollingerBands(closes, period = 20, stdDevMult = 2) {
   };
 }
 
-/** Average True Range via SMA of True Range (first candle has no TR). */
+/** Wilder ATR. Seed with the first N true ranges, then apply Wilder smoothing. */
 export function atr(candles, period = 14) {
-  if (!Array.isArray(candles) || candles.length < period + 1) return null;
-  const trs = [];
-  for (let i = 1; i < candles.length; i++) {
-    const h = candles[i].high;
-    const l = candles[i].low;
-    const pc = candles[i - 1].close;
-    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  if (!Array.isArray(candles) || !Number.isInteger(period) || period <= 0 || candles.length < period + 1) return null;
+  let value = 0;
+  for (let i = 1; i <= period; i++) {
+    const h = Number(candles[i]?.high);
+    const l = Number(candles[i]?.low);
+    const pc = Number(candles[i - 1]?.close);
+    if (![h, l, pc].every(Number.isFinite) || h < l) return null;
+    value += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
   }
-  return sma(trs, period);
+  value /= period;
+  for (let i = period + 1; i < candles.length; i++) {
+    const h = Number(candles[i]?.high);
+    const l = Number(candles[i]?.low);
+    const pc = Number(candles[i - 1]?.close);
+    if (![h, l, pc].every(Number.isFinite) || h < l) return null;
+    const tr = Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+    value = ((value * (period - 1)) + tr) / period;
+  }
+  return value;
 }
 
 /**

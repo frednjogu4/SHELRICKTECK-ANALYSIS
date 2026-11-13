@@ -129,3 +129,17 @@ test('findLevels handles degenerate input', () => {
   assert.deepEqual(findLevels([]), { support: [], resistance: [] });
   assert.deepEqual(findLevels(null), { support: [], resistance: [] });
 });
+
+
+test('RSI uses Wilder smoothing across changes, not a last-N simple average', () => {
+  const value = rsi([100, 102, 101, 103, 102, 104], 3);
+  assert.ok(Math.abs(value - 77.2727272727) < 1e-8, String(value));
+});
+
+test('ATR uses Wilder smoothing across true ranges', () => {
+  const ranges = [2, 4, 6, 8, 10];
+  const candles = [{ close: 100, high: 101, low: 99 }].concat(ranges.map((range) => ({
+    open: 100, close: 100, high: 100 + range / 2, low: 100 - range / 2
+  })));
+  assert.ok(Math.abs(atr(candles, 3) - (62 / 9)) < 1e-8);
+});

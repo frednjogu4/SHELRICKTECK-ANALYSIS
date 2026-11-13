@@ -529,9 +529,11 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
       const dec = localDecision(det);
       const pipeline = runPipeline({
         symbol, det, dec,
-        newsItems: Array.isArray(req.body?.newsItems) ? req.body.newsItems : null,
-        rule: req.body?.rule || {},
-        riskInput: Object.assign({ killSwitch: isTradingKilled() }, req.body?.riskInput || {}),
+        /* Browser-supplied news/risk assertions are untrusted. Until the server
+           owns a verified feed and authoritative account/risk state, fail closed. */
+        newsItems: null,
+        rule: {},
+        riskInput: { killSwitch: isTradingKilled() },
       });
       pipeline.charts.dataSource = dataSource;
       res.json({ ok: true, pipeline, data_source: dataSource, candle_close: closed.close, candle_current: closed.current });
