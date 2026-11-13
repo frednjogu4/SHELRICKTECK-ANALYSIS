@@ -122,6 +122,18 @@ Not known: whether Wilder definitions would change the 39.6%. That is a replay
 to run before changing `indicators.js`, because the change would alter every
 reading on the PC and the cloud.
 
+(Later, 13 November 2026: `indicators.js` was changed to Wilder RSI and ATR in
+pull request #16, before that replay had been run. It was run the same day, on
+the same data, with the former and the new definitions. Gold, January 2020 to
+November 2026: 39.6% of 76,694 signals with Wilder's, 39.6% of 82,069 with the
+former ones. The nine other markets: 36.9% to 41.2%, before 36.9% to 40.9%; up
+on five, down on three, the largest moves +1.5 and −1.1 points on about 6,000
+signals each. About 6% fewer signals on every market. So the answer is: no
+measurable difference. The two RSI and ATR bullets above describe the code as
+it was on the day of the audit; `tests/platform/indicator-reference.test.mjs`
+now pins the Wilder values and keeps the former ones beside them. The figures
+in B1 are those of that day too; the current ones are in the README.)
+
 ### B3. Five votes are one piece of evidence
 
 Price above EMA20, price above EMA50, MACD histogram positive, RSI between 55
@@ -255,6 +267,16 @@ Each step is its own pull request. "Ships if" is the evidence required.
    keyword chip (B8): `biasFor` stays, if at all, as a label that says it is a
    word match, and a headline no longer opens an order ticket. Needs your
    word.
+   (Later, 13 November 2026: steps 1 and 2 were merged in pull request #16.
+   The replay step 1 asks for was run afterwards; its result is under B2
+   above. Of step 3, one half exists: `riskgate.js` now counts the news state
+   as known only when the server vouches for it. The other half, the server
+   reading the calendar and the market hours itself, does not. The page still
+   sends "no news restriction" with every order, the server no longer accepts
+   that, and nothing else supplies it: `/api/risk/gate` refuses every order
+   from the PC app, with `news_event` UNKNOWN as the only failed check
+   (`server/tests/risklimits.test.mjs`). Pull request #17, the same day,
+   keeps it so on purpose until the server-side half is built.)
 4. **Exposure and limits** (`server/lib/riskgate.js`, `src/sizer.js`): one
    position per correlated group, loss limit over a week, spread against the
    stop distance at entry; every limit configurable; tick value and contract
@@ -267,6 +289,16 @@ Each step is its own pull request. "Ships if" is the evidence required.
 6. **Timeframes** (`server/lib/confluence.js`, new; candle reads for M15 and
    H4 in `src/derivhistory.js` and the Worker): a matrix on the page first;
    a higher-timeframe veto only with the same replay evidence.
+   (Later, 13 November 2026: steps 5 and 6 exist as a label. The Market state
+   view, `src/marketstate.js`, shows trend, structure and volatility for M5,
+   M15, H1 and H4 from finished candles, with Wilder ADX and ATR. It lives in
+   `src/` and is computed in the browser; the PC server and the Worker do not
+   use it and no reading changed. The replay these two steps ask for was run
+   (`scripts/state-replay.mjs`; README, "Market state"): alerts with the
+   4-hour trend reached target 1 first in 41.2% of cases, against it in
+   39.0%, and 42.9% is needed after the spread (with the RSI and ATR of
+   before pull request #16: 41.1% and 38.9%). Neither a filter nor a veto
+   ships on that evidence.)
 7. **Evidence groups and REJECTED** (`server/lib/localdecision.js`): trend,
    momentum, structure, volatility and event exposure each count once; a
    reading that fails a hard condition is REJECTED with its reasons.

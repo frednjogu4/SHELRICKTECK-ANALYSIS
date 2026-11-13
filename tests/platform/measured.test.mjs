@@ -62,11 +62,11 @@ test('what is measured: a BUY or SELL of the 1m/5m/1h rule with its stop and tar
 });
 
 test('the figure is the one of the reading\'s own market and of the timing that made it', () => {
-  assert.deepEqual(measuredFor(atClose('XAU/USD')), { name: 'gold', span: 'Jan 2020 \u2013 Nov 2026', timing: 'close', percent: 39.6, alerts: 82069, perDay: 46 });
+  assert.deepEqual(measuredFor(atClose('XAU/USD')), { name: 'gold', span: 'Jan 2020 \u2013 Nov 2026', timing: 'close', percent: 39.6, alerts: 76694, perDay: 43 });
   assert.deepEqual(measuredFor(everyMinute('XAU/USD')), { name: 'gold', span: 'Jan 2020 \u2013 Nov 2026', timing: 'minute', percent: 39.8, alerts: 177715, perDay: 100 });
   assert.equal(measuredFor(atClose('GBP/USD')).percent, 36.9);
   assert.equal(measuredFor(everyMinute('GBP/USD')).percent, 36.8);
-  assert.equal(measuredFor(atClose('US30')).percent, 39.7, 'an index read by the 1m/5m/1h rule (Exness in the PC app)');
+  assert.equal(measuredFor(atClose('US30')).percent, 41.2, 'an index read by the 1m/5m/1h rule (Exness in the PC app)');
   assert.equal(measuredFor(atClose('BTC/USD')), null, 'not replayed');
   assert.equal(measuredFor(atClose('EUR/USD', { signal: 'WAIT' })), null);
   assert.equal(measuredFor(daily('BUY')), null);
@@ -74,7 +74,7 @@ test('the figure is the one of the reading\'s own market and of the timing that 
 
 test('the sentence under a score', () => {
   assert.equal(measuredText(atClose('XAU/USD')),
-    'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 82,069 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.');
+    'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 76,694 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.');
   assert.equal(measuredText(everyMinute('EUR/USD')),
     'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 39.9% of 13,990 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.');
   assert.equal(measuredText(atClose('BTC/USD')),
@@ -87,7 +87,7 @@ test('the sentence under a score', () => {
 });
 
 test('the short form for a table cell', () => {
-  assert.equal(measuredText(atClose('USD/CAD'), { short: true }), 'measured 40.9%');
+  assert.equal(measuredText(atClose('USD/CAD'), { short: true }), 'measured 40.4%');
   assert.equal(measuredText(everyMinute('USD/CAD'), { short: true }), 'measured 41.2%');
   assert.equal(measuredText(atClose('BTC/USD'), { short: true }), 'not measured');
   assert.equal(measuredText(daily('BUY'), { short: true }), 'not measured');

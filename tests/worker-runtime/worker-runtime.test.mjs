@@ -295,18 +295,28 @@ test('a streamed upload without Content-Length is cut off at the limit', async (
       controller.enqueue(chunk);
     }
   });
+  /* The runtime may reset the connection once the Worker has answered and
+     stopped reading. The client then sees a network error in place of the
+     413, or the 413 and then a network error in place of its body. Each of
+     the three outcomes proves the upload was refused. */
+  const reset = (error) => assert.match(String(error && (error.cause && error.cause.code || error.message)), /ECONNRESET|EPIPE|UND_ERR|fetch failed|terminated/i);
   let res;
   try {
     res = await get('/api/history/candles', { method: 'POST', headers: { 'content-type': 'application/json' }, body, duplex: 'half' });
   } catch (error) {
-    /* The runtime may reset the connection once the Worker has answered and
-       stopped reading; the client then sees a network error instead of the
-       413. Both outcomes prove the upload was refused. */
-    assert.match(String(error && (error.cause && error.cause.code || error.message)), /ECONNRESET|EPIPE|UND_ERR|fetch failed|terminated/i);
+    reset(error);
     return;
   }
   assert.equal(res.status, 413);
-  assert.equal((await res.json()).error, 'request_too_large');
+  let answer;
+  try {
+    answer = await res.json();
+  } catch (error) {
+    /* A body that arrived whole and is not JSON is a SyntaxError and fails here. */
+    reset(error);
+    return;
+  }
+  assert.equal(answer.error, 'request_too_large');
 });
 
 /* Keep this test last: it deliberately exhausts the signal rate limit. */

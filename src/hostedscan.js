@@ -54,6 +54,22 @@ const FEED_CLOCK_MAX_AGE_MS = 120000;
 /** After a scan in which this browser could not reach Deriv at all, the browser is tried again this much later. */
 export const BROWSER_RETRY_MS = 60000;
 
+/**
+ * "Now" on Deriv's clock when a recent tick tells us what that is; the device
+ * clock otherwise. Candle times are Deriv's, so comparing them with a device
+ * clock that is minutes off would mislabel live markets as stale.
+ *
+ * @param {number} deviceMs  the time on this device, epoch milliseconds
+ * @param {{epochMs:number, seenAtMs:number}|null} clock  the newest tick's time and when this device saw it
+ */
+export function feedTimeMs(deviceMs, clock) {
+  if (clock && Number(clock.epochMs) > 0 && Number(clock.seenAtMs) > 0) {
+    const sinceSeen = deviceMs - Number(clock.seenAtMs);
+    if (sinceSeen >= 0 && sinceSeen < FEED_CLOCK_MAX_AGE_MS) return Number(clock.epochMs) + sinceSeen;
+  }
+  return deviceMs;
+}
+
 /** True for the built-in markets that have a Deriv public candle feed. */
 export function isDerivBacked(symbol) {
   const code = DERIV_CODE_MAP[symbol];
@@ -233,18 +249,7 @@ export function createHostedScanner({ fetchCandles, cloudScan, now = () => Date.
   let browserPausedUntil = 0;
   let browserFailure = null;
 
-  /* "Now" on Deriv's clock when a recent tick tells us what that is; the
-     device clock otherwise. Candle times are Deriv's, so comparing them with
-     a device clock that is minutes off would mislabel live markets as stale. */
-  function feedNowMs() {
-    const device = now();
-    const clock = feedClock();
-    if (clock && Number(clock.epochMs) > 0 && Number(clock.seenAtMs) > 0) {
-      const sinceSeen = device - Number(clock.seenAtMs);
-      if (sinceSeen >= 0 && sinceSeen < FEED_CLOCK_MAX_AGE_MS) return Number(clock.epochMs) + sinceSeen;
-    }
-    return device;
-  }
+  const feedNowMs = () => feedTimeMs(now(), feedClock());
 
   async function analyseInBrowser(symbol) {
     const settled = await Promise.allSettled(SCAN_TIMEFRAMES.map(([, granularity]) => fetchCandles(symbol, granularity, SCAN_CANDLES)));

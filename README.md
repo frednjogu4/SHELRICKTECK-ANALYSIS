@@ -220,6 +220,32 @@ in the bridge window when the bridge starts without MetaTrader 5.
   of error codes and users' reports. Nothing has been run on Windows or against
   a real terminal.
 
+### When the PC app refuses every Exness order
+
+Since 13 November 2026 (pull request #16) an Exness order from the PC app
+stops at the app's own order check, before anything is sent to MetaTrader,
+with:
+
+```text
+Blocked: mandatory checks UNKNOWN (missing data never counts as passed): news_event.
+```
+
+The check (`/api/risk/gate`, `server/lib/riskgate.js`) asks whether a news
+restriction applies. The page answers "none" with every order, as it always
+has; it never looked at the calendar for that. The server no longer takes the
+page's word, and it has no calendar check of its own yet. So the answer is
+"unknown" for every order, and an unknown mandatory check blocks. This is the
+same for a manual ticket and for an automated entry, and no setting turns it
+off.
+
+What would let an order pass again is the server reading the calendar and the
+market hours itself (step 3 of the plan in `docs/ANALYSIS_ENGINE_AUDIT.md`),
+with an unreadable calendar still counting as unknown. That is not built, and
+pull request #17 (the same day) keeps the refusal on purpose until it is.
+Until then the PC app analyses and alerts, and an Exness order is placed in
+MetaTrader by hand. `server/tests/risklimits.test.mjs` states the refusal as a
+test, and keeps the former reservation test beside it, skipped.
+
 ### Signals on the cloud viewer
 
 **Who computes a reading.** On the cloud viewer the 20 Deriv-backed markets
@@ -514,30 +540,31 @@ before the spread.
 
 | Market | Period | Alerts | Per weekday | Target 1 first | Alerts, look every minute | Per weekday | Target 1 first |
 |---|---|---|---|---|---|---|---|
-| Gold (XAU/USD) | Jan 2020 – Nov 2026 | 82,069 | 46 | **39.6%** | 177,715 | 100 | 39.8% |
-| EUR/USD | Mar – Sep 2026 | 6,453 | 49 | **40.2%** | 13,990 | 106 | 39.9% |
-| GBP/USD | Mar – Sep 2026 | 6,444 | 49 | **36.9%** | 13,876 | 105 | 36.8% |
-| AUD/USD | Mar – Sep 2026 | 6,560 | 50 | **39.3%** | 13,968 | 106 | 39.4% |
-| USD/JPY | Mar – Sep 2026 | 6,272 | 48 | **40.5%** | 13,703 | 104 | 40.1% |
-| USD/CHF | Mar – Sep 2026 | 6,273 | 48 | **38.6%** | 13,523 | 102 | 38.7% |
-| USD/CAD | Mar – Sep 2026 | 6,364 | 48 | **40.9%** | 13,887 | 105 | 41.2% |
-| US30 | Mar – Sep 2026 | 6,087 | 46 | **39.7%** | 13,055 | 99 | 39.9% |
-| NAS100 | Mar – Sep 2026 | 5,827 | 44 | **40.7%** | 12,536 | 95 | 41.4% |
-| SPX500 | Mar – Sep 2026 | 5,952 | 45 | **40.7%** | 12,923 | 98 | 40.3% |
+| Gold (XAU/USD) | Jan 2020 – Nov 2026 | 76,694 | 43 | **39.6%** | 177,715 | 100 | 39.8% |
+| EUR/USD | Mar – Sep 2026 | 6,114 | 46 | **39.9%** | 13,990 | 106 | 39.9% |
+| GBP/USD | Mar – Sep 2026 | 5,991 | 45 | **36.9%** | 13,876 | 105 | 36.8% |
+| AUD/USD | Mar – Sep 2026 | 6,143 | 47 | **39.4%** | 13,968 | 106 | 39.4% |
+| USD/JPY | Mar – Sep 2026 | 5,919 | 45 | **41.1%** | 13,703 | 104 | 40.1% |
+| USD/CHF | Mar – Sep 2026 | 5,807 | 44 | **38.9%** | 13,523 | 102 | 38.7% |
+| USD/CAD | Mar – Sep 2026 | 5,996 | 45 | **40.4%** | 13,887 | 105 | 41.2% |
+| US30 | Mar – Sep 2026 | 5,723 | 43 | **41.2%** | 13,055 | 99 | 39.9% |
+| NAS100 | Mar – Sep 2026 | 5,369 | 41 | **41%** | 12,536 | 95 | 41.4% |
+| SPX500 | Mar – Sep 2026 | 5,585 | 42 | **39.6%** | 12,923 | 98 | 40.3% |
 
-The first three figure columns are the rule as it runs now (one reading per
-5-minute close), the last three the rule as it ran before. Gold over the whole
-period, as it runs now:
+The first three figure columns are the rule as it runs now: one reading per
+5-minute close, RSI and ATR with Wilder's smoothing. The last three are the
+rule as it ran until November 2026: a look every minute, with the RSI and ATR
+it had then. Gold over the whole period, as it runs now:
 
 | Gold, Jan 2020 – 11 Nov 2026, one reading per 5-minute close | Alerts | Target 1 first |
 |---|---|---|
-| Each single year 2020 … 2026 | 10,236 – 12,119 | 38.6 / 39.8 / 39.5 / 39.1 / 40.4 / 39.9 / 39.9% |
-| Score below 60 / 60–64 / 65–69 / 70–74 / 75–79 / 80 and above | 6,087 / 27,178 / 23,012 / 20,429 / 5,067 / 296 | 39.4 / 39.9 / 39.2 / 39.7 / 39.4 / 40.2% |
-| All three timeframes agree | 7,831 | 39.4% |
-| The 1-hour vote agrees / is neutral / is against | 34,851 / 21,997 / 25,221 | 40.0 / 39.0 / 39.5% |
-| BUY / SELL | 41,964 / 40,105 | 39.8 / 39.4% |
-| Control: the opposite direction at the same moments, same distances | 82,069 | 40.6% |
-| Control: a coin flip at the same moments, same distances | 82,069 | 39.8% |
+| Each single year 2020 … 2026 | 9,510 – 11,459 | 38.2 / 40.2 / 39.5 / 39.6 / 39.9 / 39.5 / 40.4% |
+| Score below 60 / 60–64 / 65–69 / 70–74 / 75–79 / 80 and above | 2,476 / 21,873 / 20,967 / 22,252 / 8,423 / 703 | 39.1 / 39.5 / 39.5 / 39.7 / 39.9 / 37.3% |
+| All three timeframes agree | 9,956 | 39.4% |
+| The 1-hour vote agrees / is neutral / is against | 31,777 / 21,458 / 23,459 | 39.6 / 39.6 / 39.5% |
+| BUY / SELL | 39,101 / 37,593 | 39.7 / 39.5% |
+| Control: the opposite direction at the same moments, same distances | 76,694 | 40.8% |
+| Control: a coin flip at the same moments, same distances | 76,694 | 40.3% |
 
 In words: on this data the rule's direction was right as often as a coin's,
 its score did not separate better alerts from worse ones, and stricter
@@ -545,18 +572,38 @@ versions of the same votes did not change that. The six-month figures of the
 other markets lie between 37% and 41%; with about 6,000 alerts each they are
 known to about ±1.2 points at best, so none of them is evidence of an edge.
 (The coin flip itself moves by that much from one run to the next: on GBP/USD
-it reached 38.4% in one run and 39.8% in another.) One reading per 5-minute
-candle halves the number of alerts and leaves the share where it was: per gold
-alert at 0.01 lot the replay gives −$0.02 before the spread and −$0.27 after an
-assumed $0.25, about −$22,000 over the period against −$43,700 with a look
-every minute. Fewer alerts cost less; they do not win more often. The live
-movement of the score does not change this either: it reports where the price
-is against a reading, it does not predict where it goes next.
+it reached 38.4% in one run and 39.8% in another.) Per gold alert at 0.01 lot
+the replay gives −$0.01 before the spread and −$0.26 after an assumed $0.25,
+about −$19,800 over the period; with a look every minute it was −$43,700.
+Fewer alerts cost less; they do not win more often. The live movement of the
+score does not change this either: it reports where the price is against a
+reading, it does not predict where it goes next.
+
+Two things about the rule changed in November 2026, and each was replayed on
+the same data before and after:
+
+| Change | Before | After |
+|---|---|---|
+| One reading per finished 5-minute candle instead of a look every minute (gold) | 39.8% of 177,715 | 39.6% of 82,069 |
+| RSI and ATR with Wilder's smoothing, as a chart shows them, instead of averages of the last 14 values (gold) | 39.6% of 82,069 | 39.6% of 76,694 |
+| The same change of RSI and ATR on the nine other markets | 36.9% to 40.9% | 36.9% to 41.2% |
+
+The first halved the number of alerts. The second (13 November,
+`server/lib/indicators.js`) removed about 6% of them, between 5% and 8% on
+every market. Neither moved the share that reached target 1. On gold it stayed
+at 39.6%. On the nine six-month samples it went up on five, down on three and
+stayed on one; the largest moves were +1.5 points (US30) and −1.1 (SPX500),
+one up and one down, at the edge of the ±1.2 points that about 6,000 alerts
+leave open. So a reading now shows the same
+RSI and ATR as TradingView or MT5 would. It is not a better reading for that,
+and not a worse one. A PC whose `server` folder dates from the hours between
+the two changes still computes the former RSI and ATR; the figure beside its
+signals is the new one, and the table says how little that matters.
 
 What the page shows (`measuredText` in `src/measured.js`): under a BUY or SELL
 of the 1m/5m/1h rule, the figure of that market and of the timing that made
 the reading, for example `Measured in a replay on gold (Jan 2020 – Nov 2026):
-39.6% of 82,069 signals of this rule reached target 1 before the stop; 40% is
+39.6% of 76,694 signals of this rule reached target 1 before the stop; 40% is
 needed to break even, before the spread. Not a forecast.` A market that was
 not replayed says so and gives the range of the ten that were. A WAIT has no
 such line. A daily index reading (US30, NAS100, SPX500 on the cloud) has no
@@ -579,8 +626,8 @@ Data used: gold, the public archive
 markets, the free six-month 1-minute samples published on GitHub by
 getdata.finance (26 March to 25 September 2026). Neither is Exness's or
 Deriv's price series. As a check of one source against the other, gold over
-the same six months gives 39.8% of 6,045 alerts in the first and 39.7% of
-6,002 in the second.
+the same six months gives 40.0% of 5,665 alerts in the first and 39.7% of
+5,557 in the second.
 
 Limits of the replay: one price series per market that is not the broker's;
 the alert is taken at the price of the 5-minute close it belongs to, while a
@@ -684,6 +731,177 @@ only, a calendar that ends in March 2023; other markets and other currencies
 were not measured and get the same period as a precaution; spreads, which
 widen at a release, are not in the price bars.
 
+### Market state: trend, structure and volatility on four timeframes
+
+The **Market state** view (`src/marketstate.js`, drawn in `src/main.js`)
+describes one market on the 4-hour, 1-hour, 15-minute and 5-minute chart. Each
+timeframe has a card with a small chart and three lines, and every line comes
+with the figures it was read from:
+
+| Line | States | Read from |
+|---|---|---|
+| Trend | **Uptrend**: EMA 20 above EMA 50 above EMA 200, close above EMA 50, ADX 14 at 25 or more. **Downtrend**: the reverse. **Range**: ADX below 20, whatever order the averages are in. **Unclear**: everything else | The close, EMA 20 / 50 / 200 and ADX 14 of the last finished candle; for how many candles the state has held |
+| Structure | Higher highs and higher lows, lower highs and lower lows, higher highs and lower lows (widening), lower highs and higher lows (narrowing) | The last two swing highs and the last two swing lows, each with its price and time, and where the last close stands against them. A swing high is a candle whose high stands above the five candles before it and is not passed by the five after it |
+| Volatility | **Quiet**, **Normal**, **High**, **Extreme** | ATR 14 of the last finished candle against the 200 candles before it: quiet when fewer than 20 in 100 of them were smaller, high from 80, extreme from 95 |
+
+Above the cards one sentence puts the four trend states side by side, the
+larger picture first: `H4: unclear. H1 and M15: range. M5: downtrend.` When one
+timeframe is in an uptrend and another in a downtrend it says that the
+timeframes disagree and names them; it does not pick one. When a timeframe
+could not be read it says nothing about the whole.
+
+**It is a description, not a signal.** The Buy, Sell and Wait of the signal
+pages are computed without it, by the same code as before, and no alert, order
+ticket or risk check reads it. What a replay measured about it is below.
+
+**Finished candles only.** In every series the newest candle may still be
+forming and is never used; a state is "as of" the close of the candle before
+it, and the card names that close in Nairobi time. A state therefore changes
+at most once per candle of its timeframe, and a swing that has been drawn
+never moves: it needs five finished candles after it, and from then on it
+depends on no later candle. The figures follow the definitions a chart uses
+(EMA seeded with a simple average, ATR and ADX with Wilder's smoothing), so
+they can be compared with TradingView or MetaTrader on the same candles.
+(Since 13 November 2026 the signal rule computes its RSI and ATR the same way;
+before that it used averages of the last 14 values, see
+`docs/ANALYSIS_ENGINE_AUDIT.md` B2. This view has its own series either way,
+because it needs a value for every candle.)
+
+**Where the candles come from.** 600 candles per timeframe from Deriv's public
+feed: on the website this browser reads them itself, and the AURUM cloud is
+asked only for a series the browser could not get; in the PC app they come
+through the PC's own server (`POST /api/history/candles`). The card says
+which. The view is read when it is opened, when the market is changed, with
+**Read again**, and a few seconds after every 5-minute close while it stays
+open. At such a close only the series whose own candle may have finished are
+read again: the 5-minute series each time, the 4-hour series six times a day.
+When the feed does not show the candle after the close yet, the view asks
+again every half minute until it does. The PC's server answers twelve candle
+requests a minute and a full look is four, so a fourth full look within one
+minute is refused: its cards say "too many candle requests within one minute"
+until the next 5-minute close or **Read again**.
+
+**When there is no state.** Fewer than 400 finished candles, candles out of
+order, or a series that could not be read give "No state" with the reason, and
+nothing is filled in. When the newest 5-minute candle started ten minutes ago
+or earlier, the view says that the market is closed or the feed has paused,
+and that every state shown is as of the close named on its card, not the state
+now. When a later look fails, the states read before stay on screen, each
+marked "last look failed"; the feed is then called neither current nor
+paused, because the look that would tell is the one that failed. Index
+markets are not offered: this app has no intraday candles for them.
+
+**What a replay measured** (`scripts/state-replay.mjs`). The states were
+computed over gold from 2 January 2020 to 11 November 2026 exactly as the page
+computes them, at the close of every candle. How often each trend state
+occurred, and for how many candles in a row it lasted (the middle run):
+
+| Timeframe | Candles with a state | Uptrend | Downtrend | Range | Unclear | Middle run: up / down / range / unclear |
+|---|---|---|---|---|---|---|
+| M5 | 485,104 | 14.7% | 13.8% | 39.0% | 32.5% | 10 / 10 / 14 / 5 candles |
+| M15 | 161,743 | 16.1% | 14.6% | 36.2% | 33.1% | 10 / 11 / 14 / 5 candles |
+| H1 | 40,011 | 19.4% | 13.9% | 30.8% | 35.9% | 13 / 10 / 13 / 6 candles |
+| H4 | 10,114 | 20.2% | 11.4% | 30.0% | 38.5% | 10 / 11 / 11 / 6 candles |
+
+A trend is the state of about three candles in ten, and "unclear" is common
+and short-lived: with ADX between 20 and 25 the state can change from one
+candle to the next. Structure was "higher highs, higher lows" on 32 to 35% of
+candles, "lower highs, lower lows" on 28 to 30%, widening and narrowing on 18
+to 21% each. Volatility was quiet on 22 to 30%, normal on 47 to 58%, high on
+12 to 14% and extreme on 6 to 11%. The four swings a structure is read from
+lay within the 120 candles of the sketch in 99 cases of 100.
+
+Then the question that decides what the page may say: did the 1m/5m/1h rule do
+better in one state than in another? Every alert of the rule (the replay of
+[the section above](#the-confidence-score-and-how-it-moves-with-the-price))
+was matched with the state of each timeframe as of the 5-minute close the
+alert belongs to. "With" is a BUY in an uptrend or a SELL in a downtrend,
+"against" the reverse. 72,280 of the 76,694 alerts could be matched; the first
+4,414 fall before 599 four-hour candles existed.
+
+| Alerts of the rule on gold | Alerts | Target 1 first | Needed after a $0.25 spread | Per alert after the spread |
+|---|---|---|---|---|
+| All alerts | 72,280 | 39.7% | 42.6% | −$0.241 |
+| With the 4-hour trend | 11,631 | 41.2% | 42.9% | −$0.153 |
+| Against the 4-hour trend | 10,963 | 39% | 42.2% | −$0.294 |
+| 4-hour state: range | 21,563 | 39.2% | 43.5% | −$0.316 |
+| 4-hour state: unclear | 28,123 | 39.8% | 42.2% | −$0.200 |
+| With the 1-hour and the 4-hour trend | 5,616 | 41.4% | 42% | −$0.062 |
+| With the trend on all four timeframes | 618 | 42.2% | 40.1% | +$0.275 |
+
+These are the figures of the rule as it runs now. The run was repeated on 13
+November 2026, after the rule's RSI and ATR were changed to Wilder's (see the
+section above). Before that change it gave 41.1% of 12,614 alerts with the
+4-hour trend and 38.9% of 11,615 against it: the same picture.
+
+"Needed" is the share at which a group breaks even, from its own average win
+and loss, after an assumed spread of $0.25 per alert (the same assumption as
+in the section above). Before the spread it is 40% for any single alert, and
+39.7% for the 76,694 alerts of the rule together, whose winners were a little
+larger than their losers. "Per alert" is in dollars per ounce, which is the
+result of 0.01 lot. The same $0.25 weighs more in the early years, when gold
+stood near $1,800 and the stops were closer: with the 4-hour trend the share
+needed was 44.7% in 2020 and 41.5% in 2026.
+
+In words:
+
+- Alerts that pointed with the 4-hour trend reached target 1 about two points
+  more often than those against it (41.2% against 39.0%), and did so in five
+  of the seven years. With 11,000 alerts in a group a share is known to about
+  ±0.9 points at best (alerts close together in time are not independent of
+  each other), so the difference is probably not chance.
+- It is not enough. 42.9% is needed after the spread, and the group lost money
+  in each of the seven years. The 1-hour and the 4-hour trend together give
+  41.4% against the 42.0% needed, and a loss in five of the seven years.
+- Of the groups in the table, the one above break-even is the smallest: 618
+  alerts in seven years with the trend on all four timeframes, between 63 and
+  135 a year, known to about ±3.9 points. It came out ahead in two of the
+  seven years, 2024 and 2026, and its total comes from those two (2026 alone:
+  95 alerts at +$3.21 each).
+- Splitting the alerts by structure or by volatility instead gave between
+  38.2% and 41.4% in every group of more than 1,000 alerts. One of those 32
+  groups came out above its break-even: alerts while 15-minute volatility
+  was "extreme" (41.4% of 3,145 against the 40.9% needed, +$0.095 per alert).
+  With 3,145 alerts a share is known to about ±1.7 points, and among 32
+  groups one that far above the rest is what chance alone gives. It was the
+  same group before the change of RSI and ATR, but on largely the same
+  alerts, so that is not a second confirmation. It was not looked into
+  further.
+
+So the state is shown as what it is, a description of the chart, and no
+filter, veto or score was built on it. The sentence under the heading of the
+view gives the 4-hour figures (`STATE_MEASURED` in `src/marketstate.js`;
+`tests/platform/market-state.test.mjs` keeps this table and the page equal,
+`tests/platform/state-replay.test.mjs` checks the counting of the script on
+written price paths: that a state of the replay is the state the page shows
+at that close, and that an alert is matched with nothing later than itself).
+
+To repeat the run (the price data is not in this repository; it is the gold
+archive named in the section above):
+
+```
+node scripts/state-replay.mjs --data <folder of 1-minute CSV files> --symbol XAU/USD \
+     --from 2020-01-01 --to 2027-01-01 --spread 0.25
+```
+
+Limits of the measurement: one market; a price series that is neither Deriv's
+nor Exness's; the archive's bars are on broker time until mid-2025, so its
+4-hour candles start at other hours than Deriv's, and what that does to the
+shares was not measured; one assumed spread for every alert. The thresholds
+(ADX 25 and 20, five candles, 200 candles) are the usual textbook values and
+were not tuned on this data, which also means nobody has shown that they are
+the best ones.
+
+Limits of the view: a swing high one cent above the one before it counts as a
+higher high. There is no band for "equal"; the card gives both prices, so
+that a double top can be seen for what it is. A state says nothing about the
+candle that is forming. A candle counts as finished only when the series
+holds a later one (the rule of the signal pages), so on a closed market the
+last candle before the close is left out until the market opens again, and a
+chart elsewhere shows one candle more than the card was read from. Not
+verified anywhere: the view against Deriv's live feed. The tests use written
+candles, and the pictures taken while building it used the gold archive.
+
 ### Before any deployment
 
 ```bash
@@ -725,12 +943,16 @@ succeeded.
 **What is live.** Cloudflare dashboard → Workers & Pages → `cloudflare-staging`
 → **Deployments**. "Active deployment" is the version that serves the site.
 Its row in the list below carries the commit message of the merge it was built
-from. GitHub shows it on the list of commits of `main` too: a commit that
-Cloudflare has built carries a mark, a green tick after a successful build. A
-merge commit that carries no mark at all two minutes after the merge was not
-built. (Two commits there, `1534184` and `d3fdf22`, show a red cross although
-they were published: a branch was created at each of them later, and the
-preview build of that branch failed.)
+from. GitHub shows it too: on the list of commits of `main`, select the mark
+next to a commit. Cloudflare's line in the list that opens is **Workers
+Builds: cloudflare-staging**, green after a successful build. A merge commit
+without that line two minutes after the merge was not built. The mark itself
+is not enough: it also turns green when only the repository's own tests have
+passed (the lines **Build, test, dry-run** and **PC bridge tests**, see
+[Continuous integration](#continuous-integration)). (On two commits,
+`1534184` and `d3fdf22`, Cloudflare's line is red although they were
+published: a branch was created at each of them later, and the preview build
+of that branch failed.)
 
 **The merge is not in that list.** The list shows successful builds only.
 
@@ -744,28 +966,50 @@ preview build of that branch failed.)
 4. If no build exists for the merge at all, the next commit on `main` starts
    one, and it publishes everything merged up to then.
 
-**Pushes that were never built.** Of the 26 pushes to `main` between the first
-build (9 November) and 13 November, three got no build at all: no check on the
-commit, and nothing to retry.
+**Pushes that were never built.** Of the 28 pushes to `main` between the first
+build (9 November) and 13 November, 19:20 UTC, five got no build at all: no
+check on the commit, and nothing to retry. GitHub received nothing from
+Cloudflare for them, neither the check Cloudflare posts when a build starts
+nor a failed one. Whether GitHub delivered these pushes to Cloudflare's app
+cannot be seen from the repository.
 
 | Push to `main` (UTC) | What | Published by |
 | --- | --- | --- |
 | 11 Nov, 20:00:44 | merge of #4 | the build of #5, an hour and a half later |
 | 13 Nov, 08:00:43 | files uploaded on GitHub | the build of #11, three and a half hours later |
-| 13 Nov, 18:00:09 | merge of #12 | the next push to `main` |
+| 13 Nov, 18:00:09 | merge of #12 | see below |
+| 13 Nov, 19:12:21 | merge of #14 | see below |
+| 13 Nov, 19:20:17 | merge of #13 | see below |
 
-All three were pushed in the first minute after a full hour. None of the 23
-pushes that were built was: the nearest ones came 4 and 18 seconds before an
-hour, and 3 and 5 minutes after one. The cause has not been established.
-GitHub received no check from Cloudflare for these pushes, neither the one
-Cloudflare posts when a build starts nor a failed one, and whether GitHub
-delivered the pushes to Cloudflare's app cannot be seen from the repository.
-The first of the three is from two days before the repository was renamed, so
-the rename is not needed to explain them. Until the cause is known:
+*The first two* were single pushes, each published by the next build. Both
+were pushed in the first minute after a full hour, as was the third, and none
+of the 23 pushes that were built was (the nearest ones came 4 and 18 seconds
+before an hour, and 3 and 5 minutes after one). The first is from two days
+before the repository was renamed. Whether the hour is the cause has not been
+established.
 
-- merge at five minutes past the hour or later;
-- after a merge, look for the check on the merge commit. Without one, the
-  merge is published by the next push to `main` (point 4 above).
+*The last three* are one stretch, and the hour does not explain it. On
+13 November no push started a build from 18:00 UTC on: not these three merges,
+two of them well after the hour, and not two pushes to other branches at
+19:11, which got no preview build either. The last build that a push had
+started was that of a branch at 14:03 UTC. Builds asked for with **Re-run** on
+GitHub at 18:44 UTC still ran, so Cloudflare could still reach and build the
+repository; it was pushes that no longer started anything. What had changed
+on Cloudflare's side cannot be seen from GitHub, and was not known when this
+was written.
+
+What follows from both:
+
+- After a merge, look for the check on the merge commit. Without one, the
+  merge is published by the next push to `main` that is built (point 4 above).
+- When several pushes in a row carry no check, a further merge does not help.
+  Look in the Cloudflare dashboard: **Settings** → **Builds** shows whether
+  the repository is still connected, and **Deployments** → **View Build
+  History** whether Cloudflare saw the pushes at all. Connecting the
+  repository again is described under "The repository's name" below, and
+  "Deploying staging" above publishes without the Git integration.
+- Merging at five minutes past the hour or later costs nothing, and avoids
+  the one pattern seen so far.
 
 **Pull requests get a separate preview build.** It runs Cloudflare's Preview
 command (`npx wrangler preview` by default, an open-beta Wrangler command)
@@ -926,21 +1170,25 @@ npm run build                         # then commit the changed files, including
 
 ## Continuous integration
 
-`.github/ci.yml` is the GitHub Actions workflow for this repository. It runs
-on pull requests and on pushes to `main`, and it only verifies — it never
-deploys and needs no secrets:
+`.github/workflows/ci.yml` is the GitHub Actions workflow for this repository
+(active since 13 November; until then the file lay one folder higher, where
+GitHub does not run it). It runs on pull requests and on pushes to `main`, and
+it only verifies — it never deploys and needs no secrets:
 
-- Node 22 and 24: `npm ci`, `npm audit` (reported as a warning), then
+- Node 22 and 24: `npm ci`, `npm audit --audit-level=high`, then
   `npm run verify` (build → smoke and unit tests → the Worker inside workerd →
-  `wrangler deploy --dry-run`).
+  `wrangler deploy --dry-run`). Since 13 November a high or critical advisory
+  against a dependency fails the job (before, it was a warning). A job can
+  therefore turn red on a commit that changed nothing about dependencies:
+  `npm audit` names the package, `npm audit fix` usually repairs it.
 - Python 3.11 and 3.13: a syntax check and the PC bridge unit tests
   (`python -m unittest discover -s tests -p "test_*.py"`). They use only the
   standard library; no conda environment is involved.
 
-GitHub runs a workflow only from `.github/workflows/`. If the file is still at
-`.github/ci.yml`, open it on github.com, choose **Edit**, change the file name
-to `workflows/ci.yml` (so the path becomes `.github/workflows/ci.yml`) and
-commit.
+Its marks on a commit (**Build, test, dry-run** and **PC bridge tests**) say
+that the code passed its tests. They do not say that the website was
+published: that is the separate check **Workers Builds: cloudflare-staging**
+(see "When a merge does not reach the live site").
 
 ## Environment variables and secrets
 
@@ -982,6 +1230,7 @@ src/main.js           app logic (feed wiring, scanner, trading, notifications)
 src/marketdata.js     Deriv public WS engine (reconnect + watchdog)
 src/derivhistory.js   cloud viewer: Deriv public candle history over one paced connection
 src/hostedscan.js     cloud viewer: signal scan in the browser, with one state per reading
+src/marketstate.js    Market state view: trend, structure and volatility per timeframe (a description, not a signal)
 src/tradingview.js    Advanced Chart / timeline / calendar mounts
 src/notify.js         notifications engine
 src/vault.js          AI key vault (localStorage, x-ai-* headers)

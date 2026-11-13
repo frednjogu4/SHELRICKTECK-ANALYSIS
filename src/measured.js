@@ -16,10 +16,16 @@
  * from the replay runs named in the README; they do not update by themselves.
  *
  *   close   the rule as it runs now: finished candles, one reading per
- *           5-minute close (src/closedcandles.js)
+ *           5-minute close (src/closedcandles.js), RSI and ATR with Wilder's
+ *           smoothing (server/lib/indicators.js since 13 November 2026).
+ *           Replayed again on that day, after the definitions changed: with
+ *           the former ones the same replay gave 39.6% of 82,069 on gold and
+ *           36.9% to 40.9% on the other nine. The change made about one alert
+ *           in sixteen disappear and moved no share by more than chance does.
  *   minute  the rule as it ran until November 2026, and as a PC server from
  *           before 13 November 2026 still runs it: a look every minute, forming
- *           candles included. Such a reading names no 5-minute close.
+ *           candles included, the former RSI and ATR. Such a reading names no
+ *           5-minute close.
  *
  * No DOM, no network.
  * ================================================================ */
@@ -36,16 +42,16 @@ const figure = (percent, alerts, perDay) => Object.freeze({ percent, alerts, per
  * perDay   alerts per weekday
  */
 export const MEASURED = Object.freeze({
-  'XAU/USD': Object.freeze({ name: 'gold', span: 'Jan 2020 \u2013 Nov 2026', close: figure(39.6, 82069, 46), minute: figure(39.8, 177715, 100) }),
-  'EUR/USD': Object.freeze({ name: 'EUR/USD', span: SIX_MONTHS, close: figure(40.2, 6453, 49), minute: figure(39.9, 13990, 106) }),
-  'GBP/USD': Object.freeze({ name: 'GBP/USD', span: SIX_MONTHS, close: figure(36.9, 6444, 49), minute: figure(36.8, 13876, 105) }),
-  'AUD/USD': Object.freeze({ name: 'AUD/USD', span: SIX_MONTHS, close: figure(39.3, 6560, 50), minute: figure(39.4, 13968, 106) }),
-  'USD/JPY': Object.freeze({ name: 'USD/JPY', span: SIX_MONTHS, close: figure(40.5, 6272, 48), minute: figure(40.1, 13703, 104) }),
-  'USD/CHF': Object.freeze({ name: 'USD/CHF', span: SIX_MONTHS, close: figure(38.6, 6273, 48), minute: figure(38.7, 13523, 102) }),
-  'USD/CAD': Object.freeze({ name: 'USD/CAD', span: SIX_MONTHS, close: figure(40.9, 6364, 48), minute: figure(41.2, 13887, 105) }),
-  US30: Object.freeze({ name: 'US30', span: SIX_MONTHS, close: figure(39.7, 6087, 46), minute: figure(39.9, 13055, 99) }),
-  NAS100: Object.freeze({ name: 'NAS100', span: SIX_MONTHS, close: figure(40.7, 5827, 44), minute: figure(41.4, 12536, 95) }),
-  SPX500: Object.freeze({ name: 'SPX500', span: SIX_MONTHS, close: figure(40.7, 5952, 45), minute: figure(40.3, 12923, 98) })
+  'XAU/USD': Object.freeze({ name: 'gold', span: 'Jan 2020 \u2013 Nov 2026', close: figure(39.6, 76694, 43), minute: figure(39.8, 177715, 100) }),
+  'EUR/USD': Object.freeze({ name: 'EUR/USD', span: SIX_MONTHS, close: figure(39.9, 6114, 46), minute: figure(39.9, 13990, 106) }),
+  'GBP/USD': Object.freeze({ name: 'GBP/USD', span: SIX_MONTHS, close: figure(36.9, 5991, 45), minute: figure(36.8, 13876, 105) }),
+  'AUD/USD': Object.freeze({ name: 'AUD/USD', span: SIX_MONTHS, close: figure(39.4, 6143, 47), minute: figure(39.4, 13968, 106) }),
+  'USD/JPY': Object.freeze({ name: 'USD/JPY', span: SIX_MONTHS, close: figure(41.1, 5919, 45), minute: figure(40.1, 13703, 104) }),
+  'USD/CHF': Object.freeze({ name: 'USD/CHF', span: SIX_MONTHS, close: figure(38.9, 5807, 44), minute: figure(38.7, 13523, 102) }),
+  'USD/CAD': Object.freeze({ name: 'USD/CAD', span: SIX_MONTHS, close: figure(40.4, 5996, 45), minute: figure(41.2, 13887, 105) }),
+  US30: Object.freeze({ name: 'US30', span: SIX_MONTHS, close: figure(41.2, 5723, 43), minute: figure(39.9, 13055, 99) }),
+  NAS100: Object.freeze({ name: 'NAS100', span: SIX_MONTHS, close: figure(41.0, 5369, 41), minute: figure(41.4, 12536, 95) }),
+  SPX500: Object.freeze({ name: 'SPX500', span: SIX_MONTHS, close: figure(39.6, 5585, 42), minute: figure(40.3, 12923, 98) })
 });
 
 const hasLevels = (reading) => Number(reading && reading.entry) > 0 && Number(reading && reading.stop_loss) > 0 && Number(reading && reading.tp1) > 0;

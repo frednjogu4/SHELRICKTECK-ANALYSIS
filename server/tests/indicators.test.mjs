@@ -47,6 +47,16 @@ test('RSI on a strictly falling series is 0 (no gains)', () => {
   assert.equal(val, 0);
 });
 
+test('RSI on equal up/down deltas is 50 at the first average and stays near 50, leaning to the last change', () => {
+  /* 15 closes give 14 changes, seven up and seven down: the two first averages are equal. */
+  assert.equal(rsi(alternating(15), 14), 50);
+  /* Wilder smoothing gives each newer change a weight of 1/14, so the value leans to the side of the newest one.
+     (With the simple average of the last 14 changes, as coded until 13 November 2026, this was exactly 50.) */
+  const lastUp = rsi(alternating(30), 14), lastDown = rsi(alternating(31), 14);
+  assert.ok(Math.abs(lastUp - 52.46115860223) < 1e-9, String(lastUp));
+  assert.ok(Math.abs(lastDown - 48.713932987785) < 1e-9, String(lastDown));
+});
+
 test('Wilder RSI on alternating gains and losses matches its recursive average', () => {
   assert.ok(Math.abs(rsi(alternating(30), 14) - 52.461158602229915) < 1e-10);
 });

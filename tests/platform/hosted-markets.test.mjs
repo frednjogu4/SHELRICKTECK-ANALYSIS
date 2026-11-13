@@ -37,6 +37,7 @@ import { closedCandleSets } from '../../src/closedcandles.js';
 import { CALENDAR_URL, HEADLINE_SOURCES } from '../../cloudflare/news.js';
 import { createApp, configFromEnv } from '../../server/app.js';
 import { createStore } from '../../server/lib/store.js';
+import { STATE_TIMEFRAMES, STATE_CANDLES, STATE_MEASURED_TEXT, eatMoment } from '../../src/marketstate.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
@@ -93,9 +94,10 @@ before(async () => {
  * server/app.js, whose candle feed is the one of `world` (cloudDeriv 'down'
  * makes it fail). What that server fetches itself is answered here as well:
  * Yahoo's daily series with the fixture the Worker gets, every other address
- * (the news sources) as offline.
+ * (the news sources) as offline. That server answers any number of requests a
+ * minute here; `pcConfig` sets its configuration back for a test about its limits.
  */
-async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcServer = false, bridgeApi = null } = {}) {
+async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcServer = false, pcConfig = null, bridgeApi = null } = {}) {
   const state = { browserDeriv: 'ok', cloudDeriv: 'ok', yahoo: 'ok', candleAgeSec: 0, ticks: false, yahooBars: {}, rewriteScan: null, scanTakesMs: 0, scanGate: null, candleRows: null, ...world };
   const problems = [];
   const warnings = [];
@@ -146,7 +148,7 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcSer
   let stopPcServer = async () => {};
   if (pcServer) {
     const folder = mkdtempSync(join(tmpdir(), 'aurum-pc-app-'));
-    const config = Object.assign(configFromEnv({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', PERPLEXITY_API_KEY: '' }), { apiKey: '', backtestRatePerMin: 100000 });
+    const config = Object.assign(configFromEnv({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', PERPLEXITY_API_KEY: '' }), { apiKey: '', backtestRatePerMin: 100000 }, pcConfig || {});
     const notInThisTest = async () => { throw new Error('not part of this test'); };
     const feed = {
       symbols: Object.fromEntries(DERIV_INSTRUMENTS.map((instrument) => [instrument.s, instrument.deriv])),
@@ -1237,9 +1239,9 @@ const NO_LEVELS = 'Daily index reading from daily closing prices: it has no entr
 /* What the replay measured (src/measured.js). A reading written by these tests names no 5-minute close, the way a PC server
    from before 13 Nov 2026 answers, which looked every minute: "minute". A reading that names its close, made in the page or
    by the PC's server as it is now, has the figure of the 5-minute rule: "close". */
-const EUR_MEASURED_CLOSE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 40.2% of 6,453 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const EUR_MEASURED_CLOSE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 39.9% of 6,114 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const GOLD_MEASURED_MINUTE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.8% of 177,715 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
-const GOLD_MEASURED_CLOSE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 82,069 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const GOLD_MEASURED_CLOSE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 76,694 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const EUR_MEASURED_MINUTE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 39.9% of 13,990 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const CLOCK = '\\d\\d:\\d\\d:\\d\\d';
 
@@ -1879,12 +1881,15 @@ function directionalMarket() {
 }
 
 /* The page's clock in seconds, and a way to move it. `settle()` leaves room for two looks inside one 5-minute candle
-   and returns the close that candle began with. */
+   and returns the close that candle began with. It also moves the clock out of the first twenty seconds of a candle:
+   a test that says "two seconds ago" means a moment inside the candle it stands in. Without that, three tests
+   about a market that has just resumed failed when they ran within two seconds after a 5-minute close (their
+   pause then ended in the candle before, which is a different market: one whose first candle has closed). */
 function pageClock(app) {
   let shift = 0;
   const now = () => Date.now() / 1000 + shift;
   const advance = (seconds) => { shift += seconds; app.advanceClock(seconds * 1000); };
-  const settle = () => { if (now() % 300 > 180) advance(320 - (now() % 300)); return Math.floor(now() / 300) * 300; };
+  const settle = () => { const into = now() % 300; if (into > 180) advance(320 - into); else if (into < 20) advance(20 - into); return Math.floor(now() / 300) * 300; };
   return { now, advance, settle };
 }
 const hhmm = (seconds) => new Date(seconds * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
@@ -2387,10 +2392,15 @@ test('the PC app keeps its keyword chip and its order button where its server se
     if (path === '/api/news/calendar') return { status: 200, body: { day: pcDay, source: 'test calendar', events: [{ time_utc: new Date(pcRelease).toISOString().slice(11, 16), country: 'USD', event: 'Fixture PC release', impact: 'High', forecast: '', previous: '' }] } };
     return liveScanApi(path, body);
   };
-  /* The PC server sends the entries of the UTC day with a clock time and no moment: a release 40 minutes ahead, or 20 minutes ago when that would be tomorrow. */
+  /* The PC server sends the entries of the UTC day with a clock time and no moment: a release 40 minutes ahead, or 20 minutes ago
+     when that would be tomorrow. Tomorrow on either calendar: the server's day ends at 24:00 UTC, the page's (Nairobi) at 21:00 UTC,
+     and a release after the page's midnight is not under "upcoming today". (Until 13 November 2026 only the UTC day was looked at,
+     and this test failed when run between 20:20 and 21:00 UTC.) */
   const started = Date.now();
-  const pcDay = new Date(started).toISOString().slice(0, 10);
-  const pcRelease = Math.floor((new Date(started + 40 * 60000).toISOString().slice(0, 10) === pcDay ? started + 40 * 60000 : started - 20 * 60000) / 60000) * 60000;
+  const dayUtc = (ms) => new Date(ms).toISOString().slice(0, 10), dayNairobi = (ms) => dayUtc(ms + 3 * 3600000);
+  const pcDay = dayUtc(started);
+  const ahead = started + 40 * 60000;
+  const pcRelease = Math.floor((dayUtc(ahead) === pcDay && dayNairobi(ahead) === dayNairobi(started) ? ahead : started - 20 * 60000) / 60000) * 60000;
   const app = await bootApp({ origin: PC_ORIGIN, pcApi });
   try {
     await app.enter();
@@ -2974,4 +2984,392 @@ test('the same candles at the same moment: the PC app (Exness not connected) and
     assert.deepEqual(website.problems, []);
     assert.deepEqual(pc.problems, []);
   } finally { await website.close(); await pc.close(); }
+});
+
+/* ---------------------------------------------------------------- Market state: a description on four timeframes */
+
+/* A market that swings. Its price is a function of time (three waves), so a candle keeps its content whenever
+   it is asked for and the four timeframes are views of one market. `frozenAt` makes it a closed market: its
+   newest candle stays the one of that moment, however far the page's clock moves on. */
+function swingingMarket({ frozenAt = 0, without = [] } = {}) {
+  const anchor = nowSec();
+  const priceAt = (base, t) => { const x = (t - anchor) / 60; return base * (1 + 0.004 * Math.sin(x / 190) + 0.0015 * Math.sin(x / 23) + 0.0006 * Math.sin(x / 3.1)); };
+  return (code, granularity, count, now) => {
+    if (without.includes(granularity)) return [];
+    const end = frozenAt || now, base = basePriceFor(code), newest = Math.floor(end / granularity) * granularity;
+    return Array.from({ length: count }, (_unused, i) => {
+      const start = newest - (count - 1 - i) * granularity, stop = Math.min(start + granularity, end);
+      let high = -Infinity, low = Infinity;
+      for (let k = 0; k <= 6; k++) { const price = priceAt(base, start + ((stop - start) * k) / 6); if (price > high) high = price; if (price < low) low = price; }
+      return { epoch: start, open: priceAt(base, start), high, low, close: priceAt(base, stop) };
+    });
+  };
+}
+const STATE_SHOWN = [...STATE_TIMEFRAMES].reverse();
+/* What the Market state view shows, card by card. */
+function stateView(app) {
+  const doc = app.doc;
+  const cards = [...doc.querySelectorAll('#msGrid .ms-card')];
+  return {
+    market: doc.getElementById('msSym').value,
+    summary: doc.getElementById('msSummary').textContent,
+    feed: doc.getElementById('msFeedText').textContent,
+    note: doc.getElementById('msNote').textContent,
+    noteWarns: doc.getElementById('msNote').classList.contains('warn'),
+    cards: cards.map((card) => ({
+      timeframe: card.dataset.msTf, state: card.dataset.msState,
+      trend: card.dataset.msTrend || '', structure: card.dataset.msStructure || '', volatility: card.dataset.msVolatility || '',
+      asOf: card.querySelector('.ms-asof') ? card.querySelector('.ms-asof').textContent : '',
+      rows: [...card.querySelectorAll('.ms-row dt')].map((el) => el.textContent),
+      badges: [...card.querySelectorAll('.ms-row .badge')].map((el) => el.textContent),
+      sketch: card.querySelector('svg.ms-sketch'),
+      text: card.textContent
+    }))
+  };
+}
+/* A close of yesterday carries its date ("as of 13 Nov 23:55 EAT"), one of today does not. Without the date, for
+   comparing what a card says before and after the page's clock has moved on: midnight in Nairobi may lie between. */
+const withoutDate = (asOf) => asOf.replace(/^as of \d{1,2} [A-Z][a-z]{2} /, 'as of ');
+const stateSettled = (app) => { const view = stateView(app); return view.cards.length === 4 && view.cards.every((card) => card.state === 'ok' || card.state === 'unavailable') && view.feed !== 'Reading\u2026'; };
+/* Candle requests of the Market state view on the browser's connection to Deriv: [market code, candle width], in the order sent. */
+const stateRequests = (app) => app.sockets.flatMap((socket) => socket.sent).filter((message) => message.style === 'candles' && message.count === STATE_CANDLES).map((message) => [message.ticks_history, message.granularity]);
+const historyCalls = (app) => app.requests.filter((request) => request.path === '/api/history/candles');
+const codeOf = (symbol) => DERIV_INSTRUMENTS.find((instrument) => instrument.s === symbol).deriv;
+
+test('Market state on the website: four timeframes of one market, read by this browser from finished candles', async () => {
+  const app = await bootApp({ world: { candleRows: swingingMarket() } });
+  try {
+    const clock = pageClock(app);
+    clock.settle();
+    await app.enter();
+    const chartMarket = app.doc.getElementById('chartSymbol').value;
+    assert.ok(DERIV_SYMBOLS.includes(chartMarket), 'the chart opens on a market with candles');
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read');
+    const now = clock.now(), view = stateView(app);
+
+    assert.equal(view.market, chartMarket, 'the first visit shows the market of the chart');
+    assert.equal(app.doc.getElementById('topTitle').textContent, 'Market state');
+    assert.deepEqual(view.cards.map((card) => card.timeframe), ['h4', 'h1', 'm15', 'm5'], 'the larger picture first');
+    for (const [index, timeframe] of STATE_SHOWN.entries()) {
+      const card = view.cards[index];
+      assert.equal(card.state, 'ok', timeframe.label);
+      /* The newest candle may still be forming: the state is as of the close before it. */
+      const close = Math.floor(now / timeframe.seconds) * timeframe.seconds;
+      assert.equal(card.asOf, 'as of ' + eatMoment(close, now) + ' EAT \u00b7 ' + (STATE_CANDLES - 1) + ' finished candles', timeframe.label);
+      assert.deepEqual(card.rows, ['Trend', 'Structure', 'Volatility'], timeframe.label);
+      assert.equal(card.badges.length, 3, timeframe.label + ': one state per line');
+      assert.match(card.trend, /^(UP|DOWN|RANGE|UNCLEAR)$/);
+      assert.match(card.structure, /^(UP|DOWN|WIDENING|NARROWING|MIXED|UNKNOWN)$/);
+      assert.match(card.volatility, /^(QUIET|NORMAL|HIGH|EXTREME)$/);
+      assert.match(card.text, /EMA 20 [\d.,]+ \u00b7 EMA 50 [\d.,]+ \u00b7 EMA 200 [\d.,]+ \u00b7 close [\d.,]+: /, timeframe.label + ': the trend comes with its figures');
+      assert.match(card.text, /ADX 14 \d+\.\d: (25 or more|below 20|between 20 and 25)\./);
+      assert.match(card.text, /ATR 14 [\d.,]+ \(\d+\.\d\d% of the price\): higher than in \d+% of the 200 candles before it/);
+      assert.ok(card.text.includes('Deriv public candles, read by this browser'), timeframe.label + ': says where its candles came from');
+      assert.equal(card.sketch.getAttribute('role'), 'img');
+      assert.match(card.sketch.getAttribute('aria-label'), new RegExp('^' + timeframe.label + ': the last \\d+ finished candles with EMA 50, EMA 200 and the swing highs and lows$'));
+      assert.ok(card.sketch.querySelectorAll('circle.ms-swing').length >= 4, timeframe.label + ': the swings are drawn');
+    }
+    assert.ok(view.summary.startsWith(chartMarket + ' \u00b7 '), 'the summary names the market: ' + view.summary);
+    assert.match(view.feed, /^Feed current \u00b7 read \d\d:\d\d EAT$/);
+    assert.match(view.note, /^The newest M5 candle started \d+ (s|min) ago\. Each state is as of the close named on its card and changes at most once per candle of its timeframe\.$/);
+    assert.equal(view.noteWarns, false);
+
+    /* Read by this browser: four series of 600 candles for this market, and the AURUM cloud is not asked. */
+    assert.deepEqual(stateRequests(app).sort(), STATE_TIMEFRAMES.map((timeframe) => [codeOf(chartMarket), timeframe.seconds]).sort());
+    assert.equal(historyCalls(app).length, 0);
+
+    /* A description, not a signal: no direction to trade, no order button, and what a replay measured about it. */
+    const section = app.doc.getElementById('view-state');
+    assert.equal(section.querySelectorAll('.badge.buy, .badge.sell, .badge.lean-up, .badge.lean-dn, .badge.wait').length, 0);
+    assert.deepEqual([...section.querySelectorAll('button')].map((button) => button.textContent), ['Read again']);
+    assert.ok(app.visibleText(section).includes('It is a description, not a signal:'));
+    assert.equal(app.doc.getElementById('msMeasured').textContent, STATE_MEASURED_TEXT);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Market state: a state changes at most once per candle of its timeframe, and only what may have changed is read again', async () => {
+  const app = await bootApp({ world: { candleRows: swingingMarket() } });
+  try {
+    const clock = pageClock(app);
+    clock.settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read');
+    const market = stateView(app).market, before = clock.now();
+    const perWidth = () => Object.fromEntries(STATE_TIMEFRAMES.map((timeframe) => [timeframe.label, stateRequests(app).filter(([, width]) => width === timeframe.seconds).length]));
+    const first = stateView(app), sentFirst = perWidth();
+    assert.deepEqual(sentFirst, { M5: 1, M15: 1, H1: 1, H4: 1 });
+
+    /* The clock of the page keeps running; before the next 5-minute close nothing is read and no state changes.
+       Only the age of the newest candle is said anew, every second. */
+    const ageOf = (note) => { const [, count, unit] = /^The newest M5 candle started (\d+) (s|min) ago\./.exec(note); return Number(count) * (unit === 'min' ? 60 : 1); };
+    const ageBefore = ageOf(first.note);
+    clock.advance(60);
+    app.runIntervals(1000);
+    await new Promise((r) => setTimeout(r, 60));
+    assert.deepEqual(perWidth(), sentFirst);
+    assert.deepEqual(stateView(app).cards.map((card) => card.asOf), first.cards.map((card) => card.asOf));
+    assert.ok(ageOf(stateView(app).note) >= ageBefore + 30, 'the note follows the clock: ' + first.note + ' -> ' + stateView(app).note);
+    assert.match(stateView(app).feed, /^Feed current \u00b7 read \d\d:\d\d EAT$/);
+
+    /* A few seconds after the close: the 5-minute series is read again, and a longer one only if its own candle closed too. */
+    const close = (Math.floor(clock.now() / 300) + 1) * 300;
+    clock.advance(close + 8 - clock.now());
+    app.runIntervals(1000);
+    await app.waitFor(() => perWidth().M5 === 2 && stateSettled(app), 'the look after the 5-minute close');
+    const after = clock.now(), sentAfter = perWidth();
+    for (const timeframe of STATE_TIMEFRAMES) {
+      const closed = Math.floor(after / timeframe.seconds) > Math.floor(before / timeframe.seconds);
+      assert.equal(sentAfter[timeframe.label] - sentFirst[timeframe.label], closed ? 1 : 0, timeframe.label + (closed ? ': its candle closed, it is read again' : ': no candle of it closed, it is left alone'));
+      const card = stateView(app).cards.find((entry) => entry.timeframe === timeframe.key);
+      assert.equal(card.asOf, 'as of ' + eatMoment(Math.floor(after / timeframe.seconds) * timeframe.seconds, after) + ' EAT \u00b7 ' + (STATE_CANDLES - 1) + ' finished candles', timeframe.label);
+    }
+    assert.equal(stateView(app).market, market);
+
+    /* One more close, five minutes on. By now every copy of a series that the page kept has run out, so a
+       request is sent for each series it reads: again the 5-minute one, and a longer one only after its own close. */
+    clock.advance(300);
+    app.runIntervals(1000);
+    await app.waitFor(() => perWidth().M5 === 3 && stateSettled(app), 'the look after the second 5-minute close');
+    const later = clock.now(), sentLater = perWidth();
+    for (const timeframe of STATE_TIMEFRAMES) {
+      const closed = Math.floor(later / timeframe.seconds) > Math.floor(after / timeframe.seconds);
+      assert.equal(sentLater[timeframe.label] - sentAfter[timeframe.label], closed ? 1 : 0, timeframe.label + ' at the second close');
+    }
+    assert.ok(sentLater.H4 <= 2 && sentLater.H1 <= 2, 'in ten minutes at most one 1-hour and one 4-hour candle can have closed');
+
+    /* Another market: its four series are read, and the states of the first one are gone while they are. */
+    const other = DERIV_SYMBOLS.find((symbol) => symbol !== market);
+    const select = app.doc.getElementById('msSym');
+    select.value = other;
+    select.dispatchEvent(new app.window.Event('change'));
+    assert.equal(stateView(app).cards.filter((card) => card.state === 'ok').length, 0, 'no state of the market before stays on screen');
+    assert.equal(stateView(app).summary, 'Reading ' + other + '\u2026');
+    await app.waitFor(() => stateSettled(app), 'the other market read');
+    assert.ok(stateView(app).summary.startsWith(other + ' \u00b7 '));
+    assert.deepEqual(stateRequests(app).filter(([code]) => code === codeOf(other)).map(([, width]) => width).sort((a, b) => a - b), STATE_TIMEFRAMES.map((timeframe) => timeframe.seconds));
+    assert.equal(historyCalls(app).length, 0);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Market state: a timeframe that cannot be read has no state, and nothing is said about the whole', async () => {
+  const app = await bootApp({ world: { candleRows: swingingMarket({ without: [14400] }) } });
+  try {
+    pageClock(app).settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'three timeframes read, one refused');
+    const view = stateView(app), h4 = view.cards[0];
+    assert.equal(h4.timeframe, 'h4');
+    assert.equal(h4.state, 'unavailable');
+    assert.match(h4.text, /^H44 hoursNo stateThe candles could not be read\. \(.+\) Nothing is estimated\.$/);
+    assert.equal(h4.sketch, null);
+    assert.deepEqual(h4.badges, []);
+    assert.deepEqual(view.cards.slice(1).map((card) => card.state), ['ok', 'ok', 'ok']);
+    assert.equal(view.summary, view.market + ' \u00b7 No summary: H4 has no state.');
+    /* This browser got nothing for that series, so the AURUM cloud was asked for it, and for it alone. */
+    assert.deepEqual(historyCalls(app).map((request) => [request.body.sym, request.body.granularity, request.body.count]), [[view.market, 14400, STATE_CANDLES]]);
+    assert.deepEqual(app.problems.filter((line) => !/Failed to load resource|502/.test(line)), []);
+  } finally { await app.close(); }
+});
+
+test('Market state on a closed market: every state is the one at its last close, the page says so, and only the 5-minute series is asked again', async () => {
+  const frozenAt = nowSec() - 2 * 86400 - 1234;
+  const app = await bootApp({ world: { candleRows: swingingMarket({ frozenAt }) } });
+  try {
+    const clock = pageClock(app);
+    clock.settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read');
+    const now = clock.now(), view = stateView(app);
+    assert.equal(view.feed, 'Market closed or feed paused');
+    assert.equal(view.noteWarns, true);
+    assert.equal(view.note, 'The newest M5 candle of ' + view.market + ' started 2 days ago, so the market is closed or the feed has paused. Each state below is as of the close named on its card, not the state now.');
+    for (const [index, timeframe] of STATE_SHOWN.entries()) {
+      assert.equal(view.cards[index].state, 'ok');
+      const close = Math.floor(frozenAt / timeframe.seconds) * timeframe.seconds;
+      assert.equal(view.cards[index].asOf, 'as of ' + eatMoment(close, now) + ' EAT \u00b7 ' + (STATE_CANDLES - 1) + ' finished candles', timeframe.label + ': the close before the market shut, with its date');
+      assert.match(view.cards[index].asOf, /^as of \d{1,2} [A-Z][a-z]{2} \d\d:\d\d EAT/);
+    }
+    /* The next 5-minute close on the page's clock: the feed is asked whether it has moved, with one request. */
+    const sent = () => stateRequests(app).map(([, width]) => width);
+    assert.deepEqual(sent().sort((a, b) => a - b), STATE_TIMEFRAMES.map((timeframe) => timeframe.seconds));
+    clock.advance((Math.floor(clock.now() / 300) + 1) * 300 + 8 - clock.now());
+    app.runIntervals(1000);
+    await app.waitFor(() => sent().length === 5 && stateSettled(app), 'the look after the 5-minute close');
+    assert.deepEqual(sent().slice(4), [300], 'the newest 5-minute candle has not moved: the longer series are not read again');
+    /* And at the close after that, when every copy the page kept has run out: still one request. */
+    clock.advance(300);
+    app.runIntervals(1000);
+    await app.waitFor(() => sent().length >= 6 && stateSettled(app), 'the look after the second 5-minute close');
+    assert.deepEqual(sent().slice(4), [300, 300]);
+    assert.equal(stateView(app).feed, 'Market closed or feed paused');
+    assert.deepEqual(stateView(app).cards.map((card) => withoutDate(card.asOf)), view.cards.map((card) => withoutDate(card.asOf)), 'the states are still the ones of the last close');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Market state in the PC app: the same view, with the candles read through the PC\'s own server', async () => {
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { candleRows: swingingMarket() } });
+  try {
+    const clock = pageClock(app);
+    clock.settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read');
+    const now = clock.now(), view = stateView(app);
+    assert.deepEqual(view.cards.map((card) => [card.timeframe, card.state]), [['h4', 'ok'], ['h1', 'ok'], ['m15', 'ok'], ['m5', 'ok']]);
+    for (const [index, timeframe] of STATE_SHOWN.entries()) {
+      assert.equal(view.cards[index].asOf, 'as of ' + eatMoment(Math.floor(now / timeframe.seconds) * timeframe.seconds, now) + ' EAT \u00b7 ' + (STATE_CANDLES - 1) + ' finished candles', timeframe.label);
+      assert.ok(view.cards[index].text.includes('Deriv public candles, read through the AURUM API'), timeframe.label);
+    }
+    assert.deepEqual(historyCalls(app).map((request) => [request.body.sym, request.body.granularity, request.body.count, request.status]).sort((a, b) => a[1] - b[1]),
+      STATE_TIMEFRAMES.map((timeframe) => [view.market, timeframe.seconds, STATE_CANDLES, 200]));
+    assert.deepEqual(stateRequests(app), [], 'the PC app does not open its own candle connection for this view');
+    assert.match(view.feed, /^Feed current \u00b7 read \d\d:\d\d EAT$/);
+
+    /* After the next 5-minute close the PC is asked for the 5-minute series, and for nothing else until that
+       series shows the new candle. (The PC's server keeps a copy of a series for a minute of its own clock, which
+       this test does not move: what it answers here is the copy, whose newest candle is the one that has just closed.) */
+    clock.advance((Math.floor(clock.now() / 300) + 1) * 300 + 8 - clock.now());
+    app.runIntervals(1000);
+    await app.waitFor(() => historyCalls(app).length > STATE_TIMEFRAMES.length && stateSettled(app), 'the look after the 5-minute close');
+    assert.deepEqual(historyCalls(app).slice(STATE_TIMEFRAMES.length).map((request) => [request.body.sym, request.body.granularity, request.status]), [[view.market, 300, 200]]);
+    assert.deepEqual(stateView(app).cards.map((card) => card.state), ['ok', 'ok', 'ok', 'ok']);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Market state offers the markets that have intraday candles here; with an index on the chart it opens on gold', async () => {
+  const app = await bootApp({ world: { candleRows: swingingMarket() } });
+  try {
+    pageClock(app).settle();
+    await app.enter();
+    const chart = app.doc.getElementById('chartSymbol');
+    chart.value = INDEX_SYMBOLS[0];
+    chart.dispatchEvent(new app.window.Event('change'));
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read');
+    const offered = [...app.doc.querySelectorAll('#msSym option')].map((option) => option.value);
+    assert.deepEqual(offered, DERIV_SYMBOLS);
+    for (const symbol of INDEX_SYMBOLS) assert.ok(!offered.includes(symbol), symbol + ' is not offered');
+    assert.equal(stateView(app).market, 'XAU/USD');
+    assert.ok(stateView(app).summary.startsWith('XAU/USD \u00b7 '));
+    assert.ok(app.visibleText(app.doc.getElementById('view-state')).includes('Index markets are not offered here: this app has no intraday candles for them.'));
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Market state: when the feed has not shown the candle after a close yet, the view asks again within the minute, not at the next close', async () => {
+  const app = await bootApp({ world: { candleRows: swingingMarket() } });
+  try {
+    const clock = pageClock(app);
+    clock.settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read');
+    const m5 = () => stateView(app).cards.find((card) => card.timeframe === 'm5');
+    const asOf = (close) => 'as of ' + eatMoment(close, clock.now()) + ' EAT \u00b7 ' + (STATE_CANDLES - 1) + ' finished candles';
+    const close = (Math.floor(clock.now() / 300) + 1) * 300;
+    assert.equal(m5().asOf, asOf(close - 300));
+
+    /* Eight seconds after the close the feed is twenty seconds behind: its newest candle is still the one that has just closed. */
+    app.state.candleAgeSec = 20;
+    clock.advance(close + 8 - clock.now());
+    const sentBefore = stateRequests(app).length;
+    app.runIntervals(1000);
+    await app.waitFor(() => stateRequests(app).length > sentBefore && stateSettled(app), 'the look after the close');
+    assert.equal(m5().asOf, asOf(close - 300), 'nothing newer has been shown, so the state is still the one of the close before');
+    assert.match(stateView(app).feed, /^Feed current/);
+
+    /* The feed catches up. The view does not wait five minutes for it: it looks again every half minute until the candle is there. */
+    app.state.candleAgeSec = 0;
+    let looks = 0;
+    while (m5().asOf !== asOf(close) && looks < 4) {
+      looks++;
+      clock.advance(31);
+      app.runIntervals(1000);
+      await new Promise((r) => setTimeout(r, 120));
+      await app.waitFor(() => stateSettled(app), 'the next look');
+    }
+    assert.equal(m5().asOf, asOf(close), 'the state of the close that had just happened');
+    assert.ok(looks <= 3, 'within about a minute and a half, took ' + looks + ' looks');
+    assert.ok(clock.now() < close + 150, 'long before the next 5-minute close');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Market state: when a later look fails, the states read before stay, marked as such, and the feed is not called current', async () => {
+  const app = await bootApp({ world: { candleRows: swingingMarket() } });
+  try {
+    const clock = pageClock(app);
+    clock.settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read');
+    const first = stateView(app);
+    assert.match(first.feed, /^Feed current/);
+
+    /* Neither this browser nor the AURUM cloud reaches Deriv any more; seven minutes later every copy the page kept has run out. */
+    app.state.browserDeriv = 'down';
+    app.state.cloudDeriv = 'down';
+    clock.advance(420);
+    app.click(app.doc.getElementById('msBtn'));
+    await app.waitFor(() => stateView(app).cards.every((card) => /last look failed/.test(card.asOf)) && stateSettled(app), 'the failed look');
+    const after = stateView(app);
+    assert.deepEqual(after.cards.map((card) => [card.timeframe, card.state, card.trend, card.structure, card.volatility]), first.cards.map((card) => [card.timeframe, card.state, card.trend, card.structure, card.volatility]), 'every state is the one read before');
+    for (const [index, card] of after.cards.entries()) assert.equal(withoutDate(card.asOf), withoutDate(first.cards[index].asOf) + ' \u00b7 last look failed');
+    assert.match(after.feed, /^Last look failed \u00b7 read \d\d:\d\d EAT$/);
+    /* Seven minutes on, the newest candle read is old. That is said with its age; that the market is closed is not
+       concluded from it, because the look that would have shown a newer candle is the one that failed. */
+    assert.match(after.note, /^The newest M5 candle that was read started \d+ min ago\. The last look failed for H4, H1, M15, M5: the state shown there is the one read before, as of the close named on its card\.$/);
+    assert.doesNotMatch(after.note, /closed|paused/);
+    assert.equal(after.summary, first.summary, 'the summary is the one of the states on screen');
+
+    /* The feed is back: the next look after a 5-minute close reads all four again, and the mark is gone. */
+    app.state.browserDeriv = 'ok';
+    app.state.cloudDeriv = 'ok';
+    clock.advance((Math.floor(clock.now() / 300) + 1) * 300 + 8 - clock.now());
+    app.runIntervals(1000);
+    await app.waitFor(() => stateView(app).cards.every((card) => card.state === 'ok' && !/last look failed/.test(card.asOf)) && /^Feed current/.test(stateView(app).feed), 'the look after the feed came back');
+    assert.doesNotMatch(stateView(app).note, /failed/);
+  } finally { await app.close(); }
+});
+
+test('Market state in the PC app: a fourth full look within one minute is refused by the PC\'s server, and the cards say why in words', async () => {
+  /* The limit the PC's server has when nothing is configured: twelve candle requests a minute. */
+  const perMinute = configFromEnv({}).backtestRatePerMin;
+  assert.equal(perMinute, 12);
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, pcConfig: { backtestRatePerMin: perMinute }, world: { candleRows: swingingMarket() } });
+  try {
+    pageClock(app).settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read');
+    const select = app.doc.getElementById('msSym');
+    const choose = async (symbol) => {
+      select.value = symbol;
+      select.dispatchEvent(new app.window.Event('change'));
+      await app.waitFor(() => stateSettled(app) && stateView(app).market === symbol && !/^Reading/.test(stateView(app).summary), symbol + ' read');
+    };
+    const others = DERIV_SYMBOLS.filter((symbol) => symbol !== stateView(app).market);
+    /* Three full looks are twelve requests: all answered. */
+    await choose(others[0]);
+    await choose(others[1]);
+    assert.deepEqual(stateView(app).cards.map((card) => card.state), ['ok', 'ok', 'ok', 'ok']);
+    assert.deepEqual(historyCalls(app).map((request) => request.status), Array(12).fill(200));
+    /* The fourth is refused. No state of the market before is shown in its place, and nothing is estimated. */
+    await choose(others[2]);
+    assert.deepEqual(historyCalls(app).slice(12).map((request) => request.status), [429, 429, 429, 429]);
+    const refused = stateView(app);
+    assert.deepEqual(refused.cards.map((card) => card.state), ['unavailable', 'unavailable', 'unavailable', 'unavailable']);
+    for (const card of refused.cards) assert.ok(card.text.endsWith('No stateThe candles could not be read. (too many candle requests within one minute; it is read again after the next 5-minute close) Nothing is estimated.'), card.text);
+    assert.equal(refused.summary, others[2] + ' \u00b7 No summary: H4, H1, M15 and M5 have no state.');
+    assert.equal(refused.feed, 'No candles');
+    assert.deepEqual(app.problems.filter((line) => !/Failed to load resource|429/.test(line)), []);
+  } finally { await app.close(); }
 });

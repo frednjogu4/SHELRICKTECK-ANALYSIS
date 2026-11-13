@@ -343,6 +343,52 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 .section-gap{margin-top:16px}
 .toolbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:16px}
 .toolbar .input{width:auto; min-width:200px; flex:1; max-width:340px}
+/* ============ Market state view ============ */
+.ms-about{border-left:3px solid var(--brand); margin-bottom:14px}
+.ms-lede{font-size:12.5px; color:var(--text-2); margin-top:4px; line-height:1.6}
+.ms-lede b{color:var(--text)}
+.ms-head{margin-bottom:14px}
+.ms-controls{gap:10px; align-items:flex-end}
+.ms-controls label.field{margin-bottom:0; min-width:230px}
+.ms-summary{margin-top:14px; font-size:16.5px; font-weight:650; line-height:1.4}
+.ms-note{margin-top:6px; font-size:12.5px; color:var(--text-2); line-height:1.55}
+.ms-note.warn{color:var(--amber)}
+.ms-grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; margin-bottom:14px}
+.ms-card{padding:16px 18px}
+.ms-card-head{display:flex; align-items:baseline; justify-content:space-between; gap:4px 12px; flex-wrap:wrap; margin-bottom:10px}
+.ms-tf{font-size:16.5px; font-weight:700; margin-right:6px}
+.ms-asof{font-size:11.5px; color:var(--text-3)}
+.ms-sketch{display:block; width:100%; height:auto; background:var(--surface-2); border:1px solid var(--border-soft); border-radius:var(--radius-sm)}
+.ms-sketch text{font-family:var(--mono); font-size:8.5px; fill:var(--text-2)}
+.ms-sketch .ms-bar-up{stroke:var(--green)} .ms-sketch .ms-bar-down{stroke:var(--red)}
+.ms-sketch .ms-ema50{stroke:var(--brand); stroke-width:1.1} .ms-sketch .ms-ema200{stroke:var(--blue); stroke-width:1.1}
+.ms-sketch .ms-level{stroke:var(--text-3); stroke-width:.7; stroke-dasharray:3 3}
+.ms-sketch .ms-swing{fill:var(--text)}
+.ms-key{display:flex; gap:4px 14px; flex-wrap:wrap; font-size:11px; color:var(--text-3); margin:6px 0 4px}
+.ms-key i{display:inline-block; width:14px; height:2px; vertical-align:middle; margin-right:5px; border-radius:2px}
+.ms-key i.e50{background:var(--brand)} .ms-key i.e200{background:var(--blue)}
+.ms-rows{margin:0}
+.ms-row{display:grid; grid-template-columns:86px minmax(0,1fr); gap:4px 12px; padding:10px 0; border-top:1px solid var(--border-soft)}
+.ms-row:last-child{padding-bottom:0}
+.ms-row dt{font-size:11px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:var(--text-3); padding-top:4px}
+.ms-row dd{margin:0; min-width:0}
+.ms-held{font-size:12px; color:var(--text-2); margin-left:6px}
+.ms-evidence{font-size:12.5px; color:var(--text-2); margin-top:6px; line-height:1.6; overflow-wrap:anywhere}
+.ms-evidence b{color:var(--text); font-weight:600; font-variant-numeric:tabular-nums}
+.badge.ms-up{border:1px solid var(--green); color:var(--green); background:transparent}
+.badge.ms-down{border:1px solid var(--red); color:var(--red); background:transparent}
+.badge.ms-flat{background:var(--surface-3); color:var(--text-2)}
+.badge.ms-warn{background:var(--amber-soft); color:var(--amber)}
+.badge.ms-hot{background:var(--red-soft); color:var(--red)}
+.ms-legend ul{margin:8px 0 0; padding-left:18px; font-size:12.5px; color:var(--text-2); line-height:1.65}
+.ms-legend li b{color:var(--text)}
+@media (max-width:960px){ .ms-grid{grid-template-columns:1fr} }
+@media (max-width:640px){
+  .ms-row{grid-template-columns:1fr}
+  .ms-row dt{padding-top:0}
+  .ms-controls label.field{min-width:0; flex:1 1 100%}
+  .ms-summary{font-size:15.5px}
+}
 </style>
 <style>
 /* ============ View-specific ============ */
@@ -707,6 +753,10 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><rect x="7" y="11" width="3" height="5" rx=".6"/><rect x="12" y="8" width="3" height="8" rx=".6"/><rect x="17" y="5" width="3" height="11" rx=".6"/></svg>
         Chart &amp; Trade
       </button>
+      <button class="nav-item" data-view="state">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l4-6 4 3 4-7 3 4 3-5"/><path d="M3 21h18" opacity=".45"/></svg>
+        Market state
+      </button>
       <button class="nav-item" data-view="signals">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3.4"/></svg>
         AI Signals
@@ -1002,6 +1052,33 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
       </section>
 
+      <!-- ======= MARKET STATE (a description per timeframe; src/marketstate.js) ======= -->
+      <section class="view" id="view-state">
+        <div class="card ms-about">
+          <b>Market state: what the chart looks like on four timeframes</b>
+          <div class="ms-lede">Trend, structure and volatility on the 4-hour, 1-hour, 15-minute and 5-minute chart, each read from finished candles and shown with the figures it was read from. <b>It is a description, not a signal:</b> the Buy, Sell and Wait of the signal pages are computed without it. <span id="msMeasured"></span></div>
+        </div>
+        <div class="card ms-head">
+          <div class="row wrap ms-controls">
+            <label class="field"><span>Market</span><select class="input mono" id="msSym"></select></label>
+            <button class="btn sm primary" id="msBtn" type="button">Read again</button>
+            <span class="pill" id="msFeed"><span class="dot" id="msFeedDot"></span> <span id="msFeedText">Not read yet</span></span>
+          </div>
+          <div class="ms-summary" id="msSummary" role="status" aria-live="polite"></div>
+          <div class="ms-note" id="msNote"></div>
+        </div>
+        <div class="ms-grid" id="msGrid"></div>
+        <div class="card ms-legend">
+          <b>How each line is read</b>
+          <ul>
+            <li><b>Trend.</b> <b>Uptrend:</b> EMA 20 above EMA 50 above EMA 200, the close above EMA 50, and ADX 14 at 25 or more. <b>Downtrend:</b> the reverse. <b>Range:</b> ADX below 20, whatever order the averages are in. <b>Unclear:</b> everything else.</li>
+            <li><b>Structure.</b> The last two swing highs and the last two swing lows. A swing high is a candle whose high stands above the five candles before it and is not passed by the five after it, so the newest swing is at least five candles old and never moves once it is drawn.</li>
+            <li><b>Volatility.</b> ATR 14 of the last finished candle against the 200 candles before it: <b>Quiet</b> when fewer than 20 in 100 of them were smaller, <b>High</b> from 80, <b>Extreme</b> from 95.</li>
+            <li><b>Finished candles only.</b> The candle still forming is never used, so a state changes at most once per candle of its timeframe. Times are Nairobi time (EAT). Index markets are not offered here: this app has no intraday candles for them.</li>
+          </ul>
+        </div>
+      </section>
+
       <!-- ======= SIGNAL ANALYZER ======= -->
       <section class="view" id="view-signals">
         <div class="view-head">
@@ -1010,7 +1087,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
             <div style="margin-top:6px;max-width:640px">Technical confluence score, 0–100: <b>15</b> base + <b>7</b> per confirming timeframe (up to 5) + up to <b>25</b> for bias strength (5×|avg bias|, capped) + <b>20</b> when the multi-timeframe signal is confirmed; overall cap 93 (WAIT signals capped at 45). Index CFD reads use <b>50 + 8×|signal score|</b>, capped 90. Formula is fixed and shown here so the number is explainable and stable — it is a setup-quality/confluence score, not a calibrated chance of profit.
             <div style="margin-top:6px"><b>It then moves with the market.</b> A BUY or SELL is followed from the price it was first read at: up to <b>30</b> points come off as the live price moves from that entry toward the stop, and up to <b>15</b> are added as it moves toward target 1 (a move in the signal's direction uses up part of the target distance, so the score rises half as fast as it falls). The sentence under the score gives the distance in pips (dollars for gold) and when the signal was first read. At the stop or at target 1 that reading is over and the next analysis starts a new one. Daily index readings have no entry, stop or target, so their score moves only when a daily vote changes. Alerts and Sniper filters use the score as read. In the PC app with Exness connected, a reading made from Exness candles is measured at the Exness price of its latest analysis, never at a Deriv price, so it moves at each analysis instead of at each tick.</div>
             <div style="margin-top:6px"><b>One reading per finished 5-minute candle.</b> A reading is made from finished candles only, as they stood at the last 5-minute close. A market can therefore change its reading at most once per 5-minute candle, and looking again in between changes nothing. Each card says which close it was read at.</div>
-            <div style="margin-top:6px"><b>What the score has been worth, measured.</b> In replays of this rule on historical 1-minute prices, a new BUY or SELL reached target 1 before its stop <span data-measured-range>37–41%</span> of the time, depending on the market (gold, January 2020 to November 2026: <span data-measured-gold>39.6% of 82,069</span>). 40% is needed to break even before the spread, and signals with a higher score did no better. The line under each score gives the figure for that market. It is a measurement of the past, not a forecast.</div></div>
+            <div style="margin-top:6px"><b>What the score has been worth, measured.</b> In replays of this rule on historical 1-minute prices, a new BUY or SELL reached target 1 before its stop <span data-measured-range>37–41%</span> of the time, depending on the market (gold, January 2020 to November 2026: <span data-measured-gold>39.6% of 76,694</span>). 40% is needed to break even before the spread, and signals with a higher score did no better. The line under each score gives the figure for that market. It is a measurement of the past, not a forecast.</div></div>
             </details>
           </div>
           <span class="pill hidden" id="azBudget">AI today —</span>
