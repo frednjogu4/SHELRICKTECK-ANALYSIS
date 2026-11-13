@@ -528,7 +528,8 @@ for 5 and 30 minutes so that a source is not asked for every request. When no
 source answers, the page says so and shows nothing in its place. One
 exception, for the calendar only: while its source does not answer, the copy
 that was read last is passed on for up to six hours, and the calendar card
-says when it was read ("read at 14:05 EAT"). A week's schedule is published
+says when it was read ("read at 14:05 EAT") and, once that is more than 45
+minutes ago, that the source has not answered since. A week's schedule is published
 days ahead; a copy a few hours old is still the schedule, and the page would
 otherwise lose its stand-aside periods whenever the source refuses one
 request. The page reads the calendar again every ten minutes while the News

@@ -4468,6 +4468,9 @@ async function renderNewsFeed(){
    minutes unless asked. A failure is remembered, so that nothing reads "no releases" from a calendar
    that did not load. */
 let calendarPending=null;
+/* The cloud reads its calendar source every half hour and this page asks the cloud every ten minutes: a copy
+   older than 45 minutes means the source has stopped answering, and the calendar card says so. */
+const CALENDAR_COPY_NOTE_MS=45*60000;
 /* A calendar that was read is kept ten minutes; after a read that failed, the next try comes after one. */
 function calendarDue(){ return !calendarPending&&(!state.calAt||Date.now()-state.calAt>=(state.calError?60000:10*60000)); }
 function loadCalendar(force){
@@ -4581,7 +4584,7 @@ function renderNewsTimeline(){
     +sec('🕘 PAST 2 HOURS',past)
     +(state.calWeek?sec('🗓 TOMORROW — high impact only',tomorrow):'')
     +(allday.length?sec('📅 ALL-DAY / UNSCHEDULED',allday):'')
-    +'<div class="hint tiny">Source: '+escHtml(state.calSource||'')+(state.calFetched?' · read at '+escHtml(eatStamp(state.calFetched,Date.now())):'')+' · times are Nairobi time (EAT, UTC+3); point at a time for UTC · countdowns update live. Around a high-impact release no new trade is opened from '
+    +'<div class="hint tiny">Source: '+escHtml(state.calSource||'')+(state.calFetched?' · read at '+escHtml(eatStamp(state.calFetched,Date.now()))+(Date.now()-state.calFetched>CALENDAR_COPY_NOTE_MS?' (the source has not answered since: this is the schedule as it stood then)':''):'')+' · times are Nairobi time (EAT, UTC+3); point at a time for UTC · countdowns update live. Around a high-impact release no new trade is opened from '
     +STAND_ASIDE.beforeMin+' minutes before until '+STAND_ASIDE.afterMin+' minutes after, in the markets priced in its currency. '+escHtml(releaseMeasuredText())
     +' The calendar gives the forecast and the previous figure, not the result: which way a release moves a market is not shown, because it is not known.</div>';
   updateNewsTimeline();

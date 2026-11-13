@@ -2191,6 +2191,27 @@ test('News calendar: Nairobi time, the markets of each release, and a stand-asid
     assert.ok(!aside('Fixture rate decision').classList.contains('on'));
     assert.doesNotMatch(box(), /· USD —/, 'no dollar period is running or coming');
     assert.match(box(), /^Next · GBP — Fixture output figure/);
+
+    /* The calendar source stops answering. The cloud passes on the schedule it read last, the card says when that was
+       read and that the source has been silent since, and the stand-aside period of the next release is still shown. */
+    const calendarReads = () => app.requests.filter((r) => r.path === '/api/news/calendar');
+    const settled = async () => { await app.waitFor(() => calendarReads().every((r) => r.status !== null), 'no calendar read under way'); await new Promise((r) => setTimeout(r, 30)); };
+    await settled();
+    /* First a read that succeeds, 82 minutes after the start: the open view asks by itself, and the cloud's half hour is over. */
+    const reads = calendarReads().length;
+    app.advanceClock(31 * 60000);
+    const readFrom = Date.now() + 82 * 60000;
+    await app.waitFor(() => { app.runIntervals(1000); return calendarReads().length > reads; }, 'the calendar read again while the view stayed open');
+    await settled();
+    const readUntil = Date.now() + 82 * 60000;
+    assert.doesNotMatch(flat(app.doc.getElementById('newsCal')), /has not answered since/);
+    /* Then silence for 50 minutes. */
+    app.state.news = { feeds: newsFeeds() };
+    app.advanceClock(50 * 60000);
+    await app.waitFor(() => { app.runIntervals(1000); return /has not answered since/.test(flat(app.doc.getElementById('newsCal'))); }, 'the note about the silent source');
+    assert.match(flat(app.doc.getElementById('newsCal')), new RegExp('Source: ForexFactory public weekly calendar · read at (\\w{3} )?(' + eat(readFrom) + '|' + eat(readUntil) + ') EAT \\(the source has not answered since: this is the schedule as it stood then\\) · times are Nairobi time'));
+    assert.match(flat(aside('Fixture output figure')), new RegExp('^STAND ASIDE · released · no new trade for another (16|17|18) min, until ' + eat(start + 150 * 60000) + ' EAT$'), 'the period of the last release, from the copy');
+    assert.doesNotMatch(flat(app.doc.getElementById('newsCal')), /Calendar unavailable/);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -2284,9 +2305,13 @@ test('the PC app keeps its keyword chip and its order button where its server se
       { title: 'Fixture: euro headline', link: 'https://example.test/euro', source: 'Test wire', t: Date.now(), bias: { ccy: 'EUR', tone: 'up', pair: 'EUR/USD', dir: 'BUY', engine: 'heuristic' } },
       { title: 'Fixture: plain headline', link: 'javascript:alert(1)', source: 'Test wire', bias: null }
     ] } };
-    if (path === '/api/news/calendar') return { status: 200, body: { day: new Date().toISOString().slice(0, 10), source: 'test calendar', events: [] } };
+    if (path === '/api/news/calendar') return { status: 200, body: { day: pcDay, source: 'test calendar', events: [{ time_utc: new Date(pcRelease).toISOString().slice(11, 16), country: 'USD', event: 'Fixture PC release', impact: 'High', forecast: '', previous: '' }] } };
     return liveScanApi(path, body);
   };
+  /* The PC server sends the entries of the UTC day with a clock time and no moment: a release 40 minutes ahead, or 20 minutes ago when that would be tomorrow. */
+  const started = Date.now();
+  const pcDay = new Date(started).toISOString().slice(0, 10);
+  const pcRelease = Math.floor((new Date(started + 40 * 60000).toISOString().slice(0, 10) === pcDay ? started + 40 * 60000 : started - 20 * 60000) / 60000) * 60000;
   const app = await bootApp({ origin: PC_ORIGIN, pcApi });
   try {
     await app.enter();
@@ -2301,6 +2326,18 @@ test('the PC app keeps its keyword chip and its order button where its server se
     for (const link of plain.querySelectorAll('a[target="_blank"]')) assert.equal(link.getAttribute('href'), '#', 'an address that is not a web address is not made a link');
     assert.match(flat(app.doc.getElementById('newsFeed')), /then goes STALE and Execute stands down/);
     assert.equal(app.doc.getElementById('newsSources'), null, 'the PC server names its source on each headline only');
+    /* The calendar of the PC server, in its own shape, gives the same stand-aside period: in the News view and on the Gold page. */
+    const period = eat(pcRelease - 30 * 60000) + '–' + eat(pcRelease + 30 * 60000) + ' EAT';
+    await app.waitFor(() => calendarRow(app, 'Fixture PC release'), 'the release of the PC calendar');
+    const pcAside = flat(calendarDetail(app, 'Fixture PC release').querySelector('.news-aside'));
+    if (pcRelease > started) assert.equal(pcAside, 'No new trade ' + period + ' (30 min before to 30 min after)');
+    else assert.match(pcAside, new RegExp('^STAND ASIDE · released · no new trade for another \\d+ min, until ' + eat(pcRelease + 30 * 60000) + ' EAT$'));
+    assert.doesNotMatch(flat(app.doc.getElementById('newsCal')), /read at/, 'the PC server does not say when it read its source, and no time is made up');
+    await app.open('gold');
+    await app.waitFor(() => app.doc.querySelector('#goldEvents [data-gold-aside-span]'), 'the release on the Gold page of the PC app');
+    assert.equal(flat(app.doc.querySelector('#goldEvents [data-gold-aside-span]')), 'no new trade ' + period);
+    assert.equal(app.doc.querySelectorAll('#goldEvents tbody tr').length, 1);
+    assert.equal(app.requests.filter((r) => r.path === '/api/news/calendar').length, 1, 'one calendar for the page on the PC as well');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
