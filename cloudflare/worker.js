@@ -329,7 +329,7 @@ function createReadOnlyWorker({
         confidence: decision.confidence,
         entry: decision.entry, stop_loss: decision.stop_loss, tp1: decision.tp1, tp2: decision.tp2,
         rrr: decision.rrr, tf: 'MTF 1m/5m/1h', model: 'technical',
-        source, data_source: source, latest_candle_time: Number(latest?.time || 0), candle_close: closed.close, ts: now()
+        source, data_source: source, latest_candle_time: Number(latest?.time || 0), candle_close: closed.close, candle_current: closed.current, ts: now()
       };
     } catch (e) {
       const source = 'unavailable';
@@ -495,6 +495,7 @@ function createReadOnlyWorker({
           news: { available: false, reason: 'technical_only' }, data_source: source,
           latest_candle_time: Number(latest?.time || 0),
           candle_close: closed.close,
+          candle_current: closed.current,
           meta: { mode: 'technical', reason: 'cloudflare_readonly', engines: [], spent: 0, cap: 0, cached: false, at: new Date(now()).toISOString() }
         });
       } catch (e) {

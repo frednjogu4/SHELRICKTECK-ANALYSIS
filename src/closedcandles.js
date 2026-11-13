@@ -29,6 +29,13 @@
  * stays the one of the close before, and it is never made from a candle that
  * may still have been moving.
  *
+ * After a pause (the weekend, the daily break of gold, a quiet market) the
+ * newest candle of the feed is new while every finished candle is from before
+ * the pause. A reading made then would describe the market before the pause,
+ * with an entry that is not the price now. It is not shown: closedCandleSets()
+ * reports `current: false` until a 5-minute candle of the new session has
+ * finished.
+ *
  * What this is not: a better signal. The votes, thresholds and levels are the
  * ones in server/lib; only the moment they are read at changes. See the
  * replay figures in src/measured.js and in the README.
@@ -48,6 +55,13 @@ export const READING_PERIOD_SEC = 300;
 export const READING_CANDLES = 110;
 /** A few seconds for the feed to publish the candle that has just closed. */
 export const READING_SETTLE_MS = 5000;
+/**
+ * A reading is current while its close is less than two 5-minute candles
+ * behind the newest candle of the feed: one candle is the normal distance just
+ * before the next close, the second covers a copy of a series that is renewed
+ * a little late and a single 5-minute candle without a price.
+ */
+export const READING_CURRENT_SEC = 2 * READING_PERIOD_SEC;
 
 const PERIOD_SEC = Object.freeze({ m1: 60, m5: 300, h1: 3600 });
 const TIMEFRAMES = Object.keys(PERIOD_SEC);
@@ -66,22 +80,8 @@ function newestStart(candles) {
   return newest;
 }
 
-/**
- * The last 5-minute close that every series can vouch for, in epoch seconds.
- *
- * In each series everything before its newest candle has finished, and the
- * newest candle may still be forming. That makes the latest close a series
- * can vouch for:
- *
- *   1-minute   its newest start, rounded down to five minutes
- *   5-minute   its newest start
- *   1-hour     55 minutes into its newest hour: up to there no reading needs
- *              that hour's candle, and at the full hour it would
- *
- * The earliest of the three is the answer. A series that is missing or empty
- * has no say (the analysis reports it itself). 0 when no candle carries a time.
- */
-export function lastCloseOf(sets) {
+/* The latest 5-minute close that every series can vouch for; 0 when no candle carries a time. */
+function vouchedClose(sets) {
   const minute = newestStart(sets && sets.m1), five = newestStart(sets && sets.m5), hour = newestStart(sets && sets.h1);
   const vouched = [];
   if (minute > 0) vouched.push(Math.floor(minute / READING_PERIOD_SEC) * READING_PERIOD_SEC);
@@ -91,18 +91,60 @@ export function lastCloseOf(sets) {
 }
 
 /**
+ * The 5-minute close a reading belongs to, in epoch seconds: the end of the
+ * newest 5-minute candle that traded and that every series can vouch for.
+ *
+ * Vouching. In each series everything before its newest candle has finished,
+ * and the newest candle may still be forming. That makes the latest close a
+ * series can vouch for:
+ *
+ *   1-minute   its newest start, rounded down to five minutes
+ *   5-minute   its newest start
+ *   1-hour     55 minutes into its newest hour: up to there no reading needs
+ *              that hour's candle, and at the full hour it would
+ *
+ * The earliest of the three is the limit. A series that is missing or empty
+ * has no say (the analysis reports it itself).
+ *
+ * A candle that traded. Below that limit the reading belongs to the newest
+ * 5-minute candle the feed actually has. A feed has no candle for five
+ * minutes without a single price, so after a pause (the weekend, the daily
+ * break of gold, a quiet market) the reading is still the one of the last
+ * candle before the pause, with its own close time, until a candle of the new
+ * session has finished. See `current` in closedCandleSets().
+ *
+ * 0 when no candle carries a time, or when the 5-minute series has no finished candle.
+ */
+export function lastCloseOf(sets) {
+  const limit = vouchedClose(sets);
+  const five = sets && sets.m5;
+  if (!Array.isArray(five)) return limit;
+  let traded = 0;
+  for (const candle of five) {
+    const end = startSec(candle) + PERIOD_SEC.m5;
+    if (end > PERIOD_SEC.m5 && end <= limit && end > traded) traded = end;
+  }
+  return traded;
+}
+
+/**
  * The candles a reading is made from: for each timeframe, the last
- * READING_CANDLES candles that had finished by the last 5-minute close.
+ * READING_CANDLES candles that had finished by the reading's 5-minute close.
  *
  * @param {{m1:Array, m5:Array, h1:Array}} sets  candles as the feed returned them, oldest first
- * @returns {{close:number, sets:{m1:Array, m5:Array, h1:Array}}}
- *   close  the 5-minute close the reading belongs to, epoch seconds; 0 when it could not be told
- *   sets   the finished candles (the same candle objects, never copies); a
- *          timeframe that was not an array is passed through as it was, so the
- *          analysis reports it as missing exactly as before
+ * @returns {{close:number, current:boolean, sets:{m1:Array, m5:Array, h1:Array}}}
+ *   close    the 5-minute close the reading belongs to, epoch seconds; 0 when there is none
+ *   current  false when that close lies READING_CURRENT_SEC or more before the newest candle the
+ *            feed holds: the market has resumed after a pause and no candle of the new session has
+ *            finished yet. Such a reading describes the market before the pause; its entry is not
+ *            the price now. Callers show no reading until `current` is true again.
+ *   sets     the finished candles (the same candle objects, never copies); a
+ *            timeframe that was not an array is passed through as it was, so the
+ *            analysis reports it as missing exactly as before
  */
 export function closedCandleSets(sets) {
   const close = lastCloseOf(sets);
+  const feedTime = Math.max(...TIMEFRAMES.map((key) => newestStart(sets && sets[key])));
   const out = {};
   for (const key of TIMEFRAMES) {
     const candles = sets && sets[key];
@@ -111,7 +153,7 @@ export function closedCandleSets(sets) {
     const finished = candles.filter((candle) => { const start = startSec(candle); return start > 0 && start + PERIOD_SEC[key] <= close; });
     out[key] = finished.length > READING_CANDLES ? finished.slice(-READING_CANDLES) : finished;
   }
-  return { close, sets: out };
+  return { close, current: close > 0 && feedTime - close < READING_CURRENT_SEC, sets: out };
 }
 
 /**

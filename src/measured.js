@@ -35,16 +35,16 @@ const figure = (percent, alerts, perDay) => Object.freeze({ percent, alerts, per
  * perDay   alerts per weekday
  */
 export const MEASURED = Object.freeze({
-  'XAU/USD': Object.freeze({ name: 'gold', span: 'Jan 2020 \u2013 Nov 2026', close: figure(39.6, 82324, 46), minute: figure(39.8, 177715, 100) }),
-  'EUR/USD': Object.freeze({ name: 'EUR/USD', span: SIX_MONTHS, close: figure(40.2, 6458, 49), minute: figure(39.9, 13990, 106) }),
-  'GBP/USD': Object.freeze({ name: 'GBP/USD', span: SIX_MONTHS, close: figure(36.9, 6448, 49), minute: figure(36.8, 13876, 105) }),
-  'AUD/USD': Object.freeze({ name: 'AUD/USD', span: SIX_MONTHS, close: figure(39.3, 6564, 50), minute: figure(39.4, 13968, 106) }),
-  'USD/JPY': Object.freeze({ name: 'USD/JPY', span: SIX_MONTHS, close: figure(40.5, 6278, 48), minute: figure(40.1, 13703, 104) }),
-  'USD/CHF': Object.freeze({ name: 'USD/CHF', span: SIX_MONTHS, close: figure(38.6, 6277, 48), minute: figure(38.7, 13523, 102) }),
-  'USD/CAD': Object.freeze({ name: 'USD/CAD', span: SIX_MONTHS, close: figure(40.9, 6366, 48), minute: figure(41.2, 13887, 105) }),
-  US30: Object.freeze({ name: 'US30', span: SIX_MONTHS, close: figure(39.8, 6105, 46), minute: figure(39.9, 13055, 99) }),
-  NAS100: Object.freeze({ name: 'NAS100', span: SIX_MONTHS, close: figure(40.8, 5857, 44), minute: figure(41.4, 12536, 95) }),
-  SPX500: Object.freeze({ name: 'SPX500', span: SIX_MONTHS, close: figure(40.6, 5976, 45), minute: figure(40.3, 12923, 98) })
+  'XAU/USD': Object.freeze({ name: 'gold', span: 'Jan 2020 \u2013 Nov 2026', close: figure(39.6, 82069, 46), minute: figure(39.8, 177715, 100) }),
+  'EUR/USD': Object.freeze({ name: 'EUR/USD', span: SIX_MONTHS, close: figure(40.2, 6453, 49), minute: figure(39.9, 13990, 106) }),
+  'GBP/USD': Object.freeze({ name: 'GBP/USD', span: SIX_MONTHS, close: figure(36.9, 6444, 49), minute: figure(36.8, 13876, 105) }),
+  'AUD/USD': Object.freeze({ name: 'AUD/USD', span: SIX_MONTHS, close: figure(39.3, 6560, 50), minute: figure(39.4, 13968, 106) }),
+  'USD/JPY': Object.freeze({ name: 'USD/JPY', span: SIX_MONTHS, close: figure(40.5, 6272, 48), minute: figure(40.1, 13703, 104) }),
+  'USD/CHF': Object.freeze({ name: 'USD/CHF', span: SIX_MONTHS, close: figure(38.6, 6273, 48), minute: figure(38.7, 13523, 102) }),
+  'USD/CAD': Object.freeze({ name: 'USD/CAD', span: SIX_MONTHS, close: figure(40.9, 6364, 48), minute: figure(41.2, 13887, 105) }),
+  US30: Object.freeze({ name: 'US30', span: SIX_MONTHS, close: figure(39.7, 6087, 46), minute: figure(39.9, 13055, 99) }),
+  NAS100: Object.freeze({ name: 'NAS100', span: SIX_MONTHS, close: figure(40.7, 5827, 44), minute: figure(41.4, 12536, 95) }),
+  SPX500: Object.freeze({ name: 'SPX500', span: SIX_MONTHS, close: figure(40.7, 5952, 45), minute: figure(40.3, 12923, 98) })
 });
 
 const hasLevels = (reading) => Number(reading && reading.entry) > 0 && Number(reading && reading.stop_loss) > 0 && Number(reading && reading.tp1) > 0;

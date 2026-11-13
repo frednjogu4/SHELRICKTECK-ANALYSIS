@@ -1169,9 +1169,9 @@ const pushTick = (app, code, quote) => {
 const NO_LEVELS = 'Daily index reading from daily closing prices: it has no entry, stop or target, so nothing here moves with the price and there is no measured result. Levels need minute-by-minute prices, which for indices come only from Exness MT5 in the PC app.';
 /* What the replay measured (src/measured.js). A reading written by these tests comes from the PC's server, which looks every minute: "minute".
    A reading made in the page from finished candles belongs to a 5-minute close: "close". */
-const EUR_MEASURED_CLOSE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 40.2% of 6,458 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const EUR_MEASURED_CLOSE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 40.2% of 6,453 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const GOLD_MEASURED_MINUTE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.8% of 177,715 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
-const GOLD_MEASURED_CLOSE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 82,324 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const GOLD_MEASURED_CLOSE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 82,069 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const EUR_MEASURED_MINUTE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 39.9% of 13,990 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const CLOCK = '\\d\\d:\\d\\d:\\d\\d';
 
@@ -1562,13 +1562,15 @@ test('live confidence, Gold monitor: a stop crossed while another view is open s
    the last 5-minute close (src/closedcandles.js). */
 const BRIDGE_TF = { M1: 60, M5: 300, H1: 3600 };
 const BRIDGE_SHAPES = [{ slope: -0.0004, wobble: 0.002 }, { slope: 0.0008, wobble: 0 }, { slope: -0.0008, wobble: 0 }, { slope: 0.0004, wobble: 0.002 }];
-function bridgeCandles(timeframe, shape, level) {
+/* `pauseSec`: the terminal's market gave no price for that long before its newest candle, so it holds the candles
+   from before the pause and the one of the price that ended it. */
+function bridgeCandles(timeframe, shape, level, pauseSec = 0) {
   const period = BRIDGE_TF[timeframe], newest = Math.floor(nowSec() / period) * period;
   return Array.from({ length: 120 }, (_unused, i) => {
     const mid = level * (1 + shape.slope * i + shape.wobble * Math.sin(i / 7));
     const open = mid * 0.9998, close = mid * 1.0002;
     return { time: newest - (119 - i) * period, open: Number(open.toFixed(6)), high: Number((close * 1.0004).toFixed(6)), low: Number((open * 0.9996).toFixed(6)), close: Number(close.toFixed(6)) };
-  });
+  }).filter((candle) => candle.time >= newest || candle.time < newest - pauseSec);
 }
 /* A market for the bridge: the first series the rule reads as a direction, and what the rule says about it. */
 function bridgeMarket(symbol, { name, level, digits }) {
@@ -1592,7 +1594,7 @@ const exnessBridge = (markets) => (frame) => {
   if (frame.type === 'positions') return { type: 'positions', list: [] };
   if (frame.type === 'history') {
     const m = market(frame.symbol);
-    return m ? { type: 'history', symbol: m.name, timeframe: frame.timeframe, candles: bridgeCandles(frame.timeframe, m.shape, m.level) }
+    return m ? { type: 'history', symbol: m.name, timeframe: frame.timeframe, candles: bridgeCandles(frame.timeframe, m.shape, m.level, m.pauseSec || 0) }
       : { type: 'error', message: 'Symbol is not available in the connected MT5 terminal.' };
   }
   if (frame.type === 'quote') {
@@ -1954,6 +1956,103 @@ test('Sniper entry alert: the message ends with what the replay measured for tha
     const alertBody = (title) => { const el = [...doc.querySelectorAll('#toasts .toast')].find((toast) => toast.querySelector('b').textContent === title); return el ? el.querySelector('span').textContent : null; };
     await app.waitFor(() => alertBody('Sniper entry setup \u00b7 EUR/USD'), 'the entry alert for EUR/USD');
     assert.match(alertBody('Sniper entry setup \u00b7 EUR/USD'), /\nSignal alert only \u2014 no order was placed\.\nMeasured in a replay on EUR\/USD: 39\.9% of such signals reached TP1 before the SL \(break-even 40% before the spread\)\. Not a forecast\.$/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* ---------------------------------------------------------------- a market that has just resumed after a pause */
+
+test('Gold monitor on the cloud: right after a pause no signal is shown; the first one comes when a 5-minute candle of the new session has closed', async () => {
+  const market = directionalMarket();
+  /* Set once the page clock is settled: no gold price between `from` and `to`. A feed has a candle only for a period with a price in it. */
+  let pause = null;
+  const candleRows = (code, granularity, count, now) => market(code, granularity, count, now).filter((row) => !pause || code !== 'frxXAUUSD' || row.epoch < pause.from || row.epoch + granularity > pause.to);
+  const app = await bootApp({ world: { cloudDeriv: 'down', ticks: true, candleRows } });
+  try {
+    const clock = pageClock(app);
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    const tickNow = () => {
+      const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+      stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: 'frxXAUUSD', quote: GOLD_TICK, epoch: Math.floor(clock.now()) } }) });
+    };
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    const close = clock.settle();
+    /* Gold gave its first price two seconds ago, after half an hour without one (its daily break lasts an hour). */
+    pause = { from: clock.now() - 1800, to: clock.now() - 2 };
+    tickNow();
+    await app.open('gold');
+    await app.waitFor(() => text('goldSignalBadge') === 'UNAVAILABLE', 'the monitor to withhold the signal');
+    assert.equal(text('goldRationale'), 'Deriv Gold has just resumed after a pause: no 5-minute candle has closed since. The first reading comes with the next 5-minute close. No old signal is being presented as current.');
+    assert.equal(text('goldSignal'), '\u2014');
+    assert.deepEqual(['goldEntry', 'goldSL', 'goldTP1'].map(text), ['\u2014', '\u2014', '\u2014']);
+    assert.equal(text('goldMeasured'), '');
+    assert.equal([...doc.querySelectorAll('#toasts .toast b')].filter((el) => /^Gold\/USD signal/.test(el.textContent)).length, 0, 'no alert from before the pause');
+
+    /* Twenty seconds after the next 5-minute close: the candle that began with the new session has finished. */
+    clock.advance(close + 320 - clock.now());
+    tickNow();
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the first reading of the new session');
+    assert.match(text('goldSignalUpdated'), new RegExp('^Reading of the ' + hhmm(close + 300) + ' candle close '));
+    assert.ok(text('goldSignal') === 'BUY' || text('goldSignal') === 'SELL');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Gold monitor: an answer of the signal API that was made from before a pause is not shown; the browser reads the candles itself', async () => {
+  const made = nowSec() - 2400;
+  const fromBeforeThePause = {
+    symbol: 'XAU/USD', signal: 'SELL', bias: 'bearish', confidence: 71, mtf_signal: 'SELL_CONFIRMED', votes: 'written by the test', data_ok: true,
+    entry: 9999.99, price: 9999.99, stop_loss: 10014.99, tp1: 9977.49, tp2: 9959.99, rationale: 'written by the test', risks: [], model: 'technical', source: 'Deriv public candles',
+    candle_close: made, candle_current: false
+  };
+  const pcApi = (path, body) => (path === '/api/signals/analyze' ? { status: 200, body: { ...fromBeforeThePause, latest_candle_time: nowSec() } } : liveScanApi(path, body));
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi, world: { ticks: true } });
+  try {
+    await app.enter();
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await app.open('gold');
+    await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'a gold analysis');
+    assert.notEqual(text('goldEntry'), '9,999.99', 'the entry from before the pause is not on the page');
+    /* What is shown was read by this browser from Deriv candles, at a close of the last few minutes. */
+    const shownClose = (/^Reading of the (\d\d:\d\d) candle close /.exec(text('goldSignalUpdated')) || [])[1];
+    const lastClose = Math.floor(nowSec() / 300) * 300;
+    assert.ok([hhmm(lastClose), hhmm(lastClose - 300)].includes(shownClose), 'read at ' + shownClose);
+    assert.notEqual(shownClose, hhmm(made));
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Exness connected: a terminal whose market has just resumed gives no Exness reading; the labelled fallback says why', async () => {
+  const eur = { ...bridgeMarket('EUR/USD', { name: 'EURUSDm', level: 1.08, digits: 5 }), pauseSec: 2400 };
+  const gold = { ...bridgeMarket('XAU/USD', { name: 'XAUUSDm', level: 4000, digits: 2 }), pauseSec: 2400 };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, bridgeApi: exnessBridge({ 'EUR/USD': eur, XAUUSD: gold }), world: { ticks: true } });
+  try {
+    await app.enter();
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the Deriv gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await connectExness(app);
+
+    /* The scanner: the terminal's newest candle and quote are current, but its finished candles are 40 minutes old. */
+    await app.open('signals');
+    app.click(doc.getElementById('refreshSigs'));
+    const why = () => { const el = [...doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === 'EUR/USD'); return el ? el.querySelector('.sig-why').textContent : ''; };
+    await app.waitFor(() => /fallback \(Exness unavailable/.test(why()), 'the fallback reading');
+    assert.match(why(), /source: Deriv public candles \u00b7 fallback \(Exness unavailable: Exness EUR\/USD has just resumed after a pause: no 5-minute candle has closed since\./);
+    assert.doesNotMatch(why(), /Exness MT5 local candles/);
+
+    /* The Gold monitor: the same refusal, and the Deriv fallback carries the reason. */
+    await app.open('gold');
+    await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the gold analysis');
+    assert.match(text('goldFeedStatus'), /^LIVE ANALYSIS \u00b7 Deriv public candles \u00b7 labelled fallback \(reason: Exness MT5 unavailable: Exness Gold has just resumed after a pause/);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });

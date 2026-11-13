@@ -71,6 +71,8 @@ const signalRuns=createSignalTracker({feedOf:feedOfReading}), goldRuns=createSig
 /* Why an index card of the cloud has three empty boxes: said on the card itself, for BUY, SELL and WAIT alike. */
 const DAILY_NOTE='Daily index reading from daily closing prices: it has no entry, stop or target, so nothing here moves with the price and there is no measured result. Levels need minute-by-minute prices, which for indices come only from Exness MT5 in the PC app.';
 const NO_LEVELS_NOTE='This reading has no entry, stop or target, so its score does not move with the price.';
+/* A market that ticks again after a pause, with every finished candle still from before it: no reading yet (closedcandles.js). */
+const RESUMED_NOTE=what=>what+' has just resumed after a pause: no 5-minute candle has closed since. The first reading comes with the next 5-minute close.';
 /* "14:35" for the 5-minute close a reading was made at; '' for a reading that does not say (the PC server's, the daily ones). */
 const timeHM=t=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 const closeText=r=>Number(r&&r.candle_close)>0?timeHM(Number(r.candle_close)*1000):'';
@@ -1445,6 +1447,7 @@ async function exnessSignalFor(I,includeCandles=false){
   const closed=closedCandleSets(sets);
   const det=runDeterministicAnalysis(I.s,closed.sets),short=['m1','m5','h1'].find(k=>det.analyses[k].error);
   if(short){const a=det.analyses[short];throw new Error('Exness '+a.timeframe+' history: '+(a.have||0)+'/'+(a.required||50)+' verified candles.');}
+  if(!closed.current)throw new Error(RESUMED_NOTE('Exness '+I.s));
   const newest={m1:sets.m1.at(-1),m5:sets.m5.at(-1),h1:sets.h1.at(-1)};
   const limits={m1:180000,m5:660000,h1:7260000};
   const stale=['m1','m5','h1'].find(k=>!newest[k]||!marketCandleFresh(newest[k].time,limits[k]));
@@ -4121,6 +4124,7 @@ async function goldDerivFallback(reason){
     const res=await api('/api/signals/analyze',{method:'POST',body:{symbol:GOLD_SYMBOL,force:true,technicalOnly:true,withNews:false}});
     const j=await res.json().catch(()=>({}));if(!res.ok)throw new Error(j.detail||j.error||'Live Gold analysis unavailable');
     if(!goldFreshTimestamp(j.latest_candle_time))throw new Error('Deriv Gold M1 candle timestamp is stale or unavailable.');
+    if(j.candle_current===false)throw new Error(RESUMED_NOTE('Deriv Gold'));
     return Object.assign({},j,{data_source:label,fallback:true,fallback_reason:reason});
   }catch(serverError){
     const [m1,m5,h1]=await Promise.all([feed.fetchPublicCandles(GOLD_SYMBOL,60,120),feed.fetchPublicCandles(GOLD_SYMBOL,300,120),feed.fetchPublicCandles(GOLD_SYMBOL,3600,120)]);
@@ -4128,6 +4132,7 @@ async function goldDerivFallback(reason){
     const short=['m1','m5','h1'].find(k=>det.analyses[k].error);
     if(short){const a=det.analyses[short];throw new Error('Deriv '+a.timeframe+' history has '+(a.have||0)+' verified candles; at least '+(a.required||50)+' are needed.');}
     const lastCandle=m1[m1.length-1];if(!lastCandle||!goldFreshTimestamp(lastCandle.time))throw new Error('Deriv Gold M1 candles are stale; no live signal will be shown.');
+    if(!closed.current)throw new Error(RESUMED_NOTE('Deriv Gold'));
     return Object.assign({},localDecision(det),{symbol:GOLD_SYMBOL,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:true,data_source:label,fallback:true,fallback_reason:reason,latest_candle_time:lastCandle.time,candle_close:closed.close,meta:{mode:'technical',reason:'labelled_deriv_fallback'}});
   }
 }
@@ -4150,6 +4155,7 @@ async function runGoldAnalysis(){
       const det=runDeterministicAnalysis(GOLD_SYMBOL,closed.sets),decision=localDecision(det),q=qReply&&qReply.quotes&&qReply.quotes[0],price=goldQuotePrice(q),lastCandle=sets.m1[sets.m1.length-1];
       if(!q||!Number(q.time)||!(price>0)||!goldFreshTimestamp(q.time))throw new Error('No fresh Exness Gold tick; live signal is paused rather than reused.');
       if(!lastCandle||!goldFreshTimestamp(lastCandle.time))throw new Error('Exness Gold M1 candles are stale; refresh when current history returns.');
+      if(!closed.current)throw new Error(RESUMED_NOTE('Exness Gold'));
       goldMt5Quote={symbol:String(q.symbol||''),price,time:Number(q.time),digits:q.digits,trade_mode:q.trade_mode};
       d=Object.assign({},decision,{price:det.analyses.m1&&det.analyses.m1.currentPrice,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:det.ok,data_source:'Exness MT5 local candles',latest_candle_time:lastCandle.time,candle_close:closed.close,meta:{mode:'technical',reason:'local_read_only'}});
       }catch(exnessError){goldMt5Quote=null;d=await goldDerivFallback('Exness MT5 unavailable: '+String(exnessError&&exnessError.message||exnessError).slice(0,100));}

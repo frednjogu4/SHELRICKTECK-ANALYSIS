@@ -10,7 +10,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { READING_PERIOD_SEC, READING_CANDLES, READING_SETTLE_MS, lastCloseOf, closedCandleSets, nextReadingCheck } from '../../src/closedcandles.js';
+import { READING_PERIOD_SEC, READING_CANDLES, READING_SETTLE_MS, READING_CURRENT_SEC, lastCloseOf, closedCandleSets, nextReadingCheck } from '../../src/closedcandles.js';
 import { runDeterministicAnalysis } from '../../server/lib/analyzer.js';
 import { localDecision } from '../../server/lib/localdecision.js';
 
@@ -36,6 +36,7 @@ test('the constants are the documented ones', () => {
   assert.equal(READING_PERIOD_SEC, 300);
   assert.equal(READING_CANDLES, 110);
   assert.equal(READING_SETTLE_MS, 5000);
+  assert.equal(READING_CURRENT_SEC, 600, 'two 5-minute candles');
 });
 
 test('the last 5-minute close is read from the candles, not from a clock', () => {
@@ -45,26 +46,30 @@ test('the last 5-minute close is read from the candles, not from a clock', () =>
   assert.equal(lastCloseOf(feedAt(CLOSE - 1)), CLOSE - 300, 'the 14:34 candle is still forming: 14:35 has not been reached');
 
   /* Milliseconds are understood. */
-  assert.equal(lastCloseOf({ m1: [{ time: (CLOSE + 120) * 1000 }], m5: [], h1: [] }), CLOSE);
-  /* A series that is missing or empty has no say. */
-  assert.equal(lastCloseOf({ m1: null, m5: [{ time: CLOSE }], h1: [] }), CLOSE);
+  const inMs = (candles) => candles.map((candle) => ({ ...candle, time: candle.time * 1000 }));
+  const feed = feedAt(CLOSE + 130);
+  assert.equal(lastCloseOf({ m1: inMs(feed.m1), m5: inMs(feed.m5), h1: inMs(feed.h1) }), CLOSE);
+  /* A series that is missing has no say; without the 5-minute series the 1-minute one decides alone. */
+  assert.equal(lastCloseOf({ m1: feed.m1, m5: null, h1: undefined }), CLOSE);
   /* Nothing to go by. */
   assert.equal(lastCloseOf({ m1: [], m5: [], h1: [] }), 0);
   assert.equal(lastCloseOf({ m1: [{ open: 1 }], m5: null }), 0);
   assert.equal(lastCloseOf(null), 0);
+  /* A 5-minute series with nothing finished in it: no candle for a reading to belong to. */
+  assert.equal(lastCloseOf({ m1: feed.m1, m5: [feed.m5.at(-1)], h1: feed.h1 }), 0);
 });
 
 test('each series vouches only for what lies before its newest candle; the one furthest behind decides', () => {
-  const at = (time) => [{ time: time - 60 }, { time }];
-  /* 1-minute candles up to 14:37, a 5-minute series whose newest candle starts at 14:30: 14:35 is not vouched for. */
-  assert.equal(lastCloseOf({ m1: at(CLOSE + 120), m5: at(CLOSE - 300), h1: at(CLOSE - 2100) }), CLOSE - 300);
-  /* The other way round: a 1-minute series that ends at 14:27 holds the reading at 14:25. */
-  assert.equal(lastCloseOf({ m1: at(CLOSE - 480), m5: at(CLOSE), h1: at(CLOSE - 2100) }), CLOSE - 600);
+  const fresh = feedAt(CLOSE + 130); /* 14:37:10 */
+  /* A 5-minute series whose newest candle starts at 14:30: 14:35 is not vouched for. */
+  assert.equal(lastCloseOf({ m1: fresh.m1, m5: feedAt(CLOSE - 10).m5, h1: fresh.h1 }), CLOSE - 300);
+  /* The other way round: a 1-minute series that ends with the 14:27 candle holds the reading at 14:25. */
+  assert.equal(lastCloseOf({ m1: feedAt(CLOSE - 450).m1, m5: fresh.m5, h1: fresh.h1 }), CLOSE - 600);
   /* A 1-hour series whose newest candle is the 13:00 hour vouches up to 13:55: the 14:00 reading needs that hour finished. */
-  const hour13 = CLOSE - 2100 - 3600;
-  assert.equal(lastCloseOf({ m1: at(CLOSE + 120), m5: at(CLOSE), h1: at(hour13) }), hour13 + 3300);
-  /* With the 14:00 hour started, it vouches up to 14:55. */
-  assert.equal(lastCloseOf({ m1: at(CLOSE + 1500), m5: at(CLOSE + 1500), h1: at(CLOSE - 2100) }), CLOSE + 1200);
+  const hour14 = Date.UTC(2026, 10, 12, 14, 0) / 1000;
+  assert.equal(lastCloseOf({ m1: fresh.m1, m5: fresh.m5, h1: feedAt(hour14 - 30).h1 }), hour14 - 300);
+  /* With the 14:00 hour started, it vouches up to 14:55, and the other two decide. */
+  assert.equal(lastCloseOf({ m1: fresh.m1, m5: fresh.m5, h1: feedAt(hour14 + 30).h1 }), CLOSE);
 });
 
 test('a copy of the 5-minute series from just before a close: the reading stays the one of the close before, and is that reading exactly', () => {
@@ -163,17 +168,66 @@ test('a feed that holds fewer candles gives what it has; a missing series is pas
   assert.deepEqual(untimed.sets, { m1: [], m5: [], h1: [] });
 });
 
-test('after a gap the reading belongs to the close before the newest candle', () => {
-  /* A market that stopped at 14:12 and gave its next tick at 14:37: every series shows the candle of that tick. */
-  const stoppedAt = CLOSE - 23 * 60 + 30;
-  const tick = (time) => ({ time, open: 1, high: 1, low: 1, close: 1 });
-  const before = held(60, stoppedAt).filter((candle) => candle.time < CLOSE - 22 * 60);
-  const feed = { m1: [...before, tick(CLOSE + 120)], m5: [...held(300, stoppedAt), tick(CLOSE)], h1: held(3600, stoppedAt) };
-  const { close, sets } = closedCandleSets(feed);
-  assert.equal(close, CLOSE);
-  assert.equal(sets.m1.at(-1).time, before.at(-1).time, 'the newest finished 1-minute candle is the last one before the gap');
-  assert.equal(sets.m5.at(-1).time, CLOSE - 25 * 60, 'the 14:10 candle, which ended when the market stopped');
-  assert.ok(sets.m1.every((candle) => candle.time < CLOSE));
+test('in the normal run a reading is current: its close is less than two candles behind the feed', () => {
+  for (const seconds of [5, 150, 299]) assert.equal(closedCandleSets(feedAt(CLOSE + seconds)).current, true);
+  /* With a copy of the 5-minute series from before the close the reading is one candle behind, and still current. */
+  const late = closedCandleSets({ ...feedAt(CLOSE + 59), m5: feedAt(CLOSE - 30).m5 });
+  assert.equal(late.close, CLOSE - 300);
+  assert.equal(late.current, true);
+  /* No candles, no reading, nothing current. */
+  assert.equal(closedCandleSets({ m1: [], m5: [], h1: [] }).current, false);
+});
+
+/* A market that gave no price between `from` and `to`. A feed has a candle only for a period with a price in it:
+   one that began before the pause, or one that ends after it. */
+function paused(feed, from, to) {
+  const traded = (period) => (candle) => candle.time < from || candle.time + period > to;
+  return { m1: feed.m1.filter(traded(60)), m5: feed.m5.filter(traded(300)), h1: feed.h1.filter(traded(3600)) };
+}
+
+test('after a pause there is no current reading until a 5-minute candle of the new session has finished', () => {
+  /* The market stopped at 14:12:30 and gave its next price at 14:37:10. */
+  const stopped = CLOSE - 23 * 60 + 30, resumed = CLOSE + 130;
+  const feed = paused(feedAt(resumed + 20), stopped, resumed);
+  assert.deepEqual(times(feed.m1).slice(-3).map((time) => (time - CLOSE) / 60), [-24, -23, 2], 'the 14:11 and 14:12 minutes, then 14:37');
+  assert.deepEqual(times(feed.m5).slice(-2).map((time) => (time - CLOSE) / 60), [-25, 0], 'the 14:10 candle, then the 14:35 one');
+
+  const justResumed = closedCandleSets(feed);
+  /* The newest candle that traded and has finished is 14:10-14:15: the reading is the one of 14:15, as it was then. */
+  assert.equal(justResumed.close, CLOSE - 20 * 60);
+  assert.equal(justResumed.sets.m1.at(-1).time, CLOSE - 23 * 60);
+  assert.ok(justResumed.sets.m5.every((candle) => candle.time + 300 <= CLOSE - 20 * 60));
+  /* It describes the market before the pause, 22 minutes behind the feed: not current. */
+  assert.equal(justResumed.current, false);
+
+  /* 14:40:05: the 14:35 candle, the first of the new session, has finished. The reading is the one of 14:40. */
+  const afterFirstCandle = closedCandleSets(paused(feedAt(CLOSE + 305), stopped, resumed));
+  assert.equal(afterFirstCandle.close, CLOSE + 300);
+  assert.equal(afterFirstCandle.current, true);
+  assert.equal(afterFirstCandle.sets.m5.at(-1).time, CLOSE);
+  assert.equal(afterFirstCandle.sets.m1.at(-1).time, CLOSE + 240);
+});
+
+test('a single 5-minute candle without a price: the reading stays the one before it, and is still current', () => {
+  /* No price from 14:29:50 to 14:35:20: the 14:30 candle does not exist. */
+  const feed = paused(feedAt(CLOSE + 40), CLOSE - 310, CLOSE + 20);
+  assert.ok(!times(feed.m5).includes(CLOSE - 300));
+  const { close, current, sets } = closedCandleSets(feed);
+  assert.equal(close, CLOSE - 300, 'the 14:25 candle closed at 14:30; nothing traded after it until now');
+  assert.equal(current, true, 'five minutes behind the feed');
+  assert.equal(sets.m5.at(-1).time, CLOSE - 600);
+});
+
+test('two 5-minute candles without a price are a pause: the reading from before them is not current', () => {
+  /* No price from 14:24:50 to 14:35:20: neither the 14:25 nor the 14:30 candle exists. */
+  const feed = paused(feedAt(CLOSE + 40), CLOSE - 610, CLOSE + 20);
+  const { close, current } = closedCandleSets(feed);
+  assert.equal(close, CLOSE - 600, 'the 14:20 candle closed at 14:25');
+  assert.equal(current, false, 'ten minutes behind the feed, which is two candles');
+  /* Five minutes later the first candle of the new session has finished. */
+  const next = closedCandleSets(paused(feedAt(CLOSE + 305), CLOSE - 610, CLOSE + 20));
+  assert.equal(next.close, CLOSE + 300);
+  assert.equal(next.current, true);
 });
 
 test('the next look comes right after the next 5-minute close when that is sooner than the regular check', () => {

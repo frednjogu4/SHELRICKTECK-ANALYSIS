@@ -121,6 +121,24 @@ test('the rule as it ran before: a reading at the end of every minute, so more o
   for (const alert of finished) assert.equal(alert.at - (alert.bars - 1) * 60, alert.time, 'the first exposed bar starts when the alert was made');
 });
 
+test('after a pause no reading is made until a 5-minute candle of the new session has finished', () => {
+  const full = walk(3000);
+  /* No bars for the 30 minutes from bar 1500 to bar 1530, as when a market closes for a break. */
+  const bars = [...full.slice(0, 1500), ...full.slice(1530)];
+  const resumedAt = full[1530].time;
+  const withPause = collect(bars, { timing: 'close' }), gapless = collect(full, { timing: 'close' });
+  /* Six closes, from the one the pause begins at, bring no bar and so no look. At the first bar after the pause
+     every finished candle is from before it: that look is made and not counted as a reading. */
+  assert.equal(withPause.summary.readings, gapless.summary.readings - 7);
+  assert.ok(withPause.alerts.every((alert) => alert.time !== resumedAt), 'no alert at the first price after the pause');
+  /* Up to the pause the two runs made the same readings. */
+  const before = (alert) => alert.time < full[1500].time;
+  assert.ok(gapless.alerts.filter(before).length > 0);
+  assert.deepEqual(withPause.alerts.filter(before).map(levels), gapless.alerts.filter(before).map(levels));
+  /* The rule as it ran before looked at every bar, pause or not. */
+  assert.equal(collect(bars, { timing: 'minute' }).summary.readings, bars.length - 119);
+});
+
 test('only alerts inside the counted span are counted; the bars before it warm the rule up, the bars after it finish its alerts', () => {
   const bars = walk(3000);
   const from = bars[1000].time, to = bars[2000].time;

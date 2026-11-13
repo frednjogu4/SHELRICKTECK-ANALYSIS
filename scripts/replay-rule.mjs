@@ -161,13 +161,15 @@ export function replay(bars, { symbol, timing = 'close', from = -Infinity, to = 
           return tail.length && tail[tail.length - 1].time === start ? tail : [...tail.slice(-(HELD - 1)), firstTick(start)];
         };
         const held = { m1: [...bars.slice(i - (HELD - 1), i), firstTick(bar.time)], m5: withTick(m5, 300), h1: withTick(h1, 3600) };
-        const { close, sets } = closedCandleSets(held);
-        if (close !== Math.floor(bar.time / READING_PERIOD_SEC) * READING_PERIOD_SEC) throw new Error('replay: the reading does not belong to the close that has just passed');
+        const { close, current, sets } = closedCandleSets(held);
+        if (close > Math.floor(bar.time / READING_PERIOD_SEC) * READING_PERIOD_SEC) throw new Error('replay: a reading cannot belong to a close that has not passed');
         /* Nothing that starts at or after the close may be part of the reading. */
         for (const [key, period] of [['m1', 60], ['m5', 300], ['h1', 3600]]) {
           for (const candle of sets[key]) if (candle.time + period > close) throw new Error('replay: a candle that had not finished went into a reading');
         }
-        read(sets, bar.time, i);
+        /* After a pause the application shows no reading until a 5-minute candle of the new session has finished:
+           the look is skipped, and the last reading shown stays the one to compare the next with. */
+        if (current) read(sets, bar.time, i);
       }
       addToCandles(m5, bar, 300); addToCandles(h1, bar, 3600);
     } else {

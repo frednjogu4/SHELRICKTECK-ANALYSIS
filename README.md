@@ -376,6 +376,13 @@ close**:
   A copy of a series from just before a close is never read as if the candle
   had closed; the reading then stays the one of the close before until the
   copy is renewed (`src/derivhistory.js` renews it at once after a close).
+- After a pause (the weekend, the daily break of gold, a quiet market) the
+  first new price makes the feed current again while every finished candle is
+  still from before the pause. No reading is shown then, and no alert is sent:
+  the market says `resumed, waiting for a finished candle` until a 5-minute
+  candle of the new session has closed. A reading belongs to a 5-minute candle
+  that traded, and is current while its close is less than two candles behind
+  the feed.
 - Each card says which close it was read at (`read at the 14:35 candle
   close`). The Gold monitor still checks every minute, and looks again a few
   seconds after each 5-minute close.
@@ -397,16 +404,16 @@ before the spread.
 
 | Market | Period | Alerts | Per weekday | Target 1 first | Alerts, look every minute | Per weekday | Target 1 first |
 |---|---|---|---|---|---|---|---|
-| Gold (XAU/USD) | Jan 2020 – Nov 2026 | 82,324 | 46 | **39.6%** | 177,715 | 100 | 39.8% |
-| EUR/USD | Mar – Sep 2026 | 6,458 | 49 | **40.2%** | 13,990 | 106 | 39.9% |
-| GBP/USD | Mar – Sep 2026 | 6,448 | 49 | **36.9%** | 13,876 | 105 | 36.8% |
-| AUD/USD | Mar – Sep 2026 | 6,564 | 50 | **39.3%** | 13,968 | 106 | 39.4% |
-| USD/JPY | Mar – Sep 2026 | 6,278 | 48 | **40.5%** | 13,703 | 104 | 40.1% |
-| USD/CHF | Mar – Sep 2026 | 6,277 | 48 | **38.6%** | 13,523 | 102 | 38.7% |
-| USD/CAD | Mar – Sep 2026 | 6,366 | 48 | **40.9%** | 13,887 | 105 | 41.2% |
-| US30 | Mar – Sep 2026 | 6,105 | 46 | **39.8%** | 13,055 | 99 | 39.9% |
-| NAS100 | Mar – Sep 2026 | 5,857 | 44 | **40.8%** | 12,536 | 95 | 41.4% |
-| SPX500 | Mar – Sep 2026 | 5,976 | 45 | **40.6%** | 12,923 | 98 | 40.3% |
+| Gold (XAU/USD) | Jan 2020 – Nov 2026 | 82,069 | 46 | **39.6%** | 177,715 | 100 | 39.8% |
+| EUR/USD | Mar – Sep 2026 | 6,453 | 49 | **40.2%** | 13,990 | 106 | 39.9% |
+| GBP/USD | Mar – Sep 2026 | 6,444 | 49 | **36.9%** | 13,876 | 105 | 36.8% |
+| AUD/USD | Mar – Sep 2026 | 6,560 | 50 | **39.3%** | 13,968 | 106 | 39.4% |
+| USD/JPY | Mar – Sep 2026 | 6,272 | 48 | **40.5%** | 13,703 | 104 | 40.1% |
+| USD/CHF | Mar – Sep 2026 | 6,273 | 48 | **38.6%** | 13,523 | 102 | 38.7% |
+| USD/CAD | Mar – Sep 2026 | 6,364 | 48 | **40.9%** | 13,887 | 105 | 41.2% |
+| US30 | Mar – Sep 2026 | 6,087 | 46 | **39.7%** | 13,055 | 99 | 39.9% |
+| NAS100 | Mar – Sep 2026 | 5,827 | 44 | **40.7%** | 12,536 | 95 | 41.4% |
+| SPX500 | Mar – Sep 2026 | 5,952 | 45 | **40.7%** | 12,923 | 98 | 40.3% |
 
 The first three figure columns are the rule as it runs now (one reading per
 5-minute close), the last three the rule as it ran before. Gold over the whole
@@ -414,24 +421,24 @@ period, as it runs now:
 
 | Gold, Jan 2020 – 11 Nov 2026, one reading per 5-minute close | Alerts | Target 1 first |
 |---|---|---|
-| Each single year 2020 … 2026 | 10,266 – 12,166 | 38.5 / 39.8 / 39.5 / 39.2 / 40.3 / 39.9 / 39.9% |
-| Score below 60 / 60–64 / 65–69 / 70–74 / 75–79 / 80 and above | 6,107 / 27,269 / 23,082 / 20,494 / 5,077 / 295 | 39.3 / 39.8 / 39.2 / 39.7 / 39.5 / 40.3% |
-| All three timeframes agree | 7,842 | 39.5% |
-| The 1-hour vote agrees / is neutral / is against | 34,983 / 22,041 / 25,300 | 40.0 / 39.0 / 39.5% |
-| BUY / SELL | 42,087 / 40,237 | 39.8 / 39.4% |
-| Control: the opposite direction at the same moments, same distances | 82,324 | 40.6% |
-| Control: a coin flip at the same moments, same distances | 82,324 | 39.9% |
+| Each single year 2020 … 2026 | 10,236 – 12,119 | 38.6 / 39.8 / 39.5 / 39.1 / 40.4 / 39.9 / 39.9% |
+| Score below 60 / 60–64 / 65–69 / 70–74 / 75–79 / 80 and above | 6,087 / 27,178 / 23,012 / 20,429 / 5,067 / 296 | 39.4 / 39.9 / 39.2 / 39.7 / 39.4 / 40.2% |
+| All three timeframes agree | 7,831 | 39.4% |
+| The 1-hour vote agrees / is neutral / is against | 34,851 / 21,997 / 25,221 | 40.0 / 39.0 / 39.5% |
+| BUY / SELL | 41,964 / 40,105 | 39.8 / 39.4% |
+| Control: the opposite direction at the same moments, same distances | 82,069 | 40.6% |
+| Control: a coin flip at the same moments, same distances | 82,069 | 39.8% |
 
 In words: on this data the rule's direction was right as often as a coin's,
 its score did not separate better alerts from worse ones, and stricter
 versions of the same votes did not change that. The six-month figures of the
 other markets lie between 37% and 41%; with about 6,000 alerts each they are
-known to about ±1.2 points at best, so none of them is evidence of an edge
-(on GBP/USD, the lowest, a coin flip at the same moments reached 38.4%). One
-reading per 5-minute
+known to about ±1.2 points at best, so none of them is evidence of an edge.
+(The coin flip itself moves by that much from one run to the next: on GBP/USD
+it reached 38.4% in one run and 39.8% in another.) One reading per 5-minute
 candle halves the number of alerts and leaves the share where it was: per gold
 alert at 0.01 lot the replay gives −$0.02 before the spread and −$0.27 after an
-assumed $0.25, about −$22,100 over the period against −$43,700 with a look
+assumed $0.25, about −$22,000 over the period against −$43,700 with a look
 every minute. Fewer alerts cost less; they do not win more often. The live
 movement of the score does not change this either: it reports where the price
 is against a reading, it does not predict where it goes next.
@@ -439,7 +446,7 @@ is against a reading, it does not predict where it goes next.
 What the page shows (`measuredText` in `src/measured.js`): under a BUY or SELL
 of the 1m/5m/1h rule, the figure of that market and of the timing that made
 the reading, for example `Measured in a replay on gold (Jan 2020 – Nov 2026):
-39.6% of 82,324 signals of this rule reached target 1 before the stop; 40% is
+39.6% of 82,069 signals of this rule reached target 1 before the stop; 40% is
 needed to break even, before the spread. Not a forecast.` A market that was
 not replayed says so and gives the range of the ten that were. A WAIT has no
 such line. A daily index reading (US30, NAS100, SPX500 on the cloud) has no
@@ -462,8 +469,8 @@ Data used: gold, the public archive
 markets, the free six-month 1-minute samples published on GitHub by
 getdata.finance (26 March to 25 September 2026). Neither is Exness's or
 Deriv's price series. As a check of one source against the other, gold over
-the same six months gives 39.8% of 6,065 alerts in the first and 39.7% of
-6,022 in the second.
+the same six months gives 39.8% of 6,045 alerts in the first and 39.7% of
+6,002 in the second.
 
 Limits of the replay: one price series per market that is not the broker's;
 the alert is taken at the price of the 5-minute close it belongs to, while a
