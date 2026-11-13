@@ -47,8 +47,8 @@ test('RSI on a strictly falling series is 0 (no gains)', () => {
   assert.equal(val, 0);
 });
 
-test('RSI on equal up/down deltas is exactly 50', () => {
-  assert.equal(rsi(alternating(30), 14), 50);
+test('Wilder RSI on alternating gains and losses matches its recursive average', () => {
+  assert.ok(Math.abs(rsi(alternating(30), 14) - 52.461158602229915) < 1e-10);
 });
 
 test('RSI on a flat market (zero variance) is 50, not the 0/0 NaN trap', () => {
