@@ -980,11 +980,14 @@ neither did the next three: no check on the commit, and nothing to retry.
 GitHub received nothing from Cloudflare for them, neither the check Cloudflare
 posts when a build starts nor a failed one. GitHub had registered each of
 these pushes for Cloudflare's app: it holds a check suite of that app for the
-commit, opened within seconds of the push and still empty
+commit, opened within seconds of the push
 (`gh api repos/<owner>/<repository>/commits/<commit>/check-suites` lists it as
-`cloudflare-workers-and-pages`, `queued`, no runs). So the app was installed
-on the repository each time. Whether GitHub's notice reached Cloudflare cannot
-be seen from the repository; that Cloudflare never answered it can.
+`cloudflare-workers-and-pages`). So the app was installed on the repository
+each time. No check run for a build of `main` was ever added to any of the
+eight: seven are still `queued` and empty, and the eighth, `e0e7903`, carries
+only the failed preview build of a branch that pointed at it later. Whether
+GitHub's notice of the push reached Cloudflare cannot be seen from the
+repository.
 
 | Push to `main` (UTC) | What | Published by |
 | --- | --- | --- |
