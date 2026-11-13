@@ -1,11 +1,11 @@
 @echo off
 title Fredrick TRADING - Exness MT5 Bridge
 cd /d "%~dp0"
-rem Optional: uncomment and replace with the exact local Exness terminal64.exe path.
-rem set "AURUM_MT5_PATH=C:\path\to\Exness\terminal64.exe"
+rem Optional: set this once if several MT5 terminals are installed.
+rem set "AURUM_MT5_PATH=C:\Program Files\Exness MT5\terminal64.exe"
 echo ============================================================
 echo  Fredrick TRADING - Exness (MT5) local bridge -- setup + run
-echo  Keep MetaTrader 5 open and logged in FIRST.
+echo  Starts MT5 only if it is closed; an open terminal is never stopped.
 echo  LEAVE THIS WINDOW OPEN during local read-only verification.
 echo ============================================================
 echo.
@@ -20,6 +20,11 @@ if not exist requirements.txt (
 )
 if not exist AUTO_START.bat (
   echo [X] AUTO_START.bat is missing; extract the full latest ZIP before running setup.
+  pause
+  exit /b 1
+)
+if not exist START_MT5_IF_CLOSED.ps1 (
+  echo [X] START_MT5_IF_CLOSED.ps1 is missing; extract the updated complete package.
   pause
   exit /b 1
 )
@@ -101,6 +106,13 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+echo [3.5/4] Checking MT5; starting Exness MT5 only if no terminal is open...
+if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0START_MT5_IF_CLOSED.ps1" -PathFile "%~dp0terminal_path.txt"
+if errorlevel 1 echo [!] MT5 auto-start check failed; the app and bridge will continue. Open MT5 manually if needed.
+if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt"
+if not exist "%~dp0terminal_path.txt" set "AURUM_MT5_PATH="
+if defined AURUM_MT5_PATH echo        MT5 target selected; the bridge will attach to that terminal.
 echo [4/4] Freeing ports 8787/8788 from any earlier bridge window (normal; it prints nothing)...
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8787" ^| findstr "LISTENING"') do taskkill /PID %%P /F >nul 2>&1
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8788" ^| findstr "LISTENING"') do taskkill /PID %%P /F >nul 2>&1
@@ -114,24 +126,27 @@ if exist "%~dp0..\LOCAL_HOST_ONLY.txt" if not exist "%~dp0..\server\server.js" (
   pause
   exit /b 1
 )
-if exist "%~dp0..\server\server.js" (
-  echo        Local backend found -- checking the Express API on loopback...
-  call "%~dp0..\START_LOCAL_API.bat"
-  if errorlevel 1 (
-    echo [X] Local API did not start. The bridge will NOT fall back to Railway.
-    pause
-    exit /b 1
-  )
-  set "AURUM_UPSTREAM=http://127.0.0.1:4100"
-  set "AURUM_LOCAL_API_AUTH=1"
-  set "AURUM_LOCAL_API_TOKEN=%AURUM_BRIDGE_TOKEN%"
-  set "AURUM_BRIDGE_ALLOWED_ORIGINS="
-) else (
-  set "AURUM_UPSTREAM=https://aurum-staging.up.railway.app"
-  set "AURUM_LOCAL_API_AUTH="
-  set "AURUM_LOCAL_API_TOKEN="
-  set "AURUM_BRIDGE_ALLOWED_ORIGINS=aurum-staging.up.railway.app"
+if exist "%~dp0..\server\server.js" goto local_backend
+goto fallback_backend
+:local_backend
+echo        Local backend found -- checking the Express API on loopback...
+call "%~dp0..\START_LOCAL_API.bat"
+if errorlevel 1 (
+  echo [X] Local API did not start. The bridge will NOT fall back to Railway.
+  pause
+  exit /b 1
 )
+set "AURUM_UPSTREAM=http://127.0.0.1:4100"
+set "AURUM_LOCAL_API_AUTH=1"
+set "AURUM_LOCAL_API_TOKEN=%AURUM_BRIDGE_TOKEN%"
+set "AURUM_BRIDGE_ALLOWED_ORIGINS="
+goto backend_configured
+:fallback_backend
+set "AURUM_UPSTREAM=https://aurum-staging.up.railway.app"
+set "AURUM_LOCAL_API_AUTH="
+set "AURUM_LOCAL_API_TOKEN="
+set "AURUM_BRIDGE_ALLOWED_ORIGINS=aurum-staging.up.railway.app"
+:backend_configured
 echo        Saving the selected Python path for automatic startup...
 %PY% -c "import sys; print(sys.executable)" > "%~dp0python_runtime.txt"
 if errorlevel 1 (
@@ -151,16 +166,41 @@ if errorlevel 1 (
 echo.
 echo        Starting the bridge. It prints YOUR exact address below.
 echo        On THIS PC:  http://127.0.0.1:8788/app
-echo        Local Bridge URL in the app: ws://127.0.0.1:8787
+echo        Local app uses its same-origin bridge socket on port 8788.
 echo        On a PHONE or tablet (same wifi): use the http://...:8788/app link
 echo        the bridge prints -- or the https app with Bridge URL + token.
 echo        Bridge token stored locally in bridge_token.txt; do not share it in chat or screenshots.
 echo        If Windows asks about the firewall: ALLOW python on Private networks.
 echo.
-%PY% mt5_bridge.py
-echo.
-echo === Bridge stopped. Exit code: %errorlevel% ===
-echo If it never said "listening":
-echo   - is MetaTrader 5 OPEN and logged in? Open it, log in, run this again
-echo   - send a screenshot of this whole window to the assistant
+echo        Starting the bridge in its own visible window...
+start "Fredrick TRADING - Exness MT5 Bridge" %PY% "%~dp0mt5_bridge.py"
+set /a bridge_tries=0
+:wait_for_local_bridge
+powershell -NoProfile -Command "try{$r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8788/ready' -TimeoutSec 2;if($r.StatusCode -eq 200 -and $r.Content -match 'AURUM local app bridge ready'){exit 0}}catch{};exit 1" >nul 2>&1
+if not errorlevel 1 goto local_bridge_ready
+set /a bridge_tries+=1
+if %bridge_tries% GEQ 60 goto local_bridge_timeout
+timeout /t 1 /nobreak >nul
+goto wait_for_local_bridge
+:local_bridge_timeout
+echo [X] Local app server on port 8788 did not become ready after 60 seconds.
+echo     Chrome will NOT be opened to a refused connection. Inspect the separate bridge window.
+echo     Send a screenshot of its last lines or a redacted logs\local-startup-*.log; do not send tokens or passwords.
+pause
+exit /b 1
+:local_bridge_ready
+echo [OK] Local app server and same-origin bridge endpoint are ready. Opening the app in Chrome...
+:open_local_app
+echo Opening a fresh local app tab in Chrome (the browser is not force-closed)...
+set "AURUM_CHROME="
+if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" set "AURUM_CHROME=%ProgramFiles%\Google\Chrome\Application\chrome.exe"
+if not defined AURUM_CHROME if exist "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" set "AURUM_CHROME=%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
+if not defined AURUM_CHROME if exist "%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe" set "AURUM_CHROME=%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
+if defined AURUM_CHROME (
+  start "" "%AURUM_CHROME%" --new-tab "http://127.0.0.1:8788/app"
+) else (
+  echo Chrome was not found in its standard install folders; opening the default browser instead.
+  start "" "http://127.0.0.1:8788/app"
+)
+echo Leave the separate Fredrick TRADING - Exness MT5 Bridge window open.
 pause

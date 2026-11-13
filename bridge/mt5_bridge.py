@@ -1052,6 +1052,37 @@ def _start_http_app(port=8788):
                     self._ws()
                     return
                 path = (self.path or "/").split("?", 1)[0]
+                if path == "/ready" and (self.command or "GET").upper() == "GET":
+                    self._send(200, "text/plain; charset=utf-8", b"AURUM local app bridge ready", [("Cache-Control", "no-store")])
+                    return
+                if path == "/local-config" and (self.command or "GET").upper() == "GET":
+                    # Auto-fill the local bridge token only in a same-origin
+                    # loopback browser tab. Never disclose it to LAN clients.
+                    import ipaddress
+                    try:
+                        peer_ip = ipaddress.ip_address(str(self.client_address[0]))
+                        peer_loopback = peer_ip.is_loopback or bool(getattr(peer_ip, "ipv4_mapped", None) and peer_ip.ipv4_mapped.is_loopback)
+                    except ValueError:
+                        peer_loopback = False
+                    host = str(self.headers.get("Host") or "").lower()
+                    origin = str(self.headers.get("Origin") or "").rstrip("/").lower()
+                    fetch_site = str(self.headers.get("Sec-Fetch-Site") or "").lower()
+                    allowed_hosts = {"127.0.0.1:8788", "localhost:8788", "[::1]:8788"}
+                    expected_origin = "http://" + host
+                    allowed = peer_loopback and host in allowed_hosts and (not origin or origin == expected_origin) and fetch_site in ("", "same-origin")
+                    if not allowed:
+                        self._send(403, "application/json; charset=utf-8", b'{"error":"local token is available only to this PC browser tab"}', [("Cache-Control", "no-store")])
+                        return
+                    exness_server = ""
+                    try:
+                        account = mt5.account_info()
+                        if account is not None:
+                            exness_server = str(getattr(account, "server", "") or "")
+                    except Exception:
+                        pass
+                    payload = json.dumps({"bridgeToken": _BRIDGE_TOKEN, "exnessServer": exness_server}).encode("utf-8")
+                    self._send(200, "application/json; charset=utf-8", payload, [("Cache-Control", "no-store"), ("Vary", "Origin")])
+                    return
                 if path.rstrip("/") == "/bridge" and (self.command or "GET").upper() == "POST":
                     n = int(self.headers.get("Content-Length") or 0)
                     body = self.rfile.read(n) if n else b""
