@@ -716,13 +716,21 @@ dashboard.
 ### When a merge does not reach the live site
 
 The staging Worker is published by that Git integration: a merge into `main`
-starts a build, and a successful build becomes the active deployment. The
-builds so far took 22 to 45 seconds.
+starts a build, and a successful build becomes the active deployment.
+Cloudflare reports every build on the commit in GitHub, as the check
+**Workers Builds: cloudflare-staging**. For the 23 builds of `main` up to
+13 November the result arrived 24 to 87 seconds after the push, and all 23
+succeeded.
 
 **What is live.** Cloudflare dashboard → Workers & Pages → `cloudflare-staging`
 → **Deployments**. "Active deployment" is the version that serves the site.
 Its row in the list below carries the commit message of the merge it was built
-from.
+from. GitHub shows it on the list of commits of `main` too: a commit that
+Cloudflare has built carries a mark, a green tick after a successful build. A
+merge commit that carries no mark at all two minutes after the merge was not
+built. (Two commits there, `1534184` and `d3fdf22`, show a red cross although
+they were published: a branch was created at each of them later, and the
+preview build of that branch failed.)
 
 **The merge is not in that list.** The list shows successful builds only.
 
@@ -736,12 +744,56 @@ from.
 4. If no build exists for the merge at all, the next commit on `main` starts
    one, and it publishes everything merged up to then.
 
+**Pushes that were never built.** Of the 26 pushes to `main` between the first
+build (9 November) and 13 November, three got no build at all: no check on the
+commit, and nothing to retry.
+
+| Push to `main` (UTC) | What | Published by |
+| --- | --- | --- |
+| 11 Nov, 20:00:44 | merge of #4 | the build of #5, an hour and a half later |
+| 13 Nov, 08:00:43 | files uploaded on GitHub | the build of #11, three and a half hours later |
+| 13 Nov, 18:00:09 | merge of #12 | the next push to `main` |
+
+All three were pushed in the first minute after a full hour. None of the 23
+pushes that were built was: the nearest ones came 4 and 18 seconds before an
+hour, and 3 and 5 minutes after one. The cause has not been established.
+GitHub received no check from Cloudflare for these pushes, neither the one
+Cloudflare posts when a build starts nor a failed one, and whether GitHub
+delivered the pushes to Cloudflare's app cannot be seen from the repository.
+The first of the three is from two days before the repository was renamed, so
+the rename is not needed to explain them. Until the cause is known:
+
+- merge at five minutes past the hour or later;
+- after a merge, look for the check on the merge commit. Without one, the
+  merge is published by the next push to `main` (point 4 above).
+
 **Pull requests get a separate preview build.** It runs Cloudflare's Preview
 command (`npx wrangler preview` by default, an open-beta Wrangler command)
-instead of the deploy command. The preview builds of pull requests #3 and #4
-failed. The cause is in Cloudflare's build log and has not been established.
-A red preview mark on a pull request is not the result of the production
-publish: #3 was published after its preview had failed.
+instead of the deploy command. Every preview build so far has failed: on each
+of the pull requests #3 to #12, before the repository was renamed and after.
+The cause is in Cloudflare's build log and has not been established. The log
+is behind the **View logs** link of Cloudflare's comment on the pull request
+and opens only for someone signed in to the Cloudflare account. Wrangler
+itself accepts the configuration: `npx wrangler versions upload --dry-run`
+passes, and so does the production deploy. A red preview mark on a pull
+request is not the result of the production publish: #3 was published after
+its preview had failed.
+
+**The repository's name.** The Worker's name, the site's address and `name` in
+`wrangler.jsonc` do not depend on the name of the GitHub repository, and the
+rename of 13 November changed none of them. Cloudflare's build settings keep
+showing the repository under the name it had when it was connected. That alone
+is no fault: after the rename Cloudflare still started builds for this
+repository (preview builds on 13 November from 12:56 UTC on, one of them a
+**Re-run** asked for on GitHub). The pages of Cloudflare's Workers Builds
+documentation read on that day (Git integration, configuration, build
+branches, troubleshooting) do not mention a rename. Its documented way to
+switch a Worker to another repository is **Settings** → **Builds** →
+**Disconnect**, then **Connect**, and the repository can be chosen there again
+under its new name. Write the build settings down before disconnecting, and
+push a commit to `main` afterwards: connecting does not start a build by
+itself. GitHub redirects the old address to the new one only as long as no new
+repository takes the old name.
 
 ### Bringing in a package made outside this repository
 
