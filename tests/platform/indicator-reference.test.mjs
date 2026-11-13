@@ -32,22 +32,22 @@ test('EMA 20 and 50, MACD 12/26/9 and Bollinger 20/2 equal the independent calcu
   near(bands.mid, sma(CLOSES, 20), 'middle band is the 20-candle average');
 });
 
-test('RSI 14 is the simple-average RSI, which is not the Wilder RSI a chart shows', () => {
-  near(rsi(CLOSES), 11.741539, 'RSI as coded');
-  /* Wilder: the same first average, then each new change enters with weight 1/14. */
+test('RSI 14 matches an independent Wilder-smoothed calculation', () => {
   let gain = 0, loss = 0;
   for (let i = 1; i <= 14; i++) { const d = CLOSES[i] - CLOSES[i - 1]; if (d > 0) gain += d; else loss -= d; }
   gain /= 14; loss /= 14;
   for (let i = 15; i < CLOSES.length; i++) { const d = CLOSES[i] - CLOSES[i - 1]; gain = (gain * 13 + Math.max(d, 0)) / 14; loss = (loss * 13 + Math.max(-d, 0)) / 14; }
-  const wilder = 100 - 100 / (1 + gain / loss);
-  assert.ok(Math.abs(rsi(CLOSES) - wilder) > 5, `on this series the two differ by ${Math.abs(rsi(CLOSES) - wilder).toFixed(1)} points`);
-  /* The simple-average RSI of a window depends only on its last 15 closes. */
-  assert.equal(rsi(CLOSES), rsi(CLOSES.slice(-15)));
+  const expected = 100 - 100 / (1 + gain / loss);
+  near(rsi(CLOSES), expected, 'Wilder RSI');
+  assert.ok(Math.abs(rsi(CLOSES) - rsi(CLOSES.slice(-15))) > 1, 'Wilder RSI retains its seeded history');
 });
 
-test('ATR 14 is the plain average of the last 14 true ranges, not the Wilder average', () => {
-  near(atr(CANDLES), 1.587898, 'ATR as coded');
-  assert.equal(atr(CANDLES), atr(CANDLES.slice(-15)), 'only the last 15 candles count');
+test('ATR 14 matches an independent Wilder-smoothed true-range calculation', () => {
+  const ranges = CANDLES.slice(1).map((c, i) => Math.max(c.high - c.low, Math.abs(c.high - CANDLES[i].close), Math.abs(c.low - CANDLES[i].close)));
+  let expected = ranges.slice(0, 14).reduce((sum, value) => sum + value, 0) / 14;
+  for (const value of ranges.slice(14)) expected = (expected * 13 + value) / 14;
+  near(atr(CANDLES), expected, 'Wilder ATR');
+  assert.ok(Math.abs(atr(CANDLES) - atr(CANDLES.slice(-15))) > 1e-4, 'Wilder ATR retains its seeded history');
 });
 
 test('EMA 200 and SMA 200 cannot be computed from the candles the application reads', () => {
