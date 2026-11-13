@@ -1881,12 +1881,15 @@ function directionalMarket() {
 }
 
 /* The page's clock in seconds, and a way to move it. `settle()` leaves room for two looks inside one 5-minute candle
-   and returns the close that candle began with. */
+   and returns the close that candle began with. It also moves the clock out of the first twenty seconds of a candle:
+   a test that says "two seconds ago" means a moment inside the candle it stands in. Without that, three tests
+   about a market that has just resumed failed when they ran within two seconds after a 5-minute close (their
+   pause then ended in the candle before, which is a different market: one whose first candle has closed). */
 function pageClock(app) {
   let shift = 0;
   const now = () => Date.now() / 1000 + shift;
   const advance = (seconds) => { shift += seconds; app.advanceClock(seconds * 1000); };
-  const settle = () => { if (now() % 300 > 180) advance(320 - (now() % 300)); return Math.floor(now() / 300) * 300; };
+  const settle = () => { const into = now() % 300; if (into > 180) advance(320 - into); else if (into < 20) advance(20 - into); return Math.floor(now() / 300) * 300; };
   return { now, advance, settle };
 }
 const hhmm = (seconds) => new Date(seconds * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
