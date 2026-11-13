@@ -1,13 +1,5 @@
 name: CI
 
-# HOW TO SWITCH THIS ON
-# GitHub only runs workflows stored in .github/workflows/. This file was
-# delivered one folder above it because the tool that prepared the change is
-# not permitted to write into that folder. To activate it, on github.com open
-# this file, choose "Edit", change its name from "ci.yml" to "workflows/ci.yml"
-# (so the path reads .github/workflows/ci.yml) and commit. Nothing else needs
-# to be edited.
-#
 # Verification only. This workflow never deploys, holds no Cloudflare token and
 # needs no secrets: `wrangler deploy --dry-run` bundles the Worker and stops
 # before anything is uploaded. Deployments stay a manual, approved step.
@@ -77,9 +69,7 @@ jobs:
           fi
 
   bridge:
-    # Replaces the stock "Python Package using Conda" template, which failed
-    # because this repository has no conda environment (environment.yml).
-    # The PC bridge tests use only the Python standard library: MetaTrader5 and
+        # The PC bridge tests use only the Python standard library: MetaTrader5 and
     # websockets are replaced by in-test fakes, so nothing is installed and
     # neither a broker nor the network is contacted.
     name: PC bridge tests (Python ${{ matrix.python }})
