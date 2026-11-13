@@ -118,17 +118,24 @@ test('diagnose: works with the key and NEVER returns the PAT', async () => {
    for it (newsEvidenceTrusted in server/lib/riskgate.js). The page sends `newsBlocked: false`, and this route has
    no calendar check of its own, so the check is UNKNOWN for every request and every order is refused. This test
    states that consequence as it is. */
-test('Exness order check: with no news evidence of the server\'s own, an order that passes every other check is refused and nothing is reserved', async () => {
-  const mt5 = { 'x-aurum-user': 'mt5-refused-tester' };
-  const refused = await post('/api/risk/gate', { amount: 10, venue: 'mt5', once: 'intent-refused-1', rr: 1, marketHours: true, newsBlocked: false }, mt5);
-  assert.equal(refused.status, 400);
-  const body = await refused.json();
+test('generic MT5 risk gate fails closed when news evidence is not server-verified', async () => {
+  const mt5 = { 'x-aurum-user': 'mt5-reservation-tester' };
+  const once = 'intent-untrusted-news';
+  const order = { amount: 10, venue: 'mt5', once, rr: 1, marketHours: true, newsBlocked: false };
+  const response = await post('/api/risk/gate', order, mt5);
+  assert.equal(response.status, 400);
+  const body = await response.json();
   assert.equal(body.error, 'risk_blocked');
-  assert.deepEqual(body.checks.filter((c) => c.mandatory && c.status !== 'PASSED').map((c) => [c.name, c.status]), [['news_event', 'UNKNOWN']], 'the news evidence is the only check in the way');
+  const news = body.checks.find((check) => check.name === 'news_event');
+  assert.equal(news.status, 'UNKNOWN');
+  assert.match(news.reason, /not verified by the server/i);
+  /* The order passes every other check: the news evidence is the only thing in the way. */
+  assert.deepEqual(body.checks.filter((c) => c.mandatory && c.status !== 'PASSED').map((c) => [c.name, c.status]), [['news_event', 'UNKNOWN']]);
   assert.match(body.detail, /news_event/);
-  /* Nothing was reserved for the refused intent, and the same intent can be asked again (it is not a duplicate). */
-  assert.equal((await post('/api/risk/fill', { kind: 'release', once: 'intent-refused-1' }, mt5)).status, 409);
-  assert.equal((await post('/api/risk/gate', { amount: 10, venue: 'mt5', once: 'intent-refused-1', rr: 1, marketHours: true, newsBlocked: false }, mt5)).status, 400);
+  assert.equal((await post('/api/risk/fill', { kind: 'release', once }, mt5)).status, 409,
+    'a blocked intent must not create a reservation that can be committed or closed');
+  /* Nothing was reserved, so the same intent asked again is refused for the same reason, not as a duplicate. */
+  assert.equal((await post('/api/risk/gate', order, mt5)).status, 400);
 });
 
 /* Skipped, not deleted: a reservation is made only by an approved order, and no order is approved (see the test

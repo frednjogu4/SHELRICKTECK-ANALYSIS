@@ -967,7 +967,7 @@ async function run() {
     const riskTest = readFileSync(join(root, 'server', 'tests', 'risklimits.test.mjs'), 'utf8');
     check('20p: server tracks pending Exness reservations and only releases matching pending intents', ap.includes('reservations: new Map()') && ap.includes("reservation.status !== 'pending'") && ap.includes("kind === 'release'"));
     check('20p: manual and sniper Exness failures release reservations; ambiguous transport outcomes stay reserved', main.includes('releaseMt5RiskReservation') && main.includes('mt5ResultAmbiguous') && main.includes("body:{kind:'open',once}"));
-    check('20p: Exness reservation regression test covers release, commit, and close', riskTest.includes('Exness risk reservations release on failed entries') && riskTest.includes('intent-filled-2'));
+    check('20p: MT5 risk gate rejects untrusted browser news and creates no reservation', riskTest.includes('generic MT5 risk gate fails closed when news evidence is not server-verified') && riskTest.includes('not verified by the server'));
   }
 
   /* ---------- round 20q: local app serves even when MT5 attach fails ---------- */

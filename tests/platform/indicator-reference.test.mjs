@@ -39,6 +39,14 @@ test('EMA 20 and 50, MACD 12/26/9 and Bollinger 20/2 equal the independent calcu
 
 test('RSI 14 is the Wilder RSI a chart shows; the former simple-average RSI read the same series very differently', () => {
   near(rsi(CLOSES), 37.586140, 'Wilder RSI, independent calculation');
+  /* The same value from the recurrence written out: the average of the first 14 changes, then each newer change with weight 1/14. */
+  {
+    let up = 0, down = 0;
+    for (let i = 1; i <= 14; i++) { const d = CLOSES[i] - CLOSES[i - 1]; if (d > 0) up += d; else down -= d; }
+    up /= 14; down /= 14;
+    for (let i = 15; i < CLOSES.length; i++) { const d = CLOSES[i] - CLOSES[i - 1]; up = (up * 13 + Math.max(d, 0)) / 14; down = (down * 13 + Math.max(-d, 0)) / 14; }
+    near(rsi(CLOSES), 100 - 100 / (1 + up / down), 'Wilder RSI, written out');
+  }
   /* The former definition: the average of the last 14 changes and nothing before them. */
   let gain = 0, loss = 0;
   for (let i = CLOSES.length - 14; i < CLOSES.length; i++) { const d = CLOSES[i] - CLOSES[i - 1]; if (d > 0) gain += d; else loss -= d; }
@@ -53,6 +61,11 @@ test('RSI 14 is the Wilder RSI a chart shows; the former simple-average RSI read
 
 test('ATR 14 is the Wilder average of the true ranges; the former plain average used the last 14 only', () => {
   near(atr(CANDLES), 1.581492, 'Wilder ATR, independent calculation');
+  /* The same value from the recurrence written out. */
+  const ranges = CANDLES.slice(1).map((c, i) => Math.max(c.high - c.low, Math.abs(c.high - CANDLES[i].close), Math.abs(c.low - CANDLES[i].close)));
+  let expected = ranges.slice(0, 14).reduce((sum, value) => sum + value, 0) / 14;
+  for (const value of ranges.slice(14)) expected = (expected * 13 + value) / 14;
+  near(atr(CANDLES), expected, 'Wilder ATR, written out');
   near(atr(CANDLES.slice(-15)), 1.587898, 'with 15 candles only the first average exists: the value pinned until 13 November 2026');
   assert.notEqual(atr(CANDLES), atr(CANDLES.slice(-15)), 'candles before the last 14 count');
   assert.ok(Math.abs(atr(CANDLES.slice(-READING_CANDLES)) - atr(CANDLES)) < 0.001);

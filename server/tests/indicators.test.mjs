@@ -57,6 +57,10 @@ test('RSI on equal up/down deltas is 50 at the first average and stays near 50, 
   assert.ok(Math.abs(lastDown - 48.713932987785) < 1e-9, String(lastDown));
 });
 
+test('Wilder RSI on alternating gains and losses matches its recursive average', () => {
+  assert.ok(Math.abs(rsi(alternating(30), 14) - 52.461158602229915) < 1e-10);
+});
+
 test('RSI on a flat market (zero variance) is 50, not the 0/0 NaN trap', () => {
   assert.equal(rsi(new Array(30).fill(100), 14), 50);
 });
