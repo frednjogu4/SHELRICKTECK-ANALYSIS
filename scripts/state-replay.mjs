@@ -31,11 +31,12 @@
  * --spread     price units taken off every alert in the results per alert
  * --no-alerts  the states only, without the rule's alerts (much faster)
  *
- * What it cannot tell: fills, spreads, a broker's own prices, or anything
- * about the future. The candles are built from the 1-minute bars of the file
- * as its clock stands; an archive that stamps its bars with broker time gives
- * 4-hour candles that start at other hours than Deriv's, which moves no share
- * by more than chance does.
+ * What it cannot tell: fills, a broker's own prices and spreads (--spread is
+ * one assumed figure for every alert), or anything about the future. The
+ * candles are built from the 1-minute bars of the file as its clock stands;
+ * an archive that stamps its bars with broker time gives 4-hour candles that
+ * start at other hours than Deriv's. What that does to the shares was not
+ * measured.
  * ================================================================ */
 
 import { pathToFileURL } from 'node:url';
@@ -121,8 +122,8 @@ export function runLengths(states, pick) {
   }));
 }
 
-/* The newest state whose close is not later than `time`; null before the first. */
-function stateAt(states, time) {
+/** The newest state whose close is not later than `time`; null before the first. */
+export function stateAt(states, time) {
   let low = 0, high = states.length - 1, found = -1;
   while (low <= high) {
     const middle = (low + high) >> 1;
@@ -150,7 +151,9 @@ function tallyInto(table, key, outcome, reading) {
  * A table of rows as shares and results per alert.
  *   targetFirstPercent   share of finished alerts that reached target 1 before the stop
  *   breakEvenPercent     the share at which wins and losses cancel, from the row's own average win and
- *                        loss, with `spread` taken off every alert
+ *                        loss, with `spread` taken off every alert. For one alert a win is 1.5 times the
+ *                        loss, which gives 40% before the spread; for a row it is 40% only when its
+ *                        winners and its losers are of the same size on average
  *   perAlert             average result in price units before the spread; perAlertAfterSpread after it
  */
 function finish(table, spread = 0) {
@@ -171,12 +174,15 @@ function finish(table, spread = 0) {
 /**
  * @param {Array}  bars     1-minute bars, oldest first
  * @param {object} options  symbol: the application's name for the market; alerts: false leaves the rule's
- *                          alerts out; spread: price units taken off every alert in the results per alert
+ *                          alerts out; spread: price units taken off every alert in the results per alert;
+ *                          timeframes: the ones to compute (all four unless a test asks for fewer);
+ *                          onMatch({ time, close, signal, entry, stop, target, outcome, states }): called
+ *                          for every alert that was matched, with the state of each timeframe it was matched with
  */
-export function measure(bars, { symbol, from = -Infinity, to = Infinity, alerts = true, spread = 0 } = {}) {
+export function measure(bars, { symbol, from = -Infinity, to = Infinity, alerts = true, spread = 0, timeframes = STATE_TIMEFRAMES, onMatch = null } = {}) {
   const perTimeframe = {};
   const states = {};
-  for (const timeframe of STATE_TIMEFRAMES) {
+  for (const timeframe of timeframes) {
     const candles = candlesFrom(bars, timeframe.seconds);
     const all = statesOver(candles, timeframe);
     states[timeframe.key] = all;
@@ -197,35 +203,37 @@ export function measure(bars, { symbol, from = -Infinity, to = Infinity, alerts 
   if (!alerts) return result;
 
   const byTrend = {}, byStructure = {}, byVolatility = {}, combined = {}, byYear = {};
-  for (const timeframe of STATE_TIMEFRAMES) { byTrend[timeframe.label] = {}; byStructure[timeframe.label] = {}; byVolatility[timeframe.label] = {}; }
+  for (const timeframe of timeframes) { byTrend[timeframe.label] = {}; byStructure[timeframe.label] = {}; byVolatility[timeframe.label] = {}; }
   let matched = 0, unmatched = 0;
   const rule = replay(bars, {
     symbol, from, to,
     onAlert: ({ time, reading, outcome }) => {
       /* The alert is made on the first bar after a 5-minute close: that close is what it knows. */
       const close = Math.floor(time / 300) * 300;
-      const found = STATE_TIMEFRAMES.map((timeframe) => stateAt(states[timeframe.key], close));
+      const found = timeframes.map((timeframe) => stateAt(states[timeframe.key], close));
       if (found.some((state) => !state)) { unmatched++; return; }
       matched++;
-      const relations = [];
-      STATE_TIMEFRAMES.forEach((timeframe, index) => {
+      if (onMatch) onMatch({ time, close, signal: reading.signal, entry: reading.entry, stop: reading.stop_loss, target: reading.tp1, outcome, states: Object.fromEntries(timeframes.map((timeframe, index) => [timeframe.key, found[index]])) });
+      const relations = [], byKey = {};
+      timeframes.forEach((timeframe, index) => {
         const state = found[index];
         const trend = relation(reading.signal, state.trend);
         relations.push(trend);
+        byKey[timeframe.key] = trend;
         tallyInto(byTrend[timeframe.label], trend, outcome, reading);
         tallyInto(byStructure[timeframe.label], relation(reading.signal, state.structure), outcome, reading);
         tallyInto(byVolatility[timeframe.label], state.volatility.toLowerCase(), outcome, reading);
       });
-      const [, , h1, h4] = relations;
+      const { h1, h4 } = byKey;
       const groups = ['all alerts'];
       if (h4 === 'with') groups.push('H4 with the alert');
       if (h4 === 'against') groups.push('H4 against the alert');
-      if (relations.every((value) => value === 'with')) groups.push('all four timeframes with the alert');
+      if (relations.length === 4 && relations.every((value) => value === 'with')) groups.push('all four timeframes with the alert');
       if (h1 === 'with' && h4 === 'with') groups.push('H1 and H4 with the alert');
       if (h1 === 'against' && h4 === 'against') groups.push('H1 and H4 against the alert');
       if (h1 === 'against' || h4 === 'against') groups.push('H1 or H4 against the alert');
       if (!relations.includes('against')) groups.push('no timeframe against the alert');
-      if (relations.every((value) => value === 'range')) groups.push('all four timeframes in a range');
+      if (relations.length === 4 && relations.every((value) => value === 'range')) groups.push('all four timeframes in a range');
       const year = String(new Date(time * 1000).getUTCFullYear());
       for (const group of groups) {
         tallyInto(combined, group, outcome, reading);

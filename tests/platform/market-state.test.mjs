@@ -23,7 +23,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -539,4 +539,44 @@ test('what the replay measured: the module, the sentence on the page and the REA
   /* The page shows it where its heading says what the view is not. */
   const page = readFileSync(join(root, 'index.html'), 'utf8');
   assert.match(page, /<b>It is a description, not a signal:<\/b>[^<]*<span id="msMeasured"><\/span>/);
+});
+
+test('nothing that makes a signal, an alert or an order reads the market state', () => {
+  /* The page says so under its heading ("the Buy, Sell and Wait of the signal pages are computed without it"),
+     and this is what keeps the sentence true. Only two files of the application import the module: the page's
+     own script, for this view, and the replay script that measures it. */
+  const importers = [];
+  for (const folder of ['src', 'server', 'server/lib', 'cloudflare', 'scripts', 'bridge']) {
+    for (const name of readdirSync(join(root, folder))) {
+      if (!/\.(js|mjs|py)$/.test(name)) continue;
+      if (/from\s+['"][^'"]*marketstate\.js['"]/.test(readFileSync(join(root, folder, name), 'utf8'))) importers.push(folder + '/' + name);
+    }
+  }
+  assert.deepEqual(importers.sort(), ['scripts/state-replay.mjs', 'src/main.js']);
+
+  /* In the page's script, what is imported from the module is used inside the view's own block and nowhere else... */
+  const page = readFileSync(join(root, 'src', 'main.js'), 'utf8');
+  const importLine = /^import \{ ([^}]+) \} from '\.\/marketstate\.js';$/m.exec(page);
+  assert.ok(importLine, 'the import of the module, on one line');
+  const names = importLine[1].split(',').map((name) => name.trim());
+  assert.ok(names.includes('timeframeState') && names.includes('summarizeStates'), 'the import was understood');
+  const from = page.indexOf('   MARKET STATE: trend, structure and volatility on four timeframes.'), to = page.indexOf('\nfunction render(view){');
+  assert.ok(from > 0 && to > from, 'the block of the view was found');
+  const outside = (page.slice(0, from) + page.slice(to)).replace(importLine[0], '');
+  for (const name of names) assert.ok(!new RegExp('\\b' + name + '\\b').test(outside), name + ' is used outside the Market state block');
+
+  /* ...and of that block, the rest of the script calls two functions: open the view, and its once-a-second tick. */
+  const block = page.slice(from, to);
+  const declared = [...block.matchAll(/^(?:async )?function (ms[A-Z]\w*)\(|^const (ms[A-Z]\w*|MS_[A-Z_]+)=/gm)].map((match) => match[1] || match[2]);
+  assert.ok(declared.includes('msLoad') && declared.includes('msView') && declared.includes('msTick'), 'the block was understood: ' + declared.join(', '));
+  const usedOutside = declared.filter((name) => new RegExp('\\b' + name + '\\b').test(outside));
+  assert.deepEqual(usedOutside.sort(), ['msInit', 'msTick']);
+
+  /* The block itself places no order, raises no alert and starts no scan: none of the script's functions for those is called in it. */
+  const acting = ['placeOrder', 'notify', 'saveAlert', 'saveSignal', 'scanSignals', 'scanSignalsPreferred', 'apiSignalScan', 'emitSignalAlerts', 'emitSniperSignalAlerts', 'mktScanRefresh', 'derivWsBuy', 'derivConfirm'];
+  for (const name of acting) {
+    assert.ok(new RegExp('\\b' + name + '\\(').test(outside), name + '() exists in the script (this list is current)');
+    assert.ok(!new RegExp('\\b' + name + '\\b').test(block), name + ' is used in the Market state block');
+  }
+  assert.doesNotMatch(block, /\bbridge(Mod)?\./, 'the block does not talk to the Exness bridge');
 });

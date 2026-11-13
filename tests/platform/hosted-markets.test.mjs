@@ -3321,7 +3321,10 @@ test('Market state: when a later look fails, the states read before stay, marked
     assert.deepEqual(after.cards.map((card) => [card.timeframe, card.state, card.trend, card.structure, card.volatility]), first.cards.map((card) => [card.timeframe, card.state, card.trend, card.structure, card.volatility]), 'every state is the one read before');
     for (const [index, card] of after.cards.entries()) assert.equal(withoutDate(card.asOf), withoutDate(first.cards[index].asOf) + ' \u00b7 last look failed');
     assert.match(after.feed, /^Last look failed \u00b7 read \d\d:\d\d EAT$/);
-    assert.ok(after.note.endsWith('The last look failed for H4, H1, M15, M5: the state shown there is the one read before.'), after.note);
+    /* Seven minutes on, the newest candle read is old. That is said with its age; that the market is closed is not
+       concluded from it, because the look that would have shown a newer candle is the one that failed. */
+    assert.match(after.note, /^The newest M5 candle that was read started \d+ min ago\. The last look failed for H4, H1, M15, M5: the state shown there is the one read before, as of the close named on its card\.$/);
+    assert.doesNotMatch(after.note, /closed|paused/);
     assert.equal(after.summary, first.summary, 'the summary is the one of the states on screen');
 
     /* The feed is back: the next look after a 5-minute close reads all four again, and the mark is gone. */

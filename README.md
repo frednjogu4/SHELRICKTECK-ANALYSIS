@@ -739,8 +739,9 @@ nothing is filled in. When the newest 5-minute candle started ten minutes ago
 or earlier, the view says that the market is closed or the feed has paused,
 and that every state shown is as of the close named on its card, not the state
 now. When a later look fails, the states read before stay on screen, each
-marked "last look failed", and the feed is not called current. Index markets
-are not offered: this app has no intraday candles for them.
+marked "last look failed"; the feed is then called neither current nor
+paused, because the look that would tell is the one that failed. Index
+markets are not offered: this app has no intraday candles for them.
 
 **What a replay measured** (`scripts/state-replay.mjs`). The states were
 computed over gold from 2 January 2020 to 11 November 2026 exactly as the page
@@ -782,8 +783,12 @@ alert belongs to. "With" is a BUY in an uptrend or a SELL in a downtrend,
 
 "Needed" is the share at which a group breaks even, from its own average win
 and loss, after an assumed spread of $0.25 per alert (the same assumption as
-in the section above); before the spread it is 40%. "Per alert" is in dollars
-per ounce, which is the result of 0.01 lot.
+in the section above). Before the spread it is 40% for any single alert, and
+39.8% for the 82,069 alerts of the rule together, whose winners were a little
+larger than their losers. "Per alert" is in dollars per ounce, which is the
+result of 0.01 lot. The same $0.25 weighs more in the early years, when gold
+stood near $1,800 and the stops were closer: with the 4-hour trend the share
+needed was 45% in 2020 and 42% in 2026.
 
 In words:
 
@@ -796,20 +801,24 @@ In words:
   in six of the seven years. The 1-hour and the 4-hour trend together give
   41.5% against the 42.6% needed, and a loss in five of the seven years.
 - Of the groups in the table, the one above break-even is the smallest: 784
-  alerts in seven years with the trend on all four timeframes, known to about
-  ±3.5 points. It lost in five of the seven years; its total comes from 2024
-  and 2026.
+  alerts in seven years with the trend on all four timeframes, between 74 and
+  176 a year, known to about ±3.5 points. It came out ahead in two of the
+  seven years, 2024 and 2026, and its total comes from those two.
 - Splitting the alerts by structure or by volatility instead gave between
   38.7% and 41.2% in every group of more than 1,000 alerts. One of those 32
   groups came out above its break-even: alerts while 15-minute volatility
   was "extreme" (41.2% of 3,591 against the 40.7% needed, +$0.09 per alert).
-  Among that many groups one above the line is what chance gives, and it was
-  not looked into further.
+  With 3,591 alerts a share is known to about ±1.6 points, and among 32
+  groups one that far above the rest is what chance alone gives. It was not
+  looked into further.
 
 So the state is shown as what it is, a description of the chart, and no
 filter, veto or score was built on it. The sentence under the heading of the
 view gives the 4-hour figures (`STATE_MEASURED` in `src/marketstate.js`;
-`tests/platform/market-state.test.mjs` keeps this table and the page equal).
+`tests/platform/market-state.test.mjs` keeps this table and the page equal,
+`tests/platform/state-replay.test.mjs` checks the counting of the script on
+written price paths: that a state of the replay is the state the page shows
+at that close, and that an alert is matched with nothing later than itself).
 
 To repeat the run (the price data is not in this repository; it is the gold
 archive named in the section above):
@@ -819,13 +828,23 @@ node scripts/state-replay.mjs --data <folder of 1-minute CSV files> --symbol XAU
      --from 2020-01-01 --to 2027-01-01 --spread 0.25
 ```
 
-Limits: one market; a price series that is neither Deriv's nor Exness's; the
-archive's bars are on broker time until mid-2025, so its 4-hour candles start
-at other hours than Deriv's; the thresholds (ADX 25 and 20, five candles,
-200 candles) are the usual textbook values and were not tuned on this data,
-which also means nobody has shown that they are the best ones. Not verified
-anywhere: the view against Deriv's live feed. The tests use written candles,
-and the pictures taken while building it used the gold archive.
+Limits of the measurement: one market; a price series that is neither Deriv's
+nor Exness's; the archive's bars are on broker time until mid-2025, so its
+4-hour candles start at other hours than Deriv's, and what that does to the
+shares was not measured; one assumed spread for every alert. The thresholds
+(ADX 25 and 20, five candles, 200 candles) are the usual textbook values and
+were not tuned on this data, which also means nobody has shown that they are
+the best ones.
+
+Limits of the view: a swing high one cent above the one before it counts as a
+higher high. There is no band for "equal"; the card gives both prices, so
+that a double top can be seen for what it is. A state says nothing about the
+candle that is forming. A candle counts as finished only when the series
+holds a later one (the rule of the signal pages), so on a closed market the
+last candle before the close is left out until the market opens again, and a
+chart elsewhere shows one candle more than the card was read from. Not
+verified anywhere: the view against Deriv's live feed. The tests use written
+candles, and the pictures taken while building it used the gold archive.
 
 ### Before any deployment
 

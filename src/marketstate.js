@@ -510,7 +510,8 @@ const figure = (percent, alerts, needed) => Object.freeze({ percent, alerts, nee
  *   percent  share of finished alerts that reached target 1 before the stop
  *   alerts   alerts in the group
  *   needed   the share at which the group breaks even after `spread` dollars
- *            per alert (before the spread it is 40%)
+ *            per alert, from its own average win and loss (for a single
+ *            alert it is 40% before the spread)
  *
  * Fixed numbers from that run: they do not update by themselves, and
  * tests/platform/market-state.test.mjs keeps the README and this object equal.

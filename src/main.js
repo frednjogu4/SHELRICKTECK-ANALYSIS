@@ -4812,18 +4812,23 @@ function msFreshness(){
   else if(by&&msView.failed[by.key]){ mark='dot warn'; line='Last look failed'+readAt; }
   else if(fresh.current){ mark='dot live'; line='Feed current'+readAt; }
   else { mark='dot warn'; line='Market closed or feed paused'; }
+  /* An old candle means a closed market or a paused feed only when the look that found it worked.
+     After a failed look nothing is concluded about the market: the age is said, and that the look failed. */
+  const lookFailed=!!(by&&msView.failed[by.key]);
   let words='';
   if(fresh.ageSec!=null){
-    words=fresh.current
+    words=lookFailed
+      ?'The newest '+fresh.label+' candle that was read started '+ageText(fresh.ageSec)+' ago.'
+      :fresh.current
       ?'The newest '+fresh.label+' candle started '+ageText(fresh.ageSec)+' ago. Each state is as of the close named on its card and changes at most once per candle of its timeframe.'
       :'The newest '+fresh.label+' candle of '+sym+' started '+ageText(fresh.ageSec)+' ago, so the market is closed or the feed has paused. Each state below is as of the close named on its card, not the state now.';
   }
   const failed=MS_SHOWN.filter(tf=>msView.failed[tf.key]).map(tf=>tf.label);
-  if(failed.length)words+=(words?' ':'')+'The last look failed for '+failed.join(', ')+': the state shown there is the one read before.';
+  if(failed.length)words+=(words?' ':'')+'The last look failed for '+failed.join(', ')+': the state shown there is the one read before, as of the close named on its card.';
   if(dot.className!==mark)dot.className=mark;
   if(text.textContent!==line)text.textContent=line;
   if(note.textContent!==words)note.textContent=words;
-  note.classList.toggle('warn',fresh.ageSec!=null&&!fresh.current);
+  note.classList.toggle('warn',fresh.ageSec!=null&&(!fresh.current||lookFailed));
 }
 function msRender(){
   const grid=$('#msGrid'); if(!grid)return;
