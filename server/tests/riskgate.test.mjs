@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { evaluateRisk, bossVerdict, CHECK } from '../lib/riskgate.js';
 
 const L = { maxStakeUsd: 5, maxOpenTrades: 10, dailyLossLimitUsd: 20 };
-const base = { limits: L, stake: 2, opens: 0, dayPnl: 0, killSwitch: false, venue: 'mt5', entry: 100, sl: 99, tp: 102, marketHours: true, newsBlocked: false };
+const base = { limits: L, stake: 2, opens: 0, dayPnl: 0, killSwitch: false, venue: 'mt5', entry: 100, sl: 99, tp: 102, marketHours: true, newsBlocked: false, newsEvidenceTrusted: true };
 
 test('evaluateRisk: full plan passes -> APPROVED, every check PASSED', () => {
   const r = evaluateRisk(base);
