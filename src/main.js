@@ -26,7 +26,7 @@ import { patternAnalyze, patternStudy, renderPatternChart, playbookHTML, perform
 import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudSignIn, cloudSignUp, cloudSignOut, cloudVerifyTables, cloudList, saveAnalysis, savePatternEvent, saveAlert, saveSignal } from './cloud.js';
 import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
 import { candleHistory } from './derivhistory.js';
-import { createHostedScanner, resumedReading, signalState, summarizeReadings } from './hostedscan.js';
+import { createHostedScanner, signalState, summarizeReadings, withheldReading } from './hostedscan.js';
 import { closedCandleSets, nextReadingCheck } from './closedcandles.js';
 import { measuredText, measuredLine, isDailyReading } from './measured.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
@@ -1536,8 +1536,10 @@ async function fallbackSignalBatch(symbols,reason){
     if(!r)return {symbol,error:'FEED_ERROR',detail:'No fallback result returned for '+symbol+'.',source:'unavailable',data_source:'unavailable'};
     /* The PC's server reads at the 5-minute close, as the cloud does (closedcandles.js). A market that has just
        resumed after a pause has no reading yet: the server sends a row without one (server/app.js, resumedAnswer),
-       and a reading that is only marked candle_current:false is withheld here. Either way the row is the cloud's. */
-    if(r.candle_current===false)return resumedReading(r);
+       and a reading that is only marked candle_current:false is withheld here. Either way the row is the cloud's.
+       A history without a finished 5-minute candle is not a pause: that answer is a WAIT which says so, and stays one. */
+    const withheld=withheldReading(r);
+    if(withheld)return withheld;
     const label=fallbackSourceFor(r)+' · fallback (Exness unavailable: '+reason+')';
     return Object.assign({},r,{source:label,data_source:label,fallback:true,fallback_reason:reason});
   });
@@ -2044,8 +2046,9 @@ async function autofillLevels(sym){
       if(!isCurrent())return; /* a slower response for the previous symbol is stale */
       sig=(j.results||[])[0];
       /* A market that has just resumed after a pause has no reading yet (closedcandles.js): nothing from before
-         the pause may fill the ticket. The PC's server sends a row without a reading; one that is only marked is withheld here. */
-      if(sig&&sig.candle_current===false)sig=resumedReading(sig);
+         the pause may fill the ticket. The PC's server sends a row without a reading; one that is only marked is
+         withheld here, by the decision the Markets table uses (withheldReading). */
+      sig=(sig&&withheldReading(sig))||sig;
     }
     /* shared: chart strip + markets badges. A cloud-viewer state (stale, no data, unavailable) replaces
        an older reading too, so levels from before a market closed never stay on screen as current. */
@@ -3567,7 +3570,7 @@ async function azAnalyze() {
           });
           if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.detail||e.error||('API '+res.status));}
           data=await res.json();
-          if(data.candle_current===false)throw new Error(RESUMED_NOTE(sym)); /* never shown: the Exness reading above is the current one */
+          {const held=withheldReading(data);if(held)throw new Error(held.detail);} /* never shown: the Exness reading above is the current one */
         }catch(apiError){data=Object.assign({},bundle,{candle_sets:undefined,ai_note:'AI service unavailable; displaying Exness technical analysis.'});meta={mode:'technical',reason:'exness_local_fallback',engines:[]};}
       }
     }catch(exnessError){
@@ -3578,7 +3581,7 @@ async function azAnalyze() {
         try{
           const res=await api('/api/signals/analyze',{method:'POST',headers:Object.assign({'x-aurum-user':state.user||'local'},keyHeaders()),body:{symbol:sym,force:true,withNews:hasAnyKey()}});
           const j=await res.json();if(!res.ok)throw new Error(j.detail||j.error||'analysis fallback unavailable');
-          if(j.candle_current===false)throw new Error(RESUMED_NOTE(sym)); /* never shown: the scan reading above is the current one */
+          {const held=withheldReading(j);if(held)throw new Error(held.detail);} /* never shown: the scan reading above is the current one */
           data=Object.assign({},j,{data_source:fallback.data_source,fallback:true,fallback_reason:fallback.fallback_reason});
         }catch(_fallbackAnalysisError){data=fallback;meta={mode:'technical',reason:'labelled_source_fallback',engines:[]};}
       }else{data=fallback;meta={mode:'technical',reason:'labelled_source_fallback',engines:[]};}
@@ -4203,7 +4206,7 @@ async function goldDerivFallback(reason){
     const res=await api('/api/signals/analyze',{method:'POST',body:{symbol:GOLD_SYMBOL,force:true,technicalOnly:true,withNews:false}});
     const j=await res.json().catch(()=>({}));if(!res.ok)throw new Error(j.detail||j.error||'Live Gold analysis unavailable');
     if(!goldFreshTimestamp(j.latest_candle_time))throw new Error('Deriv Gold M1 candle timestamp is stale or unavailable.');
-    if(j.candle_current===false)throw new Error(RESUMED_NOTE('Deriv Gold'));
+    if(j.candle_current===false)throw new Error('The signal API has no current Gold reading.'); /* for whichever reason: this browser reads the candles below and says which */
     return Object.assign({},j,{data_source:label,fallback:true,fallback_reason:reason});
   }catch(serverError){
     const [m1,m5,h1]=await Promise.all([feed.fetchPublicCandles(GOLD_SYMBOL,60,120),feed.fetchPublicCandles(GOLD_SYMBOL,300,120),feed.fetchPublicCandles(GOLD_SYMBOL,3600,120)]);
@@ -4234,7 +4237,8 @@ async function runGoldAnalysis(){
       const det=runDeterministicAnalysis(GOLD_SYMBOL,closed.sets),decision=localDecision(det),q=qReply&&qReply.quotes&&qReply.quotes[0],price=goldQuotePrice(q),lastCandle=sets.m1[sets.m1.length-1];
       if(!q||!Number(q.time)||!(price>0)||!goldFreshTimestamp(q.time))throw new Error('No fresh Exness Gold tick; live signal is paused rather than reused.');
       if(!lastCandle||!goldFreshTimestamp(lastCandle.time))throw new Error('Exness Gold M1 candles are stale; refresh when current history returns.');
-      if(!closed.current)throw new Error(RESUMED_NOTE('Exness Gold'));
+      /* Not current: just resumed after a pause, or (no close at all) a history without a finished 5-minute candle. */
+      if(!closed.current)throw new Error(closed.close>0?RESUMED_NOTE('Exness Gold'):'Exness Gold history gives no finished 5-minute candle to read at yet.');
       goldMt5Quote={symbol:String(q.symbol||''),price,time:Number(q.time),digits:q.digits,trade_mode:q.trade_mode};
       d=Object.assign({},decision,{price:det.analyses.m1&&det.analyses.m1.currentPrice,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:det.ok,data_source:'Exness MT5 local candles',latest_candle_time:lastCandle.time,candle_close:closed.close,meta:{mode:'technical',reason:'local_read_only'}});
       }catch(exnessError){goldMt5Quote=null;d=await goldDerivFallback('Exness MT5 unavailable: '+String(exnessError&&exnessError.message||exnessError).slice(0,100));}
@@ -5698,7 +5702,9 @@ async function loadPipelineFlow(){
     const response=await api('/api/pipeline/analyze',{method:'POST',body,timeoutMs:30000});
     const r=await response.json();
     if(!response.ok)throw new Error(r&&r.detail||r&&r.error||'pipeline request failed');
-    if(r&&r.candle_current===false)throw new Error(RESUMED_NOTE(sym)); /* the six roles judged the market as it was before a pause */
+    /* Six roles that judged the market as it was before a pause are not shown (a server that only marks its answer; the current one refuses above). */
+    const held=r&&withheldReading({symbol:sym,candle_current:r.candle_current,candle_close:r.candle_close});
+    if(held)throw new Error(held.detail);
     const p=r&&r.pipeline; if(!p)throw new Error(r&&r.detail||'no pipeline result');
     sourceLabel=sourceLabel||String(r.data_source||'source unavailable');
     const chip=(w)=>{

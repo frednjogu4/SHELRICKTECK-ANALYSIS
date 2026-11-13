@@ -1665,8 +1665,10 @@ const exnessBridge = (markets) => (frame) => {
   if (frame.type === 'positions') return { type: 'positions', list: [] };
   if (frame.type === 'history') {
     const m = market(frame.symbol);
-    return m ? { type: 'history', symbol: m.name, timeframe: frame.timeframe, candles: bridgeCandles(frame.timeframe, m.shape, m.level, m.pauseSec || 0) }
-      : { type: 'error', message: 'Symbol is not available in the connected MT5 terminal.' };
+    if (!m) return { type: 'error', message: 'Symbol is not available in the connected MT5 terminal.' };
+    /* `only: { M5: 1 }`: the terminal has loaded just the newest candle of that timeframe. */
+    const candles = bridgeCandles(frame.timeframe, m.shape, m.level, m.pauseSec || 0), keep = m.only && m.only[frame.timeframe];
+    return { type: 'history', symbol: m.name, timeframe: frame.timeframe, candles: keep ? candles.slice(-keep) : candles };
   }
   if (frame.type === 'quote') {
     const half = (m) => 10 ** -m.digits;
@@ -2127,6 +2129,23 @@ test('Exness connected: a terminal whose market has just resumed gives no Exness
     await app.open('gold');
     await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the gold analysis');
     assert.match(text('goldFeedStatus'), /^LIVE ANALYSIS \u00b7 Deriv public candles \u00b7 labelled fallback \(reason: Exness MT5 unavailable: Exness Gold has just resumed after a pause/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Exness connected: a terminal without a finished 5-minute Gold candle is not called a pause; the labelled fallback says what is missing', async () => {
+  /* The terminal has the whole 1-minute and 1-hour history of gold and, of the 5-minute one, only the candle that is forming. */
+  const gold = { ...bridgeMarket('XAU/USD', { name: 'XAUUSDm', level: 4000, digits: 2 }), only: { M5: 1 } };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, bridgeApi: exnessBridge({ XAUUSD: gold }), world: { ticks: true } });
+  try {
+    await app.enter();
+    const text = (id) => app.doc.getElementById(id).textContent;
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the Deriv gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await connectExness(app);
+    await app.open('gold');
+    await app.waitFor(() => /^LIVE ANALYSIS .*Exness MT5 unavailable/.test(text('goldFeedStatus')), 'the gold analysis');
+    assert.equal(text('goldFeedStatus'), 'LIVE ANALYSIS \u00b7 Deriv public candles \u00b7 labelled fallback (reason: Exness MT5 unavailable: Exness Gold history gives no finished 5-minute candle to read at yet.)');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -2750,6 +2769,87 @@ test('PC app, its own server: a chart chosen right after a pause gets no reading
     await app.waitFor(() => /^Levels from live analysis/.test(ticket.note.textContent), 'levels from the first reading of the new session');
     for (const level of ticket.levels()) assert.ok(Number(level) > 0, 'a stop and two targets: ' + ticket.levels().join(' / '));
     assert.equal(ticket.strip(), 'LIVE SIGNAL LEVELS');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* `candle_current: false` alone does not say why. With a close the market has just resumed after a pause; without
+   one (candle_close 0) the history holds no finished 5-minute candle, which is missing history and not a pause. */
+const NO_CANDLES_NOTE = (symbol) => 'No confirmed setup for ' + symbol + ' yet (feed error) \u2014 SL/TP fill when the timeframes align.';
+
+test('PC app, its own server: a history without a finished 5-minute candle is not called a pause; the row and the ticket show the WAIT with its own reason', async () => {
+  /* USD/JPY: one candle per timeframe, the one that is forming. Every other market has its whole history. */
+  const market = directionalMarket();
+  const candleRows = (code, granularity, count, now) => { const rows = market(code, granularity, count, now); return code === 'frxUSDJPY' ? rows.slice(-1) : rows; };
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { ticks: true, candleRows } });
+  try {
+    await app.openMarkets();
+    const row = app.row('USD/JPY');
+    assert.equal(row.badge, 'Wait \u00b7 feed error');
+    assert.equal(row.title, 'Wait [FEED_ERROR] (some timeframes lack data \u2014 not confirmable) \u2014 No timeframe returned usable candles just now.');
+    assert.equal(row.source, 'source: Deriv public candles \u00b7 fallback (Exness unavailable: Exness bridge is not connected in this tab.)');
+    assert.equal(row.levels, false);
+    assert.match(app.row('EUR/USD').badge, /^(Buy|Sell)/, 'a market with its history keeps its reading');
+
+    await app.open('trade');
+    const ticket = ticketOf(app);
+    ticket.choose('USD/JPY');
+    await app.waitFor(() => ticket.note.textContent === NO_CANDLES_NOTE('USD/JPY'), 'the ticket note for a market without candles');
+    assert.deepEqual(ticket.levels(), ['', '', '']);
+    assert.doesNotMatch(app.doc.getElementById('chartLevels').textContent, /resumed/);
+
+    /* The analysis panel and the six roles under it: the server's WAIT with its reason, and the roles' report of it. Neither speaks of a pause. */
+    await app.open('signals');
+    app.doc.getElementById('azSymbol').value = 'USD/JPY';
+    app.click(app.doc.getElementById('azRun'));
+    await app.waitFor(() => !app.doc.getElementById('azResult').classList.contains('hidden'), 'the analysis result');
+    assert.match(app.doc.getElementById('azWhy').textContent, /^Why WAIT: No timeframe returned usable candles just now\.reason: FEED_ERROR /);
+    assert.ok(app.doc.getElementById('azRationale').textContent.length > 20, 'the server\'s own analysis is shown, with its write-up');
+    await app.waitFor(() => { const flow = app.doc.getElementById('pipelineFlow'); return flow && !/running/.test(flow.textContent); }, 'the six-role panel');
+    const flow = app.doc.getElementById('pipelineFlow').textContent;
+    assert.match(flow, /^Six-role pipeline \u2014 Boss verdict: /);
+    assert.doesNotMatch(flow, /resumed|Pipeline unavailable/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('PC app: an answer marked as not current that names no close is never called a pause: a WAIT is shown as it is, a direction is withheld', async () => {
+  const candleTime = nowSec();
+  const UNCONFIRMED = 'The reading for AUD/USD is marked as not current and names no 5-minute close, so it cannot be confirmed. No reading is shown.';
+  const pcApi = (path, body) => {
+    if (path === '/api/health') return { status: 200, body: { ok: true } };
+    if (path === '/api/signals/scan') {
+      return { status: 200, body: { results: body.symbols.map((symbol) => {
+        /* What the PC's server answers for a history without a finished 5-minute candle. */
+        if (symbol === 'USD/JPY') return { ...liveWait(symbol), confidence: 15, wait_reason: 'FEED_ERROR', wait_detail: 'No timeframe returned usable candles just now.', data_ok: false, latest_candle_time: candleTime, candle_close: 0, candle_current: false };
+        /* What no server of this project sends: a direction with levels, marked as not current, without a close. */
+        if (symbol === 'AUD/USD') return { ...LIVE_BUY, symbol, latest_candle_time: candleTime, candle_close: 0, candle_current: false };
+        return { ...LIVE_BUY, symbol, latest_candle_time: candleTime, candle_close: Math.floor(candleTime / 300) * 300, candle_current: true };
+      }) } };
+    }
+    return null;
+  };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi });
+  try {
+    await app.openMarkets();
+    const jpy = app.row('USD/JPY');
+    assert.equal(jpy.badge, 'Wait \u00b7 feed error');
+    assert.match(jpy.title, / \u2014 No timeframe returned usable candles just now\.$/);
+    const aud = app.row('AUD/USD');
+    assert.equal(aud.badge, 'Stale data');
+    assert.equal(aud.title, UNCONFIRMED);
+    assert.equal(aud.source, 'source: Deriv public candles \u00b7 not confirmed as current');
+    assert.equal(aud.levels, false);
+
+    await app.open('trade');
+    const ticket = ticketOf(app);
+    ticket.choose('USD/JPY');
+    await app.waitFor(() => ticket.note.textContent === NO_CANDLES_NOTE('USD/JPY'), 'the ticket note for a WAIT without candles');
+    assert.deepEqual(ticket.levels(), ['', '', '']);
+    ticket.choose('AUD/USD');
+    await app.waitFor(() => ticket.note.textContent === UNCONFIRMED, 'the ticket note for a direction that cannot be confirmed');
+    assert.deepEqual(ticket.levels(), ['', '', ''], 'its levels are not on the ticket');
+    assert.equal(ticket.strip(), UNCONFIRMED);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });

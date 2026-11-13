@@ -162,7 +162,7 @@ function staleReading(symbol, ageSec, computed, latestCandleTime) {
 }
 
 /* The feed is current again after a pause, but every finished candle is from before it (closedcandles.js).
-   Exported for the PC app, which shows the same row when its own server reports such a reading. */
+   The PC's own server sends the same row for this state (server/app.js, resumedAnswer). */
 export function resumedReading(reading) {
   return {
     symbol: reading.symbol, error: 'STALE_DATA', data_state: 'stale', computed: reading.computed,
@@ -171,6 +171,37 @@ export function resumedReading(reading) {
     data_source: DERIV_SOURCE + ' \u00b7 resumed, waiting for a finished candle',
     latest_candle_time: reading.latest_candle_time || 0
   };
+}
+
+/* Marked as not current, with a direction, but without the 5-minute close it would belong to. No server of this
+   project sends that. Nothing says which candles it was made from, so it is not shown and fills no order ticket. */
+function unconfirmedReading(reading) {
+  return {
+    symbol: reading.symbol, error: 'STALE_DATA', data_state: 'stale', computed: reading.computed,
+    detail: 'The reading for ' + reading.symbol + ' is marked as not current and names no 5-minute close, so it cannot be confirmed. No reading is shown.',
+    source: DERIV_SOURCE,
+    data_source: DERIV_SOURCE + ' \u00b7 not confirmed as current',
+    latest_candle_time: reading.latest_candle_time || 0
+  };
+}
+
+/**
+ * What is shown in place of a reading that is marked candle_current:false (closedcandles.js), or null when the
+ * reading is shown as it is. The mark alone does not say why a reading is not current:
+ *
+ *   with the close it belongs to (candle_close > 0)
+ *       every finished candle is from before a pause: the row of resumedReading().
+ *   without one (candle_close 0)
+ *       the history holds no finished 5-minute candle. That is missing history, not a pause. Such a reading is a
+ *       WAIT that says so itself, and it is shown as that. A BUY or SELL without a close is withheld.
+ *
+ * Used for the cloud viewer's readings below and, in main.js, for the answers of the PC's own server, so that
+ * both show the same row for the same answer.
+ */
+export function withheldReading(reading) {
+  if (!reading || reading.candle_current !== false) return null;
+  if (Number(reading.candle_close) > 0) return resumedReading(reading);
+  return reading.signal === 'BUY' || reading.signal === 'SELL' ? unconfirmedReading(reading) : null;
 }
 
 function noDataReading(symbol, reason) {
@@ -267,8 +298,7 @@ export function createHostedScanner({ fetchCandles, cloudScan, now = () => Date.
   function byFreshness(reading, nowMs) {
     const age = candleAgeSec(reading, nowMs);
     if (age == null || age > LIVE_MAX_AGE_SEC) return staleReading(reading.symbol, age, reading.computed, reading.latest_candle_time);
-    if (reading.candle_current === false) return resumedReading(reading);
-    return { ...reading, data_state: 'live' };
+    return withheldReading(reading) || { ...reading, data_state: 'live' };
   }
 
   /**

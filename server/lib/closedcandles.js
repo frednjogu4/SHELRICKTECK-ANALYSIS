@@ -141,6 +141,10 @@ export function lastCloseOf(sets) {
  *            feed holds: the market has resumed after a pause and no candle of the new session has
  *            finished yet. Such a reading describes the market before the pause; its entry is not
  *            the price now. Callers show no reading until `current` is true again.
+ *            Also false when there is no close at all (close 0). That is a history without a
+ *            finished 5-minute candle, not a pause: `sets` is empty then and the analysis reports
+ *            the missing candles itself. A caller that says why there is no reading has to tell
+ *            the two apart by `close`.
  *   sets     the finished candles (the same candle objects, never copies); a
  *            timeframe that was not an array is passed through as it was, so the
  *            analysis reports it as missing exactly as before

@@ -487,6 +487,10 @@ close**:
   409, and no news or AI request is made for it. On the order ticket, levels
   that were filled in from an earlier reading are withdrawn when the market is
   closed, paused or has just resumed; levels the trader typed stay.
+- A history without any finished 5-minute candle is not a pause. Such an answer
+  names no close (`candle_close: 0`) and is a WAIT that says it has no usable
+  candles; it is shown as that, on the website and on the PC
+  (`withheldReading` in `src/hostedscan.js` decides for both).
 - Each card says which close it was read at (`read at the 14:35 candle
   close`). The Gold monitor still checks every minute, and looks again a few
   seconds after each 5-minute close.
