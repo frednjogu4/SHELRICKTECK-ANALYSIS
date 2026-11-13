@@ -114,25 +114,18 @@ test('diagnose: works with the key and NEVER returns the PAT', async () => {
   assert.ok(d.checks.public_ws);              /* public feed reachability */
 });
 
-test('Exness risk reservations release on failed entries and commit/close exactly once', async () => {
+test('generic MT5 risk gate fails closed when news evidence is not server-verified', async () => {
   const mt5 = { 'x-aurum-user': 'mt5-reservation-tester' };
-  const once1 = 'intent-failed-1';
-  const approved = await post('/api/risk/gate', { amount: 10, venue: 'mt5', once: once1, rr: 1, marketHours: true, newsBlocked: false }, mt5);
-  assert.equal(approved.status, 200);
-  assert.equal((await approved.json()).risk.opens, 1);
-  const released = await post('/api/risk/fill', { kind: 'release', once: once1 }, mt5);
-  assert.equal(released.status, 200);
-  assert.equal((await released.json()).opens, 0);
-  assert.equal((await post('/api/risk/fill', { kind: 'release', once: once1 }, mt5)).status, 409);
-
-  const once2 = 'intent-filled-2';
-  const approved2 = await post('/api/risk/gate', { amount: 10, venue: 'mt5', once: once2, rr: 1, marketHours: true, newsBlocked: false }, mt5);
-  assert.equal(approved2.status, 200);
-  assert.equal((await post('/api/risk/fill', { kind: 'open', once: once2 }, mt5)).status, 200);
-  assert.equal((await post('/api/risk/fill', { kind: 'release', once: once2 }, mt5)).status, 409);
-  const closed = await post('/api/risk/fill', { kind: 'close', once: once2 }, mt5);
-  assert.equal(closed.status, 200);
-  assert.equal((await closed.json()).opens, 0);
-  assert.equal((await post('/api/risk/fill', { kind: 'close', once: once2 }, mt5)).status, 409);
-  assert.equal((await post('/api/risk/fill', { kind: 'close' }, mt5)).status, 409);
+  const once = 'intent-untrusted-news';
+  const response = await post('/api/risk/gate', {
+    amount: 10, venue: 'mt5', once, rr: 1, marketHours: true, newsBlocked: false
+  }, mt5);
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.error, 'risk_blocked');
+  const news = body.checks.find((check) => check.name === 'news_event');
+  assert.equal(news.status, 'UNKNOWN');
+  assert.match(news.reason, /not verified by the server/i);
+  assert.equal((await post('/api/risk/fill', { kind: 'release', once }, mt5)).status, 409,
+    'a blocked intent must not create a reservation that can be committed or closed');
 });
