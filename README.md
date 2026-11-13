@@ -148,11 +148,13 @@ the PC runs the files in its own package folder (the folder that holds
 
 1. On GitHub, open the repository, press **Code**, then **Download ZIP**, and
    extract the ZIP.
-2. Open the extracted folder (`cloudflare-staging-main`), select everything in
-   it, copy, and paste into the package folder on the PC. Choose **Replace the
-   files in the destination**. What exists only on the PC is not in the ZIP and
-   stays as it is: `bridge\bridge_token.txt`, `bridge\terminal_path.txt`,
-   `bridge\python_runtime.txt`, `server\data\`, `node_modules\` and `logs\`.
+2. Open the extracted folder (it carries the repository's name followed by
+   `-main`; the one to open is the folder that holds `START_ALL_LOCAL.bat`),
+   select everything in it, copy, and paste into the package folder on the PC.
+   Choose **Replace the files in the destination**. What exists only on the PC
+   is not in the ZIP and stays as it is: `bridge\bridge_token.txt`,
+   `bridge\terminal_path.txt`, `bridge\python_runtime.txt`, `server\data\`,
+   `node_modules\` and `logs\`.
 3. Close the minimised window **Fredrick AURUM Local API**, or restart the PC.
    `START_LOCAL_API.bat` leaves a server that is already running alone, so
    without this step the new page would talk to the old server.
