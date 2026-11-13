@@ -23,7 +23,7 @@ README ("The confidence score…" and "News: which markets…").
 
 | Step | File | What it does |
 |---|---|---|
-| Candles | `src/closedcandles.js:145` `closedCandleSets` | Keeps finished candles only; one reading per 5-minute close; no reading after a pause until a new candle has finished. 110 candles per timeframe (`READING_CANDLES`, line 55). |
+| Candles | `server/lib/closedcandles.js:148` `closedCandleSets` (the page and the Worker import it as `src/closedcandles.js`) | Keeps finished candles only; one reading per 5-minute close; no reading after a pause until a new candle has finished. 110 candles per timeframe (`READING_CANDLES`, line 58). |
 | Indicators | `server/lib/indicators.js` | `sma`, `emaSeries`/`ema` (line 24), `rsi` (43), `macd`, `bollingerBands`, `atr` (94), `findLevels` (112). |
 | One timeframe | `server/lib/analyzer.js:62` `analyzeTimeframe` | Needs 50 candles (`MIN_CANDLES`, 19). Computes RSI, MACD, Bollinger, EMA 20/50/200, SMA 50/200, ATR, swing levels, Fibonacci, a 20-candle trend label (`identifyTrend`, 21). |
 | The vote | `server/lib/analyzer.js:39` `detectSignalBias` | A score from -5 to +5: price against EMA20, price against EMA50, sign of the MACD histogram, RSI zone, the trend label. BUY from +3, SELL from -3. |
@@ -217,7 +217,7 @@ detection, no "uncertain". ADX and Wilder smoothing exist in
 ## C. Proposed architecture (incremental; nothing replaced)
 
 ```
-candles (finished only)           src/closedcandles.js            exists
+candles (finished only)           server/lib/closedcandles.js     exists
    -> indicators                  server/lib/indicators.js        exists; definitions pinned by a reference test
    -> per-timeframe evidence      server/lib/analyzer.js          exists
    -> regime                      server/lib/regime.js            NEW, pure: trend / range / volatility / uncertain, with its evidence
@@ -304,6 +304,10 @@ Not changed: anything under `server/` (the PC server and its rules), the
 bridge, the service worker, the Content-Security-Policy, the deployment
 configuration, the dependencies.
 
+(Later, 13 November 2026: the PC server now makes its reading at the 5-minute
+close as well, and `closedcandles.js` moved to `server/lib/`. See "One
+workspace, two places" in `README.md`.)
+
 ---
 
 ## F. Test results
@@ -349,6 +353,8 @@ the commit it describes.
   If one refuses, the page names it and shows the others; if all do, it says
   so. Check the News view once after the merge.
 - The PC application's page copy under `bridge/` is separate and unchanged.
+  (Later, 13 November 2026: `npm run build` refreshes that copy; see
+  "Bringing the PC app up to date" in `README.md`.)
 - Real-money trading stays off by default, and nothing here is a reason to
   turn it on: by the measurement in B1 the signals lose money after the
   spread.

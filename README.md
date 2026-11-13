@@ -58,7 +58,7 @@ entered by the user in the app at runtime, per browser session.
 | `npm test` | `tests/smoke.mjs` (jsdom, mocked feed+API), then every `*.test.mjs`/`*.test.js` in `server/tests/`, `tests/` and `tests/platform/` (node:test) — includes the 12-pattern recognition battery. Outbound connections are blocked while the tests run (see below) |
 | `npm run test:server` / `npm run test:platform` | Only the `server/tests/` group / only the Cloudflare and tooling group in `tests/platform/` |
 | `npm run test:worker` | The Worker in the real Cloudflare runtime (`wrangler dev`, local only). Needs `npm run build` first |
-| `npm run build` | Single-file HTML (vite-plugin-singlefile), copy to `dist/AURUM_Workspace.html`, then check that `dist/` is complete |
+| `npm run build` | Single-file HTML (vite-plugin-singlefile), copy to `dist/AURUM_Workspace.html`, check that `dist/` is complete, then copy the built page and its icons into `bridge/` for the PC app (see [Bringing the PC app up to date](#bringing-the-pc-app-up-to-date)) |
 | `npm run verify` | Build → `npm test` → `npm run test:worker` → Wrangler deploy dry-run. One command to run before any deployment |
 | `npm run verify:dist` | Check an existing `dist/` (required files, security headers file, nothing secret-looking) without rebuilding |
 | `npm run cf:dev` | Build, then run the Cloudflare Worker and the site locally on http://localhost:8790 |
@@ -113,15 +113,69 @@ The cloud viewer cannot reach the PC, the MT5 bridge or any broker account, and
 it is not meant to. Use it to watch prices and signals away from the desk and
 the PC app to act on them.
 
-**The PC copy is refreshed by hand.** The page the PC app serves is
-`bridge/app.html` (with its icons in `bridge/pwa/`): a copy of the built page
-(`dist/index.html`) that is replaced when the PC package is updated.
-`npm run build` does not touch it. The copy committed here is still the build
-that was uploaded with the PC package (commit `243eb80`), so it is older than
-`dist/`: it does not include changes made since then (for example the
-feed-status labels and the Settings → About rows described above), and it
-still carries the previous name, logo and icons. Refreshing it changes what
-runs on the trading PC, so it is a separate, deliberate step.
+**The PC app serves the same build.** The page the PC app serves is
+`bridge/app.html`, with its icons, manifest and service worker in
+`bridge/pwa/`. They are copies of the built page (`dist/index.html`) and of its
+static files. `npm run build` ends by making those copies
+(`scripts/pc-page.mjs`), and `tests/platform/pc-page.test.mjs` fails when one
+of them differs from `dist/`, so in this repository the PC page cannot fall
+behind the website. Until 13 November 2026 nothing refreshed them: the PC app
+showed the build its package had been uploaded with, a week of work behind the
+website and with another logo.
+
+**Without Exness, the PC app reads a market the way the website does.** While
+Exness is not connected, the page asks the PC's own server (`server/app.js`)
+for its readings. Since 13 November 2026 that server makes one reading per
+finished 5-minute candle, like the Worker and the browser
+(`server/lib/closedcandles.js`); before, it read whatever candles the feed held,
+the three forming ones included, so the PC and the website showed different
+scores and levels for the same market at the same minute.
+`tests/platform/pc-server-reading.test.mjs` gives the three places the same
+candles and compares their answers.
+
+What stays different on purpose is what the table above lists: Exness, accounts
+and the AI engines exist on the PC only, where a public source is labelled as a
+fallback; the website is view-only. A reading is also only as new as the last
+look: a signal card is read when the workspace is entered and when Refresh is
+pressed, in both places, so two screens agree when both were read at the same
+5-minute close. Each card and the Gold page name that close.
+
+### Bringing the PC app up to date
+
+A merge changes the website within minutes. It does not change the trading PC:
+the PC runs the files in its own package folder (the folder that holds
+`START_ALL_LOCAL.bat`), and those change only when someone replaces them.
+
+1. On GitHub, open the repository, press **Code**, then **Download ZIP**, and
+   extract the ZIP.
+2. Open the extracted folder (`cloudflare-staging-main`), select everything in
+   it, copy, and paste into the package folder on the PC. Choose **Replace the
+   files in the destination**. What exists only on the PC is not in the ZIP and
+   stays as it is: `bridge\bridge_token.txt`, `bridge\terminal_path.txt`,
+   `bridge\python_runtime.txt`, `server\data\`, `node_modules\` and `logs\`.
+3. Close the minimised window **Fredrick AURUM Local API**, or restart the PC.
+   `START_LOCAL_API.bat` leaves a server that is already running alone, so
+   without this step the new page would talk to the old server.
+4. Run `START_ALL_LOCAL.bat`.
+5. In the browser tab of the app press Ctrl+F5. The icon follows at the second
+   load: the service worker shows the stored one first and renews it behind.
+
+Copy the whole folder, not single files: the page (`bridge\app.html`), the
+bridge (`bridge\mt5_bridge.py`) and the server (`server\`) belong together.
+The server folder is complete on its own (nothing under `server/` imports a
+file from outside it, `tests/platform/pc-package.test.mjs`), and it needs the
+three packages `npm ci --omit=dev` installs, which have not changed.
+
+How to tell it worked: the Gold page says `Reading of the 14:35 candle close`
+under the signal, as the website does, and the signal cards end with
+`read at the 14:35 candle close`. When the page is new and the server is still
+the old one, the Gold page says so itself: `this reading can change every
+minute: it comes from an older version of the AURUM server` (step 3 was left
+out, or the `server` folder was not replaced).
+
+The other direction is described under
+[Bringing in a package made outside this repository](#bringing-in-a-package-made-outside-this-repository):
+do not upload the PC's package folder to `main` to "sync" the two.
 
 ### When Connect cannot attach to MetaTrader 5
 
@@ -402,7 +456,8 @@ read and `This BUY reading is no longer the newest for this market: refresh
 to see the latest.` A stop or target is noticed on every tick, whether or
 not that market is on screen at the time.
 
-**One reading per finished 5-minute candle** (`src/closedcandles.js`, since
+**One reading per finished 5-minute candle** (`server/lib/closedcandles.js`,
+which the page and the Worker import as `src/closedcandles.js`; since
 2026-11-13). Until then a 1m/5m/1h reading was made from whatever candles the
 feed held at the moment of the look, the three forming ones included, and a
 market looked at every minute could change its mind every minute. A reading is
@@ -427,10 +482,12 @@ close**:
 - Each card says which close it was read at (`read at the 14:35 candle
   close`). The Gold monitor still checks every minute, and looks again a few
   seconds after each 5-minute close.
-- This holds wherever the page or the Worker makes the reading: Deriv markets
-  on the cloud, the Exness paths of the PC app, the Gold monitor on both. **Not
-  changed:** readings made by the PC's own Node server (`server/app.js`), which
-  still looks every minute with forming candles; they name no close.
+- This holds wherever a reading is made: Deriv markets on the cloud, the
+  Exness paths of the PC app, the Gold monitor on both and, since the same day,
+  the PC's own Node server (`server/app.js`: scan, analysis and the six-role
+  panel). A PC whose `server` folder is older still looks every minute with
+  forming candles; its readings name no close, and the Gold page says so (see
+  [Bringing the PC app up to date](#bringing-the-pc-app-up-to-date)).
 - It is not a better signal. The votes, thresholds and levels in `server/lib`
   are untouched; only the moment they are read at changed.
 

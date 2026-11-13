@@ -41,5 +41,6 @@ For phone access, keep the phone on the same private Wi-Fi/LAN, open the PC addr
 - If login is rejected, confirm the account number, MT5 password, and exact Exness server in the Exness Personal Area. An investor/read-only password is sufficient for the read-only phase.
 - If the app reports a server/company mismatch, stop. Do not try a different broker terminal as a fallback.
 - If positions, quotes, symbols, or history are unavailable, the app should report unavailable and block dependent actions; it must not invent prices or symbols.
+- If the app on this PC looks different from the website, the files in this folder are older than the website. `app.html` and the `pwa` folder are the page itself (a copy of the website's build, made by `npm run build`; do not edit them here). See "Bringing the PC app up to date" in the main `README.md`: replace the whole package folder, close the **Fredrick AURUM Local API** window, run `START_ALL_LOCAL.bat` again and press Ctrl+F5 in the app.
 
 Bundle name: `FREDRICK_EXNESS_BRIDGE.zip` (Phase 1 local read-only build).
