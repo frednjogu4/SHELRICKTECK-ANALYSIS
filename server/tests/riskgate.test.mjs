@@ -72,3 +72,11 @@ test('bossVerdict: approved risk + complete setup -> READY FOR MANUAL REVIEW (ne
   assert.equal(b.verdict, 'READY FOR MANUAL REVIEW');
   assert.match(b.reason, /human decides/);
 });
+
+
+test('evaluateRisk: client-style newsBlocked=false without server trust remains UNKNOWN and blocks', () => {
+  const r = evaluateRisk({ ...base, newsEvidenceTrusted: false });
+  const news = r.checks.find(c => c.name === 'news_event');
+  assert.equal(news.status, CHECK.UNKNOWN);
+  assert.equal(r.verdict, 'BLOCKED');
+});

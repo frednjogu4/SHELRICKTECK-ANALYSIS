@@ -29,7 +29,21 @@ export function localDecision(det) {
 
   const atr = primary?.indicators?.atr;
   const price = primary?.currentPrice ?? null;
-  let a = atr || (price ? price * 0.002 : 1);
+  if (!Number.isFinite(atr) || atr <= 0 || !Number.isFinite(price) || price <= 0) {
+    const trend = primary?.trend || 'CONSOLIDATION';
+    const levels = primary?.levels || { support: [], resistance: [] };
+    return {
+      symbol, signal: 'WAIT', bias: 'neutral', confidence: 15,
+      entry: null, stop_loss: null, tp1: null, tp2: null, rrr: null,
+      rationale: 'ATR or current price is unavailable/invalid. No stop, target, or trade direction is fabricated; wait for valid market data.',
+      technical_summary: 'trend=' + trend + ' · atr=' + (Number.isFinite(atr) ? atr : 'n/a') + ' · price=' + (Number.isFinite(price) ? price : 'n/a'),
+      key_levels: { support: levels.support, resistance: levels.resistance },
+      risks: ['ATR or price data is missing/invalid; no signal levels are available.'],
+      next_watch: 'Re-run analysis after valid candles and ATR are available.',
+      model: 'technical'
+    };
+  }
+  let a = atr;
   /* noise floor on the stop distance (user pre-real-money review): a 1m ATR
      on majors can be 1–2 pips, which normal noise stops out instantly.
      Enforce a sane minimum ATR unit per instrument class (pips → price). */

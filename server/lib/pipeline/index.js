@@ -45,6 +45,7 @@ export function runPipeline(inx) {
     tp: strategy.tp ?? undefined,
     marketHours: inx?.riskInput?.marketHours ?? (charts.state === 'DONE' && charts.stale === false ? true : null),
     newsBlocked: news.restriction === 'STALE_STAND_DOWN' ? true : (news.state === 'DONE' ? false : null),
+    newsEvidenceTrusted: news.state === 'DONE' || news.restriction === 'STALE_STAND_DOWN',
   }, {}));
 
   /* news may only RESTRICT, never authorize (invariant enforced downstream too) */
