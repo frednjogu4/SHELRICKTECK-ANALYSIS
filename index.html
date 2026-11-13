@@ -356,6 +356,14 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 .mini-signal:last-child{margin-bottom:0}
 .mini-signal .top{display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:5px}
 .mini-signal .meta{font-size:11.5px; color:var(--text-3); font-family:var(--mono)}
+.news-concern{margin-top:4px; line-height:1.9}
+.news-mkt{display:inline-flex; align-items:center; gap:4px; margin-right:8px; white-space:nowrap}
+.news-mkt a{font-weight:600}
+.news-aside{margin-top:3px; color:var(--text-3)}
+.news-aside.on{color:var(--red); font-weight:700}
+.news-aside-box{border:1px solid var(--border); border-radius:10px; padding:8px 12px; margin-bottom:6px; background:rgba(224,180,92,.05)}
+.news-aside-line{font-size:12.5px; line-height:1.6}
+.news-aside-line.on{color:var(--red)}
 .news-row{display:flex; gap:12px; padding:11px 0; border-bottom:1px solid var(--border-soft); cursor:pointer}
 .news-row:last-child{border-bottom:0}
 .news-row:hover .headline{color:var(--brand)}
@@ -1305,14 +1313,14 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
         <div class="card" style="margin-bottom:14px">
           <div class="card-head">
-            <div><h3>Market-moving news</h3><div class="sub">Public keyless feeds &middot; direction chip is a labelled keyword heuristic — not AI, not advice</div></div>
+            <div><h3>Market-moving news</h3><div class="sub">Public feeds, each headline with its source &middot; the markets it names and what their own prices say now &middot; a headline does not tell the direction</div></div>
             <button class="btn sm" id="newsFeedBtn">Refresh</button>
           </div>
           <div id="newsFeed"><p class="hint">Loading market-moving headlines…</p></div>
         </div>
         <div class="card" style="margin-bottom:14px">
           <div class="card-head">
-            <div><h3>Economic calendar — Today (UTC)</h3><div class="sub">Guest sample access &middot; may be rate-limited &middot; TradingView widget below as fallback</div></div>
+            <div><h3>Economic calendar — Nairobi time (EAT)</h3><div class="sub">ForexFactory public weekly calendar &middot; may be rate-limited &middot; each high-impact release comes with a stand-aside period &middot; TradingView calendar below as a second source</div></div>
             <button class="btn sm" id="newsCalBtn">Refresh</button>
             <button class="btn sm primary" id="newsCalShare">↗ Share today's brief</button>
           </div>
@@ -1334,7 +1342,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div id="newsAiBody"><p class="hint">Uses Perplexity when a key is set in Settings. Covers current drivers, expected event outcomes and risk warnings for the selected symbol.</p></div>
             </div>
             <div class="card">
-              <div class="card-head"><div><h3>Economic calendar</h3><div class="sub">TradingView &middot; live</div></div></div>
+              <div class="card-head"><div><h3>Economic calendar</h3><div class="sub">TradingView &middot; times in this device's time zone</div></div></div>
               <div id="tvCalendar" class="tv-widget-box" style="min-height:340px"></div>
             </div>
           </div>

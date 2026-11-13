@@ -481,6 +481,87 @@ is counted. The earlier version of this section gave 39.3% for EUR/USD and
 program that was not kept; the figures above are from the script in this
 repository, which gives 39.9% and 36.8% for the same data and timing.
 
+One more fact about the gold archive, found while measuring releases (next
+section): its files say their bar times are UTC, but until mid-2025 they are
+broker time (Athens: UTC+2, UTC+3 in summer), and from then on UTC. The replay
+above is not affected, because the rule never looks at the clock: a shift by
+whole hours leaves every 5-minute and 1-hour candle as it is. Anything that
+compares these bars with clock times has to convert them first.
+
+### News: which markets, and standing aside around a release
+
+The News view answers three questions and leaves a fourth unanswered on
+purpose.
+
+1. **Which markets does a headline concern?** The ones it names
+   (`src/newsimpact.js`): a pair written out is that pair; a currency or its
+   central bank is every listed market priced in it; a company such as Nvidia
+   is the indices it is a large part of (NAS100, US100, SPX500). A headline
+   that names nothing this application follows gets no market.
+2. **Buy or sell?** Beside each market stands that market's own price reading
+   at this moment (Buy, Sell or Wait, the same reading the Markets view
+   shows). It is not taken from the headline.
+3. **When to stop and when to start again around a release?** For every
+   high-impact entry of the calendar: no new trade from 30 minutes before the
+   release until 30 minutes after it, in the markets priced in its currency.
+   Times are Nairobi time (EAT). The same note appears in the line above the
+   chart for the market selected there.
+4. **Which way will the news move the price?** Not answered, because it is not
+   known. The calendar source gives the forecast and the previous figure, not
+   the result, and the wording of a headline does not decide a price. On the
+   cloud no direction is derived from a headline at all. (The PC server still
+   attaches its keyword chip, `biasFor` in `server/lib/news.js`: it takes the
+   first currency of a fixed list that the title mentions, any "up" or "down"
+   word anywhere in the title, and the major pair of that currency. For the
+   real headline "Euro Falls as US Dollar gains on inflation concerns, Fed
+   rate hike bets" it answers "BUY USD/JPY", a market the headline does not
+   mention.)
+
+The cloud reads the same public sources as the PC server: the RSS feeds of
+FXStreet, Investing.com and CNBC, and the ForexFactory weekly calendar.
+`GET /api/news/feed` and `GET /api/news/calendar` pass on what those sources
+publish, name each source, say which one did not answer, and keep an answer
+for 5 and 30 minutes so that a source is not asked for every request. When no
+source answers, the page says so and shows nothing in its place.
+
+**Why 30 minutes either side.** Measured on gold with `scripts/news-window.mjs`
+(6 January 2020 to 1 April 2023): 386 high-impact US data releases and rate
+decisions of a public copy of the ForexFactory calendar, 379 with prices. In
+the minute of the release the 1-minute price range was 5.4 times the usual
+one, and 1.8 times 15 to 29 minutes later. "A stop distance" is the distance
+the rule puts its stop at (1.5 x the 5-minute ATR before the release):
+
+| Price a full stop distance away from where it stood | At a release | Same weekday and hour a week earlier, no release |
+|---|---|---|
+| within 1 minute | 54% | 5% |
+| within 15 minutes | 84% | 50% |
+| in both directions within 15 minutes | 21% | 2% |
+
+Which way it went is not known beforehand. An alert of the rule stays open
+30 minutes at the median, so one taken in the half hour before a release is
+still open at the release about as often as not. The rule's own alerts near a
+release are few (a few hundred in each group), so these figures are uncertain
+by 4 to 5 points either way: 37.5% of 510 alerts in the 30 minutes before a
+release reached target 1 first, 34.1% of 369 in the 30 minutes after, against
+39.4% of 37,250 with no release within an hour. None of the groups reaches the
+40% needed to break even. The period is a precaution against the first minute,
+not a way to make the rule profitable.
+
+```
+node scripts/news-window.mjs --bars <folder of 1-minute CSV files> --events <calendar CSV> \
+     --from 2020-01-06 --to 2023-04-01 --bars-clock eet
+```
+
+Data used: the gold archive named above (its bars before mid-2025 are on the
+Athens clock: `--bars-clock eet`), and the calendar file `events.csv` of
+`EPSOFT/dataset-forexfactory` on GitHub at commit `a36d527` (January 2007 to
+March 2023, times on the New York clock). The clocks were checked against each
+other: in 165 of the 386 releases the largest 1-minute move of the two hours
+either side falls exactly on the listed minute. Limits: gold only, US releases
+only, a calendar that ends in March 2023; other markets and other currencies
+were not measured and get the same period as a precaution; spreads, which
+widen at a release, are not in the price bars.
+
 ### Before any deployment
 
 ```bash
@@ -587,7 +668,7 @@ from the package replaces nothing newer.
   app routes such as `/app` and deep links get the app page, anything that
   looks like a file (`/missing.js`, `/.env`, `/wp-login.php`) gets a plain `404`.
 - **API surface.** `GET /api/health`, `/api/signals/usage`, `/api/signals/history`,
-  `/api/markets/deriv`; `POST /api/signals/scan`, `/api/signals/analyze`,
+  `/api/markets/deriv`, `/api/news/feed`, `/api/news/calendar`; `POST /api/signals/scan`, `/api/signals/analyze`,
   `/api/markets/deriv/candles`, `/api/markets/deriv/tick`, `/api/history/candles`.
   `/api/deriv*`, `/api/risk*` and `/api/ctl*` are refused first with `403` for
   every method. Any other `/api` path answers `501 cloudflare_route_not_migrated`.

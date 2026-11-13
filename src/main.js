@@ -30,6 +30,7 @@ import { createHostedScanner, signalState, summarizeReadings } from './hostedsca
 import { closedCandleSets, nextReadingCheck } from './closedcandles.js';
 import { measuredText, measuredLine, isDailyReading } from './measured.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
+import { headlineConcerns, eventConcerns, eventTime, currenciesOf, marketsForCurrency, eatClock, eatDay, eatDayBounds, eatStamp, standAside, exposureFor, exposureForCurrency, releaseMeasuredText, trendWords, STAND_ASIDE } from './newsimpact.js';
 
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));
@@ -420,12 +421,22 @@ function goto(view){
   render(view);
   if(view==='markets'){ mktScanRefresh(); }
   if(view==='trade') setTimeout(()=>tv.mountChart($('#tvChart'),state.chart.sym),40);
-  if(view==='news'){ setTimeout(()=>{ tv.mountNews($('#tvNews')); tv.mountCalendar($('#tvCalendar')); },40); renderNewsFeed(); renderNewsCal(); }
+  if(view==='news'){ setTimeout(()=>{ tv.mountNews($('#tvNews')); tv.mountCalendar($('#tvCalendar')); },40); renderNewsFeed(); renderNewsCal(); mktScanRefresh(); }
   window.scrollTo({top:0,behavior:'instant'in window?'instant':'auto'});
 }
 $$('.nav-item').forEach(b=>b.onclick=()=>goto(b.dataset.view));
 document.addEventListener('click',e=>{
   const g=e.target.closest('[data-goto]'); if(g) goto(g.dataset.goto);
+});
+/* The countdowns and stand-aside states of the News view, and the release note in the line above the chart,
+   follow the clock and not the price feed: they keep running when no price tick arrives. */
+setInterval(()=>{ try{ if(state.view==='news')updateNewsTimeline(); else if(state.view==='trade')updateChartLevels(); }catch(e){} },1000);
+/* News view: a market named beside a headline or a release opens its chart. */
+document.addEventListener('click',e=>{
+  const m=e.target.closest('[data-news-open]'); if(!m)return;
+  e.preventDefault();
+  const sym=m.dataset.newsOpen;
+  if(bySym[sym]){ setChartSymbol(sym); goto('trade'); }
 });
 function openSidebar(){ $('#sidebar').classList.add('open'); $('#scrim').classList.add('open'); $('#hamburger').setAttribute('aria-expanded','true'); try{ document.body.style.overflow='hidden'; }catch(e){} }
 function closeSidebar(){ $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('open'); $('#hamburger').setAttribute('aria-expanded','false'); try{ document.body.style.overflow=''; }catch(e){} }
@@ -1594,6 +1605,7 @@ async function mktScanRefresh(force){
     state.mktScanFailed=!results.some(r=>!r.error);
     if(results.length){mktScanAt=Date.now();if(state.view!=='sniper')emitSignalAlerts(results);}
     if(state.view==='markets') renderMarkets(true);
+    if(state.view==='news') paintNewsReadings();
     if(state.view==='sniper'){renderSniperMarketList();renderSniperSelectedDetail();renderSniperSignalAlerts(results,new Set());}
   }catch(e){state.mktScanFailed=true;if(state.view==='markets')renderMarkets(true);}
   finally{mktScanBusy=false;}
@@ -1602,16 +1614,16 @@ function scanLevelsHtml(I){
   const r=state.mktScan[I.s];
   if(!r||r.error)return '';
   const f=(v)=>Number.isFinite(Number(v))?Number(v).toFixed(I.d):null;
+  /* Entry, stop and targets belong to a Buy or Sell reading only. A Wait carries placeholder numbers
+     (always a stop below and targets above the price, whichever way the market leans): they are not shown. */
+  if(r.signal!=='BUY'&&r.signal!=='SELL')return '';
   const e=f(r.entry), sl=f(r.stop_loss), t1=f(r.tp1), t2=f(r.tp2);
   if(!e&&!sl)return '';
-  const conf=r.signal==='BUY'||r.signal==='SELL';
-  return '<div class="tiny market-levels '+(conf?'mono':'mono faint')+'" title="Entry '+(e||'—')+' · Stop loss '+(sl||'—')+' · Take profit 1 '+(t1||'—')+(t2?' · Take profit 2 '+t2:'')+'" style="margin-top:3px;white-space:nowrap">'
-    +(conf?'':'\u2248 ')
+  return '<div class="tiny market-levels mono" title="Entry '+(e||'—')+' · Stop loss '+(sl||'—')+' · Take profit 1 '+(t1||'—')+(t2?' · Take profit 2 '+t2:'')+'" style="margin-top:3px;white-space:nowrap">'
     +'<span class="faint">E</span> '+(e||'\u2014')
     +' \u00b7 <span style="color:var(--red)">SL</span> '+(sl||'\u2014')
     +' \u00b7 <span style="color:var(--green)">TP1</span> '+(t1||'\u2014')
     +(t2?' \u00b7 <span style="color:var(--green)">TP2</span> '+t2:'')
-    +(conf?'':' <span class="faint">(unconfirmed)</span>')
     +'</div>';
 }
 function signalBadge(I){
@@ -2005,6 +2017,7 @@ let levelsForSym=null;
 let levelsRequestSeq=0;
 ['orderSL','orderTP','orderTP2'].forEach((id)=>{ const el=document.getElementById(id); if(el)el.addEventListener('input',()=>{ levelsForSym='__manual__'; }); });
 async function autofillLevels(sym){
+  loadCalendar().catch(()=>{}); /* scheduled releases for the line above the chart; at most one read in ten minutes */
   const requestId=++levelsRequestSeq;
   const isCurrent=()=>requestId===levelsRequestSeq&&state.chart.sym===sym;
   const note=$('#levelsNote'); if(!note)return;
@@ -2056,10 +2069,40 @@ async function autofillLevels(sym){
 function updateChartLevels(){
   const el=document.getElementById('chartLevels'); if(!el)return;
   const I=bySym[state.chart.sym]; if(!I){ el.innerHTML=''; return; }
-  const raw=scanLevelsHtml(I);
-  const html=raw?raw.replace(/^<div[^>]*>/,'<span>').replace(/<\/div>$/,'</span>'):'';
-  const out=html?('<span class="faint">LIVE SIGNAL LEVELS</span>&nbsp; '+html):'<span class="faint">No confirmed levels yet \u2014 the scan fills entry/SL/TP when timeframes align.</span>';
+  const r=state.mktScan[I.s];
+  let out;
+  if(!r||r.error){
+    /* no reading, or a market that is closed, stale or unavailable: nothing is called live */
+    out='<span class="faint">'+(r&&r.detail?escHtml(String(r.detail)):'No confirmed levels yet \u2014 the scan fills entry/SL/TP when timeframes align.')+'</span>';
+  }else{
+    /* Direction first: Buy, Sell or Wait with the agreement score, then what each timeframe shows now,
+       then the levels (a Buy or Sell only) and what was measured for signals of this rule. */
+    const raw=scanLevelsHtml(I);
+    const levels=raw?raw.replace(/^<div[^>]*>/,'<span>').replace(/<\/div>$/,'</span>'):'';
+    const trend=isDailyReading(r)?'':trendWords(r.votes);
+    const measured=measuredText(r,{short:true});
+    out='<span class="faint">LIVE SIGNAL LEVELS</span>&nbsp; '+readingChip(I.s).html
+      +(trend?' <span data-chart-trend title="What the finished candles of each timeframe show at the last 5-minute close. It describes the market now; it does not say that the direction will continue.">now: '+escHtml(trend)+'</span>':'')
+      +(levels?' '+levels:' <span class="faint">no entry, stop or target: they come only with a Buy or Sell reading</span>')
+      +(measured?' <span class="faint" data-chart-measured title="'+escHtml(measuredText(r)||'')+'">'+escHtml(measured)+'</span>':'')
+      +' <span class="faint" data-chart-score-note>% = how strongly the timeframes agree, not the chance of profit</span>';
+  }
+  out+=chartEventHtml(I.s);
   if(el.dataset.h!==out){ el.innerHTML=out; el.dataset.h=out; }
+}
+/* The line above the chart: a high-impact release that concerns this market, now or within three hours.
+   Without a calendar the line says so: an unknown calendar is not an empty one. */
+function chartEventHtml(sym){
+  if(!currenciesOf(sym).length)return '';
+  const entries=calendarEntries();
+  if(entries==null)return state.calAt?' <span class="faint" data-chart-event="unknown" title="'+escHtml(state.calError||'')+'">calendar not available: scheduled releases unknown</span>':'';
+  const now=Date.now();
+  const x=exposureFor(sym,entries,now,{aheadMin:180});
+  if(!x)return '';
+  const what=x.events.slice(0,2).map(e=>(e.country||'')+' '+(e.event||'')).join(', ')+(x.events.length>2?' and '+(x.events.length-2)+' more':'');
+  return x.phase==='aside'
+    ?' <span class="badge sell" data-chart-event="aside" title="'+escHtml(releaseMeasuredText())+'">Stand aside · '+escHtml(what)+' at '+escHtml(eatStamp(x.t,now))+' · no new trade until '+eatClock(x.until)+' EAT</span>'
+    :' <span class="badge wait" data-chart-event="ahead" title="'+escHtml(releaseMeasuredText())+'">High-impact release '+escHtml(eatStamp(x.t,now))+' · '+escHtml(what)+' · no new trade from '+eatClock(x.from)+' EAT</span>';
 }
 function updateTradeHeader(){
   const I=bySym[state.chart.sym]; if(!I)return;
@@ -4222,6 +4265,51 @@ function renderGold(){
 }
 let goldQuotePollAt=0;
 
+/* ================= News: which markets, what their prices say, when to stand aside =================
+   A headline names markets; it does not say which way they will go. The Buy / Sell / Wait beside a
+   market is that market's own price reading (the one the Markets view shows), and the period around a
+   high-impact release is one in which no new trade is opened (src/newsimpact.js). */
+const NEWS_READING_NOTE='The Buy, Sell or Wait beside a market is that market’s own price reading at this moment (the 1m/5m/1h rule; for an index, the daily reading). It is not a forecast of what the news will do to the price: a headline does not tell the direction.';
+const NEWS_CHIPS=4;
+const safeHref=(link)=>/^https?:\/\//i.test(String(link||''))?String(link):'#';
+/* What the price reading of one market says now, as a badge. kind: trade (Buy or Sell), wait, none. */
+function readingChip(sym){
+  const r=state.mktScan[sym];
+  if(!r)return {kind:'none',html:'<span class="badge gray" title="No reading of this market has been made yet.">no reading yet</span>'};
+  if(r.error)return {kind:'none',html:'<span class="badge gray" title="'+escHtml(r.detail||'No reading is available for this market right now.')+'">no reading</span>'};
+  const daily=isDailyReading(r);
+  const tip=escHtml((daily?'Daily reading from daily closing prices. ':'Reading of the 1m/5m/1h rule'+(closeText(r)?' at the '+closeText(r)+' candle close. ':'. '))+(r.votes?'Timeframes: '+r.votes+'. ':'')+'The percentage is how strongly the timeframes agree, not a chance of profit.');
+  if(r.signal==='BUY'||r.signal==='SELL')return {kind:'trade',html:'<span class="badge '+(r.signal==='BUY'?'buy':'sell')+'" title="'+tip+'">'+(r.signal==='BUY'?'Buy ':'Sell ')+liveScoreHtml(r,'span')+(daily?' · daily':'')+'</span>'};
+  if(r.bias==='bullish')return {kind:'wait',html:'<span class="badge lean lean-up" title="'+tip+'">Wait · leans up</span>'};
+  if(r.bias==='bearish')return {kind:'wait',html:'<span class="badge lean lean-dn" title="'+tip+'">Wait · leans down</span>'};
+  return {kind:'wait',html:'<span class="badge wait" title="'+tip+'">Wait</span>'};
+}
+/* The markets a headline or a release concerns, each with its reading: Buy and Sell readings first, the rest counted. */
+function newsMarketsHtml(markets){
+  if(!markets.length)return '<span class="faint">no market of this application</span>';
+  const rank={trade:0,wait:1,none:2};
+  const rows=markets.map((sym,i)=>({sym,i,chip:readingChip(sym)})).sort((a,b)=>rank[a.chip.kind]-rank[b.chip.kind]||a.i-b.i);
+  const shown=rows.slice(0,NEWS_CHIPS), rest=rows.slice(NEWS_CHIPS);
+  const count=(kind)=>rest.filter(x=>x.chip.kind===kind).length;
+  const restText=[count('trade')?count('trade')+' with a Buy or Sell':'',count('wait')?count('wait')+' on Wait':'',count('none')?count('none')+' without a reading':''].filter(Boolean).join(', ');
+  return shown.map(x=>'<span class="news-mkt"><a href="#" data-news-open="'+escHtml(x.sym)+'" title="Open the '+escHtml(x.sym)+' chart">'+escHtml(x.sym)+'</a> '+x.chip.html+'</span>').join(' ')
+    +(rest.length?' <span class="faint" title="'+escHtml(rest.map(x=>x.sym).join(', '))+'">+ '+rest.length+' more ('+restText+')</span>':'');
+}
+function newsMarketsBox(markets){ return '<span data-news-markets="'+escHtml(markets.join(','))+'">'+newsMarketsHtml(markets)+'</span>'; }
+/* After a scan the readings beside headlines and releases are redrawn; the feeds are not read again. */
+function paintNewsReadings(){ $$('#view-news [data-news-markets]').forEach(el=>{ el.innerHTML=newsMarketsHtml(el.dataset.newsMarkets?el.dataset.newsMarkets.split(','):[]); }); }
+function headlineConcernHtml(title){
+  const c=headlineConcerns(title);
+  if(!c.subjects.length)return '<div class="tiny faint news-concern">Names no market of this application.</div>';
+  const why=c.subjects.filter(s=>s.explain).map(s=>s.why);
+  return '<div class="tiny news-concern"><span class="faint">Concerns</span> '+c.subjects.map(s=>'<b title="'+escHtml(s.why)+'">'+escHtml(s.label)+'</b>').join(', ')
+    +(c.markets.length?' <span class="faint">→</span> '+newsMarketsBox(c.markets):'')+(why.length?'<div class="faint">'+escHtml(why.join('. '))+'.</div>':'')+'</div>';
+}
+function newsSourcesHtml(j){
+  if(!Array.isArray(j.sources)||!j.sources.length)return '';
+  return '<div class="hint tiny" id="newsSources">Sources: '+j.sources.map(s=>escHtml(s.name)+' — '+(s.ok?(Number(s.headlines)===1?'1 headline':escHtml(String(s.headlines))+' headlines'):'not available ('+escHtml(String(s.error||'no answer'))+')')).join(' · ')
+    +(j.fetched_at?' · read at '+escHtml(eatStamp(Number(j.fetched_at),Date.now())):'')+'</div>';
+}
 /* News signal validity: a headline is a SNIPER entry — its edge decays fast.
    Transparent rule (no fake precision): a directional news signal is actionable
    for 25 minutes from publish; after that it is STALE and the Execute button
@@ -4251,6 +4339,15 @@ function updateNewsValidity(){
 }
 function newsSignalText(it){
   const b=it.bias||{};
+  if(!b.dir){ /* a headline without a direction is a headline, not a trading signal */
+    const c=headlineConcerns(it.title);
+    return '📰 '+brandName()+' — headline\n'
+      +'Headline: '+it.title+'\n'
+      +(it.source?'Source: '+it.source+'\n':'')
+      +'Concerns: '+(c.markets.length?c.markets.join(', '):'no market of this application')+'\n'
+      +'Link: '+it.link+'\n'
+      +'A headline does not tell the direction. Not advice.';
+  }
   return '🚨 '+brandName()+' trading signal\n'
     +(b.pair||b.ccy||'?')+' — '+(b.dir?b.dir+' (heuristic news read)':'no direction (no confident tone)')+'\n'
     +'Headline: '+it.title+'\n'
@@ -4286,11 +4383,16 @@ async function shareCalBrief(){
     const j=await r.json().catch(()=>({}));
     if(!r.ok||!Array.isArray(j.events))throw new Error('calendar unavailable'); /* never share "no events" for a calendar that did not load */
     const ev=(j.events||[]).filter(e2=>e2.impact==='High'||e2.impact==='Medium').slice(0,8);
-    let txt='📅 '+brandName()+' — today (UTC)\n';
-    txt+=ev.length?ev.map(e2=>(e2.time_utc||'all day')+' '+e2.impact.toUpperCase()+' · '+e2.country+' '+e2.event).join('\n'):'No high/medium events listed today.';
+    const line=(e2)=>{
+      const t=eventTime(e2,j.day);
+      const aside=e2.impact==='High'&&t!=null?' — no new trade '+eatClock(t-STAND_ASIDE.beforeMin*60000)+'–'+eatClock(t+STAND_ASIDE.afterMin*60000):'';
+      return (t!=null?eatClock(t)+' EAT':'all day')+' '+e2.impact.toUpperCase()+' · '+e2.country+' '+e2.event+aside;
+    };
+    let txt='📅 '+brandName()+' — today, Nairobi time (EAT)\n';
+    txt+=ev.length?ev.map(line).join('\n'):'No high/medium events listed today.';
     const sig=(state.newsItems||[]).filter(it=>it.bias&&it.bias.dir).slice(0,5);
     if(sig.length)txt+='\n\nNews signals (heuristic):\n'+sig.map(it=>'• '+(it.bias.pair||it.bias.ccy)+' '+it.bias.dir+' — '+it.title).join('\n');
-    txt+='\n\nHeuristic — not AI, not advice.';
+    txt+='\n\nA release can move a market either way: the calendar gives no direction. Not advice.';
     const u=waLink(txt); if(u)window.open(u,'_blank','noopener');
   }catch(e){ toast('Calendar unavailable','Nothing to share yet — refresh the calendar first.','warn'); }
 }
@@ -4306,19 +4408,26 @@ async function renderNewsFeed(){
     const j=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error(j.detail||j.error||('HTTP '+r.status));
     state.newsItems=j.items||[];
-    el.innerHTML='<div class="tbl-wrap"><table class="tbl"><tbody>'
-      +j.items.map((it,idx)=>{
+    const now=Date.now();
+    /* The PC server adds a keyword chip to a headline; the cloud sends headlines only. The chip column and the
+       order button exist only where the server supplied them. */
+    const anyBias=state.newsItems.some(it=>it.bias);
+    const anyOrderable=state.newsItems.some(it=>it.bias&&it.bias.pair&&it.bias.dir&&!!INSTRUMENT_MAP[it.bias.pair]);
+    el.innerHTML=newsSourcesHtml(j)+'<div class="tbl-wrap"><table class="tbl"><tbody>'
+      +state.newsItems.map((it,idx)=>{
         const b=it.bias||{};
         const orderable=b.pair&&b.dir&&!!INSTRUMENT_MAP[b.pair];
-        return '<tr><td>'+biasChip(it.bias)+'</td>'
-          +'<td><a href="'+escHtml(it.link)+'" target="_blank" rel="noopener">'+escHtml(it.title)+'</a><div class="hint tiny">'+escHtml(it.source||'')+(it.published?' · '+escHtml(it.published):'')+'</div></td>'
+        const when=it.t?eatStamp(Number(it.t),now):(it.published||'');
+        return '<tr>'+(anyBias?'<td>'+biasChip(it.bias)+'</td>':'')
+          +'<td><a href="'+escHtml(safeHref(it.link))+'" target="_blank" rel="noopener">'+escHtml(it.title)+'</a><div class="hint tiny">'+escHtml(it.source||'')+(when?' · '+escHtml(when):'')+'</div>'+headlineConcernHtml(it.title)+'</td>'
           +'<td class="num">'
           +(orderable?'<span class="badge tiny gray" data-nv="'+idx+'" style="margin-right:6px">⏱ …</span>':'')
           +(orderable?'<button class="btn sm primary news-exec" data-i="'+idx+'" title="One click opens the confirm sheet — deduction happens on your linked account after you confirm">⚡ Execute</button> ':'')
-          +'<button class="btn sm ghost news-wa" data-i="'+idx+'" title="Share this signal to WhatsApp">↗ WA</button> '
-          +'<a class="btn sm ghost" href="'+escHtml(it.link)+'" target="_blank" rel="noopener">Open ↗</a></td></tr>';
+          +'<button class="btn sm ghost news-wa" data-i="'+idx+'" title="Share this headline to WhatsApp">↗ WA</button> '
+          +'<a class="btn sm ghost" href="'+escHtml(safeHref(it.link))+'" target="_blank" rel="noopener">Open ↗</a></td></tr>';
       }).join('')
-      +'</tbody></table></div><div class="hint tiny">'+escHtml(j.note||'')+' ⚡ opens the confirm sheet on the linked account — nothing executes without your confirm. Each directional signal shows its validity window: news is a sniper entry — it counts for ~'+NEWS_VALIDITY_MIN+' minutes from publish, then goes STALE and Execute stands down. Pair news entries with short contracts (≤15m).</div>';
+      +'</tbody></table></div><div class="hint tiny">'+escHtml(j.note||'')+' '+escHtml(NEWS_READING_NOTE)
+      +(anyOrderable?' ⚡ opens the confirm sheet on the linked account — nothing executes without your confirm. Each directional signal shows its validity window: news is a sniper entry — it counts for ~'+NEWS_VALIDITY_MIN+' minutes from publish, then goes STALE and Execute stands down. Pair news entries with short contracts (≤15m).':'')+'</div>';
     updateNewsValidity();
     $$('#newsFeed .news-exec').forEach(btn=>btn.onclick=()=>executeNewsSignal(state.newsItems[Number(btn.dataset.i)]||{}));
     /* AUTO: push new directional signals (skipped when the server timer already auto-shares) */
@@ -4341,29 +4450,45 @@ async function renderNewsFeed(){
     el.innerHTML='<div class="empty"><b>Headline feed unavailable</b>'+escHtml(String(e.message||e))+' The TradingView timeline below is independent and may still work — no substitute headlines are invented.</div>';
   }
 }
+/* The calendar is read once for the whole page (News view, the line above the chart): at most every ten
+   minutes unless asked. A failure is remembered, so that nothing reads "no releases" from a calendar
+   that did not load. */
+let calendarPending=null;
+function loadCalendar(force){
+  if(calendarPending)return calendarPending;
+  if(!force&&state.calAt&&Date.now()-state.calAt<10*60000)return Promise.resolve();
+  calendarPending=(async()=>{
+    try{
+      const r=await api('/api/news/calendar');
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error(j.detail||j.error||('HTTP '+r.status));
+      state.calDay=j.day||new Date().toISOString().slice(0,10);
+      state.calSource=j.source||'ForexFactory public weekly calendar';
+      state.calEvents=j.events||[];
+      state.calWeek=Array.isArray(j.week)?j.week:null;
+      state.calError='';
+    }catch(e){ state.calError=String((e&&e.message)||e)||'Calendar unavailable'; }
+    finally{ state.calAt=Date.now(); calendarPending=null; }
+  })();
+  return calendarPending;
+}
+/* Every calendar entry with its moment as `t` (null: all day). null while the calendar has not loaded: unknown, not empty. */
+function calendarEntries(){
+  if(!state.calAt||state.calError)return null;
+  return (state.calWeek||state.calEvents||[]).map((e)=>Object.assign({},e,{t:eventTime(e,state.calDay)}));
+}
 async function renderNewsCal(){
   const el=$('#newsCal'); if(!el)return;
-  try{
-    const r=await api('/api/news/calendar');
-    const j=await r.json().catch(()=>({}));
-    if(!r.ok)throw new Error(j.detail||j.error||('HTTP '+r.status));
-    state.calDay=j.day||new Date().toISOString().slice(0,10);
-    state.calSource=j.source||'ForexFactory public weekly calendar';
-    state.calEvents=j.events||[];
-    renderNewsTimeline();
-  }catch(e){
-    el.innerHTML='<div class="empty"><b>Calendar unavailable</b>'+escHtml(String(e.message||e))+' The TradingView calendar below is independent and may still work.</div>';
+  await loadCalendar(true);
+  if(state.calError){
+    el.innerHTML='<div class="empty"><b>Calendar unavailable</b>'+escHtml(state.calError)+' The TradingView calendar below is independent and may still work. Scheduled releases are unknown until the calendar loads: nothing here says there are none.</div>';
+    return;
   }
+  renderNewsTimeline();
 }
 /* timeline buckets: UPCOMING / JUST RELEASED (last 15 min = current news) /
    PAST 2 HOURS. Exact epoch from the calendar's date + HH:MM UTC. */
-function newsEvT(e){
-  const d=state.calDay;
-  if(!d||!e.time_utc||!/^[0-9]{1,2}:[0-9]{2}$/.test(e.time_utc))return null;
-  const base=Date.parse(d+'T00:00:00Z'); if(!Number.isFinite(base))return null;
-  const parts=e.time_utc.split(':');
-  return base+(Number(parts[0]))*3600000+(Number(parts[1]))*60000;
-}
+function newsEvT(e){ return eventTime(e,state.calDay); }
 function newsBucket(t){
   const now=Date.now();
   if(t>now)return 'up';
@@ -4378,30 +4503,67 @@ function newsTLabel(t){
   return (age>=3600?(Math.floor(age/3600)+'h '+(Math.round((age%3600)/60)||0)+'m'):Math.max(1,Math.floor(age/60))+'m')+' ago';
 }
 function newsChip(v){ return v==='High'?'<span class="badge sell">High</span>':v==='Medium'?'<span class="badge" style="background:#e5b56722;color:#e5b567">Medium</span>':'<span class="badge gray">Low</span>'; }
+/* "No new trade 16:00–17:00 EAT" for a high-impact release, and where the clock stands in that period. */
+function standAsideLine(t,now){
+  const s=standAside(t,now);
+  const span=eatClock(s.from)+'–'+eatClock(s.until)+' EAT';
+  if(s.phase==='ahead')return {on:false,text:'No new trade '+span+' (30 min before to 30 min after)'};
+  if(s.phase==='before')return {on:true,text:'STAND ASIDE NOW · release in '+s.minutes+' min · no new trade until '+eatClock(s.until)+' EAT'};
+  if(s.phase==='after')return {on:true,text:'STAND ASIDE · released · no new trade for another '+s.minutes+' min, until '+eatClock(s.until)+' EAT'};
+  return {on:false,text:'Stand-aside period over since '+eatClock(s.until)+' EAT'};
+}
+/* The box above the calendar: per currency, the period that is running now or the next one within three hours. */
+function newsAsideHtml(entries,now){
+  const lines=[];
+  for(const ccy of ['USD','EUR','GBP','JPY','AUD','CAD','CHF','NZD']){
+    const x=exposureForCurrency(ccy,entries,now,{aheadMin:180});
+    if(!x)continue;
+    const names=x.events.slice(0,3).map(e=>e.event).join(', ')+(x.events.length>3?' and '+(x.events.length-3)+' more':'');
+    lines.push({on:x.phase==='aside',from:x.from,html:'<div class="news-aside-line'+(x.phase==='aside'?' on':'')+'"><b>'+(x.phase==='aside'?'Stand aside now':'Next')+' · '+ccy+'</b> — '+escHtml(names)+' at '+escHtml(eatStamp(x.t,now))
+      +'. No new trade in '+ccy+' markets '+(x.phase==='aside'?'until '+eatClock(x.until)+' EAT':'from '+eatClock(x.from)+' to '+eatClock(x.until)+' EAT')+' <span class="faint">('+escHtml(marketsForCurrency(ccy).join(', '))+')</span></div>'});
+  }
+  lines.sort((a,b)=>(Number(b.on)-Number(a.on))||(a.from-b.from));
+  return lines.length?lines.map(l=>l.html).join(''):'<div class="news-aside-line">No high-impact release is listed for the next 3 hours. Unscheduled news is in no calendar.</div>';
+}
 function renderNewsTimeline(){
   const el=$('#newsCal'); if(!el)return;
-  const all=(state.calEvents||[]).map((e)=>Object.assign({},e,{t:newsEvT(e)}));
-  const timed=all.filter((e)=>e.t!=null), allday=all.filter((e)=>e.t==null);
+  const all=calendarEntries()||[];
   const now=Date.now();
+  const dayEnd=eatDayBounds(now)[1];
+  const timed=all.filter((e)=>e.t!=null);
+  const allday=all.filter((e)=>e.t==null&&(!e.day||e.day===eatDay(now)));
   const cur=timed.filter((e)=>newsBucket(e.t)==='now').sort((a,b)=>b.t-a.t);
-  const up=timed.filter((e)=>newsBucket(e.t)==='up').sort((a,b)=>a.t-b.t);
+  const up=timed.filter((e)=>newsBucket(e.t)==='up'&&e.t<dayEnd).sort((a,b)=>a.t-b.t);
   const past=timed.filter((e)=>newsBucket(e.t)==='past'&&now-e.t<=2*3600000).sort((a,b)=>b.t-a.t);
-  const row=(e)=>'<tr><td class="mono tiny">'+(e.time_utc?escHtml(e.time_utc)+' UTC':'all day')+'</td>'
+  const tomorrow=timed.filter((e)=>e.t>=dayEnd&&e.t<dayEnd+86400000&&e.impact==='High').sort((a,b)=>a.t-b.t);
+  const row=(e)=>{
+    const major=e.impact==='High'||e.impact==='Medium';
+    const c=major?eventConcerns(e):null;
+    const aside=e.impact==='High'&&e.t!=null?standAsideLine(e.t,now):null;
+    return '<tr><td class="mono tiny"'+(e.t!=null?' title="'+escHtml(new Date(e.t).toISOString().slice(0,16).replace('T',' ')+' UTC')+'"':'')+'>'+(e.t!=null?escHtml(eatStamp(e.t,now)):'all day')+'</td>'
     +'<td class="tiny">'+escHtml(e.country||'')+'</td>'
-    +'<td class="tiny">'+escHtml(e.event||'')+(e.forecast?' <span class="tiny faint">f: '+escHtml(e.forecast)+(e.previous?' · p: '+escHtml(e.previous):'')+'</span>':'')+'</td>'
+    +'<td class="tiny">'+escHtml(e.event||'')+(e.forecast?' <span class="tiny faint">f: '+escHtml(e.forecast)+(e.previous?' · p: '+escHtml(e.previous):'')+'</span>':'')
+      +(c?'<div class="tiny news-concern">'+(c.markets.length?'<span class="faint">'+escHtml(c.currency)+' markets</span> '+newsMarketsBox(c.markets):'<span class="faint">no market of this application is priced in '+escHtml(e.country||'this currency')+'</span>')+'</div>':'')
+      +(aside&&c&&c.markets.length?'<div class="tiny news-aside'+(aside.on?' on':'')+'" data-sa="'+e.t+'">'+escHtml(aside.text)+'</div>':'')+'</td>'
     +'<td>'+newsChip(e.impact)+'</td>'
     +'<td>'+(e.t!=null?'<span class="badge tiny gray" data-nt="'+e.t+'" data-b="'+newsBucket(e.t)+'">'+escHtml(newsTLabel(e.t))+'</span>':'<span class="badge tiny gray">all day</span>')+'</td></tr>';
+  };
   const sec=(title,arr)=>'<div class="tiny faint" style="margin:12px 0 4px"><b>'+title+'</b></div>'
     +(arr.length?'<div class="tbl-wrap"><table class="tbl"><tbody>'+arr.map(row).join('')+'</tbody></table></div>':'<div class="hint tiny">— none —</div>');
-  el.innerHTML=sec('🔴 JUST RELEASED — current news (last 15 min)',cur)
+  el.innerHTML='<div class="news-aside-box" id="newsAside">'+newsAsideHtml(all,now)+'</div>'
+    +sec('🔴 JUST RELEASED — current news (last 15 min)',cur)
     +sec('⏭ UPCOMING TODAY — exact times, live countdown',up)
     +sec('🕘 PAST 2 HOURS',past)
+    +(state.calWeek?sec('🗓 TOMORROW — high impact only',tomorrow):'')
     +(allday.length?sec('📅 ALL-DAY / UNSCHEDULED',allday):'')
-    +'<div class="hint tiny">Source: '+escHtml(state.calSource||'')+' · all times UTC · countdowns update live. High-impact releases = sniper moments: trade them inside the 25-minute news window and prefer short contracts.</div>';
+    +'<div class="hint tiny">Source: '+escHtml(state.calSource||'')+' · times are Nairobi time (EAT, UTC+3); point at a time for UTC · countdowns update live. Around a high-impact release no new trade is opened from '
+    +STAND_ASIDE.beforeMin+' minutes before until '+STAND_ASIDE.afterMin+' minutes after, in the markets priced in its currency. '+escHtml(releaseMeasuredText())
+    +' The calendar gives the forecast and the previous figure, not the result: which way a release moves a market is not shown, because it is not known.</div>';
   updateNewsTimeline();
 }
 function updateNewsTimeline(){
   let need=false;
+  const now=Date.now();
   $$('#newsCal [data-nt]').forEach((el)=>{
     const t=Number(el.dataset.nt); const b=newsBucket(t);
     if(b!==el.dataset.b){ need=true; return; } /* crossed a boundary -> re-section */
@@ -4409,7 +4571,14 @@ function updateNewsTimeline(){
     if(el.textContent!==txt)el.textContent=txt;
     el.className='badge tiny '+(b==='now'?'sell':b==='up'?'buy':'gray');
   });
-  if(need)renderNewsTimeline();
+  if(need){ renderNewsTimeline(); return; }
+  $$('#newsCal [data-sa]').forEach((el)=>{
+    const s=standAsideLine(Number(el.dataset.sa),now);
+    if(el.textContent!==s.text)el.textContent=s.text;
+    el.classList.toggle('on',s.on);
+  });
+  const box=$('#newsAside');
+  if(box){ const html=newsAsideHtml(calendarEntries()||[],now); if(box.dataset.h!==html){ box.innerHTML=html; box.dataset.h=html; } }
 }
 
 /* ================= Watchlist page =================

@@ -194,6 +194,9 @@ export async function mountNews(container) {
   await waitEmbed(container, script, 'Live news feed unavailable (no network). Use the AI news brief below when a Perplexity key is set.');
 }
 
+/** The script of TradingView's economic calendar ("events") widget. */
+export const CALENDAR_WIDGET_URL = 'https://s3.tradingview.com/external-embedding/embed-widget-events.js';
+
 /** Economic calendar widget. */
 export async function mountCalendar(container) {
   if (!container) return;
@@ -208,19 +211,22 @@ export async function mountCalendar(container) {
   container.appendChild(inner);
   const conf = document.createElement('script');
   conf.type = 'application/json';
+  /* TradingView's economic calendar is its "events" widget. The address used before
+     (embed-widget-economic-calendar.js) no longer exists on TradingView's server, which is why this
+     box read "unavailable" with a working connection. Settings are the ones that widget accepts. */
   conf.innerHTML = JSON.stringify({
     colorTheme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
     isTransparent: true,
-    displayMode: 'block',
     width: '100%',
     height: '100%',
     locale: 'en',
-    country: 'all'
+    importanceFilter: '-1,0,1',
+    countryFilter: 'us,eu,gb,jp,au,ca,ch,nz,de,cn'
   });
   const script = document.createElement('script');
-  script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-economic-calendar.js';
+  script.src = CALENDAR_WIDGET_URL;
   script.async = true;
   inner.appendChild(conf);
   inner.appendChild(script);
-  await waitEmbed(container, script, 'Live calendar unavailable (no network).');
+  await waitEmbed(container, script, 'The TradingView calendar could not be loaded (blocked, offline, or changed by TradingView). The calendar card above does not depend on it.');
 }

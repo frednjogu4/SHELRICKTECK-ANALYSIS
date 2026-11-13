@@ -1,8 +1,10 @@
 /*
  * AURUM Cloudflare Worker — read-only signal API adapter.
  *
- * Deliberately separate from the Express server. Only public market-data and
- * deterministic analysis routes are exposed. No broker PAT/account/order,
+ * Deliberately separate from the Express server. Only public market-data,
+ * deterministic analysis and public headline/calendar routes are exposed
+ * (the last two pass on what the named sources publish and derive nothing
+ * from it). No broker PAT/account/order,
  * positions, risk-gate, or Exness-bridge routes are implemented here.
  * Exness candles stay on the user's PC; this Worker uses labelled public
  * Deriv candles and labelled Yahoo daily index data as approved fallbacks.
@@ -13,6 +15,11 @@ import { localDecision } from '../server/lib/localdecision.js';
 import { closedCandleSets } from '../src/closedcandles.js';
 import { indexDailySignal, parseYahooChart } from '../server/lib/indices.js';
 import { rsi, sma } from '../server/lib/indicators.js';
+import { parseFfCalendar } from '../server/lib/news.js';
+import {
+  CALENDAR_KEEP_MS, CALENDAR_RETRY_MS, CALENDAR_SOURCE, CALENDAR_URL, HEADLINE_SOURCES, HEADLINES_KEEP_MS,
+  HEADLINES_RETRY_MS, MAX_FEED_BYTES, NEWS_NOTE, calendarWeek, headlinesFrom, mergeHeadlines, readProviderText, sourceFailure
+} from './news.js';
 import {
   HttpError, MAX_JSON_BODY_BYTES, WORKER_SECURITY_HEADERS, allowHeader, createBoundedCache,
   describeError, isAppShellPath, logEvent, readJsonObject, withoutBody
@@ -34,6 +41,8 @@ const API_ROUTES = new Map([
   ['/api/signals/usage', ['GET']],
   ['/api/signals/history', ['GET']],
   ['/api/markets/deriv', ['GET']],
+  ['/api/news/feed', ['GET']],
+  ['/api/news/calendar', ['GET']],
   ['/api/signals/scan', ['POST']],
   ['/api/signals/analyze', ['POST']],
   ['/api/markets/deriv/candles', ['POST']],
@@ -240,6 +249,60 @@ function createReadOnlyWorker({
       .filter((s) => CODE_RE.test(s.code) && s.name);
     activeSymbolsCache = { at: now(), rows };
     return rows;
+  }
+
+  /* ---- headlines and the economic calendar: what the named public sources
+     publish, passed on as published. One answer is kept for a few minutes, and
+     a failure for a shorter time, so that a source is not asked again for every
+     request. (Requests that arrive while the first one is still waiting each
+     ask once: a pending answer is not shared between requests in a Worker.) ---- */
+  let headlinesKept = null;
+  let calendarKept = null;
+
+  async function providerText(address, accept) {
+    const res = await fetchImpl(address, { headers: { accept, 'user-agent': 'Mozilla/5.0 (compatible; aurum-news)' }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw feedError('http', 'HTTP ' + res.status);
+    return readProviderText(res, MAX_FEED_BYTES);
+  }
+
+  /* { ok: true, payload } or { ok: false, detail, sources }. `sources` says for each feed whether it answered. */
+  async function loadHeadlines(route) {
+    if (headlinesKept && now() - headlinesKept.at < (headlinesKept.ok ? HEADLINES_KEEP_MS : HEADLINES_RETRY_MS)) return headlinesKept;
+    const startedAt = now();
+    const settled = await Promise.allSettled(HEADLINE_SOURCES.map((source) => providerText(source.url, 'application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5')));
+    const lists = [];
+    const sources = settled.map((result, index) => {
+      const name = HEADLINE_SOURCES[index].name;
+      if (result.status !== 'fulfilled') {
+        log('warn', 'provider_feed_failed', { route, requested: 1, failed: 1, duration_ms: Math.max(0, now() - startedAt), target: name, first: { provider: 'news', ...describeFeedFailure(result.reason) } });
+        return { name, ok: false, error: sourceFailure(result.reason) };
+      }
+      const items = headlinesFrom(name, result.value);
+      lists.push(items);
+      return items.length ? { name, ok: true, headlines: items.length } : { name, ok: false, error: 'no headlines in the answer' };
+    });
+    const items = mergeHeadlines(lists);
+    headlinesKept = items.length
+      ? { at: now(), ok: true, payload: { ts: new Date(now()).toISOString(), fetched_at: now(), items, sources, note: NEWS_NOTE } }
+      : { at: now(), ok: false, sources, detail: 'No headline source could be read from the cloud right now (' + sources.map((source) => source.name + ': ' + source.error).join('; ') + '). No substitute headlines are shown.' };
+    return headlinesKept;
+  }
+
+  /* The rows of the calendar feed, or the reason they could not be read. The day asked for is applied per request. */
+  async function loadCalendar(route) {
+    if (calendarKept && now() - calendarKept.at < (calendarKept.ok ? CALENDAR_KEEP_MS : CALENDAR_RETRY_MS)) return calendarKept;
+    const startedAt = now();
+    try {
+      const text = await providerText(CALENDAR_URL, 'application/json');
+      let rows;
+      try { rows = JSON.parse(text); } catch (_) { throw feedError('shape', 'calendar answer is not JSON'); }
+      if (!Array.isArray(rows)) throw feedError('shape', 'calendar answer is not a list');
+      calendarKept = { at: now(), ok: true, rows, week: calendarWeek(rows) };
+    } catch (e) {
+      log('warn', 'provider_feed_failed', { route, requested: 1, failed: 1, duration_ms: Math.max(0, now() - startedAt), target: 'calendar', first: { provider: 'news', ...describeFeedFailure(e) } });
+      calendarKept = { at: now(), ok: false, detail: 'The calendar source could not be read from the cloud right now (' + CALENDAR_SOURCE + ': ' + sourceFailure(e) + '). No events are assumed.' };
+    }
+    return calendarKept;
   }
 
   async function fetchCandlesByCode(code, granularity, count) {
@@ -513,6 +576,23 @@ function createReadOnlyWorker({
         logProviderFailure(url.pathname, e, startedAt, 'active_symbols');
         return responseJson({ error: 'deriv_catalog_unavailable', detail: String(e?.message || e).slice(0, 120) }, 502);
       }
+    }
+
+    if (url.pathname === '/api/news/feed' && method === 'GET') {
+      const limited = await enforceRateLimit(env, request, 'AURUM_MARKET_LIMITER', 'news-feed');
+      if (limited) return limited;
+      const kept = await loadHeadlines(url.pathname);
+      return kept.ok ? responseJson(kept.payload) : responseJson({ error: 'news_unavailable', detail: kept.detail, sources: kept.sources }, 502);
+    }
+
+    if (url.pathname === '/api/news/calendar' && method === 'GET') {
+      const limited = await enforceRateLimit(env, request, 'AURUM_MARKET_LIMITER', 'news-calendar');
+      if (limited) return limited;
+      const kept = await loadCalendar(url.pathname);
+      if (!kept.ok) return responseJson({ error: 'calendar_unavailable', detail: kept.detail }, 502);
+      const today = new Date(now());
+      /* `day` and `events` are the UTC day of the request, as the PC server sends them; `week` is every entry of the feed with its moment. */
+      return responseJson({ ts: today.toISOString(), fetched_at: kept.at, day: today.toISOString().slice(0, 10), source: CALENDAR_SOURCE, events: parseFfCalendar(kept.rows, today), week: kept.week });
     }
 
     if ((url.pathname === '/api/markets/deriv/candles' || url.pathname === '/api/markets/deriv/tick' || url.pathname === '/api/history/candles') && method === 'POST') {
