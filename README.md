@@ -949,10 +949,18 @@ Builds: cloudflare-staging**, green after a successful build. A merge commit
 without that line two minutes after the merge was not built. The mark itself
 is not enough: it also turns green when only the repository's own tests have
 passed (the lines **Build, test, dry-run** and **PC bridge tests**, see
-[Continuous integration](#continuous-integration)). (On two commits,
-`1534184` and `d3fdf22`, Cloudflare's line is red although they were
-published: a branch was created at each of them later, and the preview build
-of that branch failed.)
+[Continuous integration](#continuous-integration)). (On `1534184` and
+`d3fdf22` Cloudflare's line is red although they were published, and on
+`e0e7903` it is red although no build of `main` ever ran for it: a branch was
+created at each of them later, and the preview build of that branch failed.)
+
+**An address with eight characters in front.**
+`https://<eight characters>-cloudflare-staging.<account>.workers.dev` is a
+Version URL. Cloudflare gives one to every version it uploads, and it shows
+that one version for good: it does not change when something is merged or
+published. The site is the address without the prefix. The **Deployments**
+page links both, so to see whether a merge is live, open the one without the
+prefix.
 
 **The merge is not in that list.** The list shows successful builds only.
 
@@ -967,11 +975,16 @@ of that branch failed.)
    one, and it publishes everything merged up to then.
 
 **Pushes that were never built.** Of the 28 pushes to `main` between the first
-build (9 November) and 13 November, 19:20 UTC, five got no build at all: no
-check on the commit, and nothing to retry. GitHub received nothing from
-Cloudflare for them, neither the check Cloudflare posts when a build starts
-nor a failed one. Whether GitHub delivered these pushes to Cloudflare's app
-cannot be seen from the repository.
+build (9 November) and 13 November, 19:20 UTC, five got no build at all, and
+neither did the next three: no check on the commit, and nothing to retry.
+GitHub received nothing from Cloudflare for them, neither the check Cloudflare
+posts when a build starts nor a failed one. GitHub had registered each of
+these pushes for Cloudflare's app: it holds a check suite of that app for the
+commit, opened within seconds of the push and still empty
+(`gh api repos/<owner>/<repository>/commits/<commit>/check-suites` lists it as
+`cloudflare-workers-and-pages`, `queued`, no runs). So the app was installed
+on the repository each time. Whether GitHub's notice reached Cloudflare cannot
+be seen from the repository; that Cloudflare never answered it can.
 
 | Push to `main` (UTC) | What | Published by |
 | --- | --- | --- |
@@ -980,6 +993,9 @@ cannot be seen from the repository.
 | 13 Nov, 18:00:09 | merge of #12 | see below |
 | 13 Nov, 19:12:21 | merge of #14 | see below |
 | 13 Nov, 19:20:17 | merge of #13 | see below |
+| 13 Nov, 22:03:44 | merge of #16 | see below |
+| 13 Nov, 22:52:39 | merge of #17 | see below |
+| 13 Nov, 23:27:47 | merge of #15 | see below |
 
 *The first two* were single pushes, each published by the next build. Both
 were pushed in the first minute after a full hour, as was the third, and none
@@ -988,15 +1004,18 @@ before an hour, and 3 and 5 minutes after one). The first is from two days
 before the repository was renamed. Whether the hour is the cause has not been
 established.
 
-*The last three* are one stretch, and the hour does not explain it. On
-13 November no push started a build from 18:00 UTC on: not these three merges,
-two of them well after the hour, and not two pushes to other branches at
-19:11, which got no preview build either. The last build that a push had
-started was that of a branch at 14:03 UTC. Builds asked for with **Re-run** on
-GitHub at 18:44 UTC still ran, so Cloudflare could still reach and build the
-repository; it was pushes that no longer started anything. What had changed
-on Cloudflare's side cannot be seen from GitHub, and was not known when this
-was written.
+*The last six* are one stretch, and the hour does not explain it. On
+13 November no push started a build from 18:00 UTC until 23:27 UTC: not these
+six merges, five of them well after the hour, and not one of the 13 pushes to
+other branches between 19:11 and 23:09, which got no preview build either. The
+last build that a push had started was that of a branch at 14:03 UTC. Builds
+asked for with **Re-run** on GitHub at 18:44 UTC still ran, so Cloudflare
+could still reach and build the repository; it was pushes that no longer
+started anything. Cloudflare's own status page listed a fault of its Workers
+API from 15:31 UTC that day ("an increase in 5xx errors deploying Workers or
+doing other API actions"), not yet closed at 23:34 UTC. Whether that was the
+cause has not been established. Two pushes to a branch at 23:44 and 23:45 UTC
+were built again. What had changed in between cannot be seen from GitHub.
 
 What follows from both:
 
@@ -1008,6 +1027,17 @@ What follows from both:
   History** whether Cloudflare saw the pushes at all. Connecting the
   repository again is described under "The repository's name" below, and
   "Deploying staging" above publishes without the Git integration.
+- `main` can be built without a push. Cloudflare's documentation (30 October
+  2026) describes a **Deploy Hook**: **Settings** → **Builds** → **Deploy
+  Hooks**, a name, the branch `main`, **Create**. An HTTP POST to the address
+  it gives starts a production build of the branch as it stands, for example
+  `curl.exe -X POST "<address>"` in a Windows command prompt. The address is
+  the only credential: keep it out of the repository and out of messages. Not
+  tried here.
+- **Re-run** needs a person, and a check to press. A commit that was never
+  built has none. And GitHub lets only Cloudflare's own app, or someone signed
+  in on the website, ask for Cloudflare's check again: a workflow's token is
+  refused with HTTP 403 (`Invalid check_suite_id`), tried on 13 November.
 - Merging at five minutes past the hour or later costs nothing, and avoids
   the one pattern seen so far.
 
