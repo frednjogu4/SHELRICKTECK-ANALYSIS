@@ -2387,10 +2387,15 @@ test('the PC app keeps its keyword chip and its order button where its server se
     if (path === '/api/news/calendar') return { status: 200, body: { day: pcDay, source: 'test calendar', events: [{ time_utc: new Date(pcRelease).toISOString().slice(11, 16), country: 'USD', event: 'Fixture PC release', impact: 'High', forecast: '', previous: '' }] } };
     return liveScanApi(path, body);
   };
-  /* The PC server sends the entries of the UTC day with a clock time and no moment: a release 40 minutes ahead, or 20 minutes ago when that would be tomorrow. */
+  /* The PC server sends the entries of the UTC day with a clock time and no moment: a release 40 minutes ahead, or 20 minutes ago
+     when that would be tomorrow. Tomorrow on either calendar: the server's day ends at 24:00 UTC, the page's (Nairobi) at 21:00 UTC,
+     and a release after the page's midnight is not under "upcoming today". (Until 13 November 2026 only the UTC day was looked at,
+     and this test failed when run between 20:20 and 21:00 UTC.) */
   const started = Date.now();
-  const pcDay = new Date(started).toISOString().slice(0, 10);
-  const pcRelease = Math.floor((new Date(started + 40 * 60000).toISOString().slice(0, 10) === pcDay ? started + 40 * 60000 : started - 20 * 60000) / 60000) * 60000;
+  const dayUtc = (ms) => new Date(ms).toISOString().slice(0, 10), dayNairobi = (ms) => dayUtc(ms + 3 * 3600000);
+  const pcDay = dayUtc(started);
+  const ahead = started + 40 * 60000;
+  const pcRelease = Math.floor((dayUtc(ahead) === pcDay && dayNairobi(ahead) === dayNairobi(started) ? ahead : started - 20 * 60000) / 60000) * 60000;
   const app = await bootApp({ origin: PC_ORIGIN, pcApi });
   try {
     await app.enter();
