@@ -217,6 +217,23 @@ def _last_error():
     return code, desc
 
 
+# ---- terminal attach: the reason is kept when it happens -------------------
+# mt5.last_error() is overwritten by every later MetaTrader5 call, and
+# attach_terminal() calls mt5.shutdown() after a failed initialize(). Reading
+# last_error() after attach_terminal() therefore reported "code 1: Success"
+# for every failed attach. The reason is now stored at the moment of the
+# failure (_ATTACH_FAILURE) and handle_login() reports that.
+_ATTACH_LOCK = threading.Lock()  # one initialize() at a time: bridge start, websocket and HTTP logins alike
+_ATTACH_FAILURE = None  # why the last attach failed (dict); None after a successful attach
+# The app waits 8 s for the answer to a login (src/bridge.js) and repeats a
+# failed login once over HTTP straight away. An attach asked for by a login
+# therefore gets 5 s, and the repeat gets the same answer without a second try.
+_LOGIN_ATTACH_WAIT_MS = 5000
+_START_ATTACH_WAIT_MS = 60000  # MetaTrader5.initialize() default; a terminal that was only just started needs it
+_ATTACH_REPEAT_QUIET_S = 3.0
+_ATTACH_STATE = {"wait_ms": _LOGIN_ATTACH_WAIT_MS, "since": 0.0, "limit_s": 0.0}
+
+
 def handle_login(msg):
     """Login with STEP-DIAGNOSTICS: every failure says exactly which step broke
     (terminal attach vs credentials) plus MT5's own error code, so the app can
@@ -238,15 +255,20 @@ def handle_login(msg):
     # the same terminal here can return RES_E_AUTH_FAILED (-6) even though the
     # bridge already has a valid IPC connection. Reuse it; only initialize if
     # the connection has actually gone away.
+    busy = _attach_busy_message()
+    if busy:
+        return {**err(busy)}
     term = mt5.terminal_info()
     if term is None:
         if not attach_terminal():
-            code, desc = _last_error()
-            return {**err(f"Cannot attach to the configured MetaTrader 5 terminal (step terminal, code {code}: {desc}). Check AURUM_MT5_PATH and start the Exness MT5 terminal normally.")}
+            busy = _attach_busy_message()
+            if busy or _ATTACH_FAILURE is not None:
+                return {**err(busy or _attach_failure_message())}
+            # no attach is running and none has failed: another request attached the terminal meanwhile
         term = mt5.terminal_info()
         if term is None:
             code, desc = _last_error()
-            return {**err(f"MT5 terminal not responding (step terminal, code {code}: {desc}). Start MetaTrader 5 and keep it open.")}
+            return {**err(_app_safe(f"MT5 terminal not responding (step terminal, code {code}: {desc}). Start MetaTrader 5 and keep it open."))}
     else:
         log.info("reusing the MT5 terminal already attached at bridge startup")
     if not term.trade_allowed:
@@ -257,11 +279,11 @@ def handle_login(msg):
         ok = mt5.login(login, password=password, server=server)
         if not ok:
             code, desc = _last_error()
-            return {**err(f"MT5 rejected the credentials (step login, code {code}: {desc}). Check the account number, MT5 password, and exact Exness MT5 server in your Exness Personal Area.")}
+            return {**err(_app_safe(f"MT5 rejected the credentials (step login, code {code}: {desc}). Check the account number, MT5 password, and exact Exness MT5 server in your Exness Personal Area."))}
         ai = mt5.account_info()
         if ai is None:
             code, desc = _last_error()
-            return {**err(f"Logged in but account info unavailable (step account, code {code}: {desc})")}
+            return {**err(_app_safe(f"Logged in but account info unavailable (step account, code {code}: {desc})"))}
         actual_server = str(getattr(ai, "server", "")).strip()
         company = str(getattr(ai, "company", "")).strip()
         if actual_server.casefold() != server.casefold():
@@ -284,6 +306,116 @@ def handle_login(msg):
         "leverage": ai.leverage,
         "terminal": term.name,
     }
+
+
+# The Exness sign-in form of the app replaces a bridge message that contains
+# one of these words by its own "Bridge not reachable" help text
+# (src/main.js: /unreachable|timeout|refused|closed|blocked/i). A message about
+# MetaTrader 5 has to arrive as written, so the words are reworded.
+_APP_REPLACES_WORDS = (
+    ("unreachable", "not reachable"),
+    ("timeout", "time-out"),
+    ("refused", "rejected"),
+    ("closed", "shut"),
+    ("blocked", "stopped"),
+)
+
+
+def _app_safe(text):
+    out = str(text)
+    for word, other in _APP_REPLACES_WORDS:
+        out = re.sub(word, other, out, flags=re.IGNORECASE)
+    return out
+
+
+def _terminal_label(path):
+    """Name the terminal that was tried: its folder and file, not the whole path."""
+    if not path:
+        return "the default MetaTrader 5 of this PC (no location is saved)"
+    parts = [part for part in re.split(r"[\\/]+", str(path)) if part]
+    return '"' + "\\".join(parts[-2:]) + '"'
+
+
+def _attach_busy_message():
+    """A login that arrives while MetaTrader 5 is being contacted is answered at once."""
+    if not _ATTACH_LOCK.locked():
+        return None
+    since, limit_s = _ATTACH_STATE.get("since") or 0.0, _ATTACH_STATE.get("limit_s") or 0.0
+    left = int(round(limit_s - (time.time() - since))) if since and limit_s else 0
+    when = f"in about {left} seconds" if left > 1 else "in a moment"
+    return _app_safe("The bridge is still contacting MetaTrader 5 and has no answer yet (step terminal). "
+                     f"Press Connect again {when}.")
+
+
+_SAVED_LOCATION_HINT = ("Check AURUM_MT5_PATH (the location saved in bridge\\terminal_path.txt) "
+                        "and start the Exness MT5 terminal normally.")
+_LOG_IN_STEP = ("in MetaTrader 5 use File > Login to Trade Account (account number, password and the exact server) "
+                "and wait until the bottom-right corner shows a connection speed and not 'No connection'")
+_NORMAL_START_STEP = "start MetaTrader 5 with a normal double-click, not 'Run as administrator'"
+_ONLY_ONE_STEP = "keep only that one MetaTrader 5 open"
+_PYTHON_BOX_STEP = "if Tools > Options > Community has a 'Python integration' box, tick it and restart MetaTrader 5"
+_START_AGAIN = "run START_ALL_LOCAL.bat again"
+
+
+def _steps(*steps):
+    """'1) ...; 2) ...; 3) ....' The app shows a message as one paragraph, so the steps are numbered."""
+    return "; ".join(f"{number}) {step}" for number, step in enumerate(steps, 1)) + "."
+
+
+def _attach_failure_message():
+    """Why the terminal could not be attached and what to do, for the person at the PC."""
+    failure = _ATTACH_FAILURE or {}
+    path = failure.get("path")
+    code, text = failure.get("code"), str(failure.get("text") or "").strip()
+    low = text.lower()
+    kind = failure.get("kind")
+    limit = failure.get("limit_s") or 0
+    seconds = f"{limit:g} seconds" if limit else "the waiting time"
+    file_name = re.split(r"[\\/]+", str(path))[-1].lower() if path else ""
+    if code is not None:
+        detail = f", code {code}: {text or 'no text'}"
+    elif kind == "missing":
+        detail = ""  # MetaTrader 5 was not called: there is no code
+    else:
+        detail = f", {text or 'no reason given'}"
+
+    if kind == "missing":
+        what = "the saved location of MetaTrader 5 does not exist any more"
+        do = (f"Open the Exness MetaTrader 5 yourself and log in, then {_START_AGAIN}: it finds the open "
+              f"MetaTrader 5 and saves its location. {_SAVED_LOCATION_HINT}")
+    elif file_name == "terminal.exe":
+        what = "the program that was found is MetaTrader 4, and this app needs MetaTrader 5"
+        do = ("Install the MetaTrader 5 desktop program from your Exness Personal Area, open it and log in, "
+              f"quit MetaTrader 4, then {_START_AGAIN}.")
+    elif code == -6 or "authorization" in low:
+        what = "MetaTrader 5 is open, but it is not logged in to a trading account or has no connection to Exness"
+        do = ("Do this: " + _steps(_LOG_IN_STEP, "press Connect again")
+              + f" If MetaTrader 5 shows your account already: {_NORMAL_START_STEP}, {_ONLY_ONE_STEP}, then {_START_AGAIN}.")
+    elif "not found" in low:
+        what = "no MetaTrader 5 desktop program was found on this PC"
+        do = ("Install MetaTrader 5 from your Exness Personal Area (the Exness web terminal does not count), "
+              f"open it and log in, then {_START_AGAIN}.")
+        if sys.maxsize <= 2 ** 32:
+            do += " This Python is 32-bit and MetaTrader 5 needs the 64-bit one: install 64-bit Python 3.13 first."
+    elif "process create" in low:
+        what = "MetaTrader 5 could not be started from its saved location"
+        do = (f"Open the Exness MetaTrader 5 yourself and log in, then {_START_AGAIN} so that its location is "
+              f"found afresh. {_SAVED_LOCATION_HINT}")
+    elif "pipe server" in low:
+        what = "MetaTrader 5 did not open its connection for Python"
+        do = "Do this: " + _steps(_PYTHON_BOX_STEP, _NORMAL_START_STEP, _LOG_IN_STEP, "press Connect again")
+    elif code == -10005 or "timeout" in low or "time-out" in low:
+        what = f"MetaTrader 5 did not answer within {seconds}"
+        do = ("If it has only just started, wait until it shows your account and press Connect again. "
+              "If it is already open: " + _steps(_LOG_IN_STEP, _NORMAL_START_STEP, _PYTHON_BOX_STEP, "press Connect again"))
+    elif code == -5 or "version" in low:
+        what = "MetaTrader 5 and its Python connector have different versions"
+        do = "Restart MetaTrader 5 so that it updates itself, log in, then press Connect again."
+    else:
+        what = "MetaTrader 5 could not be contacted"
+        do = "Do this: " + _steps(_LOG_IN_STEP, _NORMAL_START_STEP, "press Connect again") + " " + _SAVED_LOCATION_HINT
+    return _app_safe(f"Cannot attach to MetaTrader 5: {what} (step terminal{detail}). {do} "
+                     f"Terminal tried: {_terminal_label(path)}.")
 
 
 def _locked_identity_error():
@@ -653,29 +785,75 @@ _CONFIGURED_MT5_PATH = os.environ.get("AURUM_MT5_PATH", "").strip()
 CANDIDATE_PATHS = [_CONFIGURED_MT5_PATH] if _CONFIGURED_MT5_PATH else [None]
 
 def attach_terminal():
+    """Attach to the MetaTrader 5 terminal; False when that fails or another attach is running.
+
+    How long MetaTrader 5 may take is in _ATTACH_STATE["wait_ms"]: 5 s for an
+    attach asked for by a login, 60 s at bridge start (main() sets that).
+    The reason for a failure is left in _ATTACH_FAILURE.
+    """
+    wait_ms = _ATTACH_STATE["wait_ms"]
+    recent = _ATTACH_FAILURE
+    if recent is not None and time.time() - (recent.get("at") or 0.0) < _ATTACH_REPEAT_QUIET_S:
+        return False  # the app repeats a failed login at once over HTTP: same answer, no second attempt
+    if not _ATTACH_LOCK.acquire(blocking=False):
+        return False  # an attach is in progress; handle_login() says so
+    try:
+        _ATTACH_STATE["since"], _ATTACH_STATE["limit_s"] = time.time(), wait_ms / 1000.0
+        return _attach_terminal_once(wait_ms)
+    finally:
+        _ATTACH_STATE["since"] = 0.0
+        _ATTACH_LOCK.release()
+
+
+def _initialize(path, wait_ms):
+    """mt5.initialize() with a waiting time. Returns (ok, the waiting time in seconds).
+
+    'timeout' is a documented keyword of MetaTrader5.initialize(). Should a
+    connector not take it, the call is made the way it was made before, and
+    then the connector's own 60 seconds apply.
+    """
+    where = (path,) if path else ()
+    try:
+        return mt5.initialize(*where, timeout=int(wait_ms)), wait_ms / 1000.0
+    except TypeError:
+        return mt5.initialize(*where), 60.0
+
+
+def _attach_terminal_once(wait_ms):
+    global _ATTACH_FAILURE
     last = None
+    failure = None
+    limit_s = wait_ms / 1000.0
     if not _CONFIGURED_MT5_PATH:
         log.warning("AURUM_MT5_PATH is not set; using the MetaTrader5 default terminal. Verify the connected server is Exness before login.")
     for p in CANDIDATE_PATHS:
         if p and not os.path.isfile(p):
             last = "Configured AURUM_MT5_PATH does not exist: " + p
             log.error(last)
+            failure = {"kind": "missing", "path": p, "code": None, "text": "", "limit_s": limit_s}
             continue
         try:
-            ok = mt5.initialize(p) if p else mt5.initialize()
+            ok, limit_s = _initialize(p, wait_ms)
         except Exception as e:
             ok, last = False, str(e)
+            failure = {"kind": "exception", "path": p, "code": None, "text": str(e), "limit_s": limit_s}
             continue
         if ok:
             if p:
                 log.info("attached to terminal: %s", p)
+            _ATTACH_FAILURE = None
             return True
-        last = str(mt5.last_error())
+        code, text = _last_error()  # read it now: mt5.shutdown() below sets it back to (1, 'Success')
+        last = str((code, text))
+        failure = {"kind": "mt5", "path": p, "code": code, "text": str(text), "limit_s": limit_s}
         log.warning("initialize(%s) failed: %s", p or "default terminal", last)
         try:
             mt5.shutdown()
         except Exception:
             pass
+    if failure is not None:
+        failure["at"] = time.time()
+    _ATTACH_FAILURE = failure
     if last:
         log.error("MetaTrader5.initialize() failed: %s", last)
     if last and ("Authorization failed" in last or "(-6" in last):
@@ -1075,7 +1253,8 @@ def _start_http_app(port=8788):
                         return
                     exness_server = ""
                     try:
-                        account = mt5.account_info()
+                        # No MetaTrader5 call while an attach is running: the page then fills in the token only.
+                        account = None if _ATTACH_LOCK.locked() else mt5.account_info()
                         if account is not None:
                             exness_server = str(getattr(account, "server", "") or "")
                     except Exception:
@@ -1166,7 +1345,9 @@ async def main():
     # attachment fails. MT5 read-only requests return an explicit terminal error;
     # the static app and other analysis do not depend on a broker login.
     _start_http_app()
+    _ATTACH_STATE["wait_ms"] = _START_ATTACH_WAIT_MS  # a terminal the launcher has only just started needs the time
     attached = attach_terminal()
+    _ATTACH_STATE["wait_ms"] = _LOGIN_ATTACH_WAIT_MS
     if attached:
         log.info("MT5 terminal attached (build %s)", mt5.version())
         try:
@@ -1185,6 +1366,7 @@ async def main():
             pass
     else:
         log.error("MT5 unavailable: local app remains available at http://127.0.0.1:8788/app; Exness read-only data is unavailable until MT5 attaches.")
+        log.error("%s", _attach_failure_message())  # the same plain words the app shows when Connect is pressed
     try:
         async with websockets.serve(handler, HOST, PORT, ping_interval=20, ping_timeout=20, process_request=_bridge_http):
             log.info("AURUM bridge listening on ws://%s:%d (this PC + LAN)", HOST, PORT)
