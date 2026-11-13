@@ -12,6 +12,12 @@
  * (server/lib/closedcandles.js). These tests give the three places the same
  * candles and compare what they answer.
  *
+ * One state is answered differently on purpose. For a market that has just
+ * resumed after a pause the Worker passes on the reading from before the pause,
+ * marked candle_current:false, and the website's page withholds it. The PC
+ * server withholds it itself, because the PC is where an order ticket is filled
+ * from a reading. What the person sees is the same row in both places.
+ *
  * Candle values are fixtures. No assertion expects a particular signal,
  * direction or level: readings are compared with each other.
  */
@@ -23,7 +29,7 @@ import { join } from 'node:path';
 import { createApp, configFromEnv } from '../../server/app.js';
 import { createStore } from '../../server/lib/store.js';
 import { createReadOnlyWorker } from '../../cloudflare/worker.js';
-import { buildDerivReading, SCAN_TIMEFRAMES, SCAN_CANDLES } from '../../src/hostedscan.js';
+import { buildDerivReading, resumedReading, SCAN_TIMEFRAMES, SCAN_CANDLES } from '../../src/hostedscan.js';
 import { normalizeCandles } from '../../src/derivhistory.js';
 import { DERIV_INSTRUMENTS, derivCandleRows, basePriceFor } from './helpers/market-fixtures.mjs';
 
@@ -157,4 +163,44 @@ test('the Gold monitor\'s request (technical only) gets the same reading as the 
   assert.equal(fromPc.timeframe, fromWorker.timeframe);
   assert.equal(fromPc.data_source, fromWorker.data_source);
   assert.equal(fromPc.candle_close, LAST_CLOSE);
+});
+
+test('a market that has just resumed after a pause: the PC server hands out no reading, and its row is the one the website shows', async () => {
+  /* A rising market, a BUY while it runs, with nothing traded in the 40 minutes before the newest candle. */
+  written.set('EUR/USD', (granularity) => {
+    const newest = Math.floor(NOW_SEC / granularity) * granularity;
+    return trendRows(granularity, 0.0006, 9).filter((row) => row.epoch >= newest || row.epoch < newest - 2400);
+  });
+  try {
+    const sets = Object.fromEntries(SCAN_TIMEFRAMES.map(([key, granularity]) => [key, normalizeCandles(rowsFor('EUR/USD', granularity))]));
+    /* The rule still makes a BUY with an entry, a stop and targets of those candles, and marks it: not current. */
+    const marked = buildDerivReading('EUR/USD', sets, NOW_SEC * 1000);
+    assert.equal(marked.signal, 'BUY', 'the fixture no longer reads BUY before the pause: the test needs a signal to withhold');
+    for (const level of ['entry', 'stop_loss', 'tp1', 'tp2']) assert.ok(marked[level] > 0, level);
+    assert.equal(marked.candle_current, false);
+    assert.ok(LAST_CLOSE - marked.candle_close >= 2400, 'its close is from before the pause');
+
+    /* The Worker passes that reading on with its mark. The website's page shows this row in its place. */
+    const fromWorker = (await cloud('/api/signals/scan', { symbols: ['EUR/USD'] })).results[0];
+    assert.deepEqual(reading(fromWorker), reading(marked));
+    const onTheWebsite = resumedReading(fromWorker);
+
+    /* The PC server sends that row itself. */
+    const fromPcScan = (await pc('/api/signals/scan', { symbols: ['EUR/USD'] })).results[0];
+    const answers = [
+      ['scan', fromPcScan],
+      ['analysis', await pc('/api/signals/analyze', { symbol: 'EUR/USD', force: true })],
+      ['six roles', await pc('/api/pipeline/analyze', { symbol: 'EUR/USD' })]
+    ];
+    for (const [name, answer] of answers) {
+      for (const field of ['symbol', 'error', 'data_state', 'detail', 'source', 'data_source', 'latest_candle_time']) assert.equal(answer[field], onTheWebsite[field], name + ': ' + field);
+      assert.equal(answer.candle_current, false, name);
+      assert.equal(answer.candle_close, marked.candle_close, name);
+      for (const field of ['signal', 'bias', 'confidence', 'entry', 'stop_loss', 'tp1', 'tp2', 'rrr', 'price', 'mtf_signal', 'votes', 'pipeline']) {
+        assert.equal(field in answer, false, name + ' carries no ' + field);
+      }
+    }
+  } finally {
+    written.delete('EUR/USD');
+  }
 });

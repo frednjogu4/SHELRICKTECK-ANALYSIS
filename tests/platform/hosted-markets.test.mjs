@@ -2649,6 +2649,157 @@ test('PC app: a reading the PC server made from before a pause is not shown; the
   } finally { await app.close(); }
 });
 
+/* The order ticket of the PC app fills its stop and targets from a reading. What it must never take them from is
+   a reading made before a pause: the entry of such a reading is not the price now. */
+const RESUMED_DETAIL = (symbol) => symbol + ' has just resumed after a pause: no 5-minute candle has closed since, so a reading would describe the market before the pause. The first reading comes with the next 5-minute close.';
+const ticketOf = (app) => {
+  const doc = app.doc, select = doc.getElementById('chartSymbol');
+  return {
+    note: doc.getElementById('levelsNote'),
+    /* the line above the chart, without the calendar note that follows the reading */
+    strip: () => doc.getElementById('chartLevels').firstElementChild.textContent,
+    /* choosing the symbol that is already on the chart asks for its reading again */
+    choose: (symbol) => { select.value = symbol; select.dispatchEvent(new app.window.Event('change', { bubbles: true })); },
+    levels: () => ['orderSL', 'orderTP', 'orderTP2'].map((id) => doc.getElementById(id).value),
+    type: (id, value) => { const field = doc.getElementById(id); field.value = value; field.dispatchEvent(new app.window.Event('input', { bubbles: true })); }
+  };
+};
+
+test('PC app, order ticket: a reading from before a pause fills nothing, also when the server only marks it; levels filled in earlier are withdrawn, typed ones stay', async () => {
+  const candleTime = nowSec();
+  const resumed = new Set(['EUR/USD']);
+  /* A server that still hands out the reading from before the pause, marked candle_current:false (as the read-only Worker does). */
+  const pcApi = (path, body) => {
+    if (path === '/api/health') return { status: 200, body: { ok: true } };
+    if (path === '/api/signals/scan') {
+      return { status: 200, body: { results: body.symbols.map((symbol) => ({ ...LIVE_BUY, symbol, latest_candle_time: candleTime, candle_close: Math.floor(candleTime / 300) * 300 - (resumed.has(symbol) ? 2400 : 0), candle_current: !resumed.has(symbol) })) } };
+    }
+    return null;
+  };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi });
+  try {
+    await app.enter();
+    await app.open('trade');
+    const ticket = ticketOf(app);
+    const filled = [LIVE_BUY.stop_loss, LIVE_BUY.tp1, LIVE_BUY.tp2].map((level) => level.toFixed(5));
+
+    /* A market that runs: its stop and targets go onto the ticket. */
+    ticket.choose('GBP/USD');
+    await app.waitFor(() => /^Levels from live analysis/.test(ticket.note.textContent), 'levels for a market that runs');
+    assert.deepEqual(ticket.levels(), filled);
+
+    /* A market that has just resumed: the answer holds a BUY with levels; none of it reaches the ticket or the chart. */
+    ticket.choose('EUR/USD');
+    await app.waitFor(() => ticket.note.textContent === RESUMED_DETAIL('EUR/USD'), 'the ticket note for a market that has just resumed');
+    assert.deepEqual(ticket.levels(), ['', '', '']);
+    assert.equal(ticket.strip(), RESUMED_DETAIL('EUR/USD'));
+
+    /* A market pauses and resumes while its levels are on the ticket: asked again, they are withdrawn. */
+    ticket.choose('GBP/USD');
+    await app.waitFor(() => /^Levels from live analysis/.test(ticket.note.textContent), 'levels for GBP/USD again');
+    assert.deepEqual(ticket.levels(), filled);
+    resumed.add('GBP/USD');
+    ticket.choose('GBP/USD');
+    await app.waitFor(() => ticket.note.textContent === RESUMED_DETAIL('GBP/USD'), 'the ticket note once GBP/USD has resumed');
+    assert.deepEqual(ticket.levels(), ['', '', ''], 'the levels of the reading before the pause are gone');
+    assert.equal(ticket.strip(), RESUMED_DETAIL('GBP/USD'));
+
+    /* A stop the trader typed is his own: it stays. */
+    ticket.type('orderSL', '1.23456');
+    ticket.choose('GBP/USD');
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(ticket.note.textContent, RESUMED_DETAIL('GBP/USD'));
+    assert.deepEqual(ticket.levels(), ['1.23456', '', '']);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('PC app, its own server: a chart chosen right after a pause gets no reading and no levels; the first 5-minute close of the new session brings both', async () => {
+  const market = directionalMarket();
+  /* Set once the page clock is settled: no GBP/USD price between `from` and `to`. A feed has a candle only for a period with a price in it. */
+  let pause = null;
+  const candleRows = (code, granularity, count, now) => market(code, granularity, count, now).filter((row) => !pause || code !== 'frxGBPUSD' || row.epoch < pause.from || row.epoch + granularity > pause.to);
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { ticks: true, candleRows } });
+  try {
+    const clock = pageClock(app);
+    await app.enter();
+    await app.open('trade');
+    const ticket = ticketOf(app);
+    const close = clock.settle();
+    /* GBP/USD gave its first price two seconds ago, after half an hour without one. */
+    pause = { from: clock.now() - 1800, to: clock.now() - 2 };
+
+    ticket.choose('GBP/USD');
+    await app.waitFor(() => ticket.note.textContent === RESUMED_DETAIL('GBP/USD'), 'the ticket note for a market that has just resumed');
+    assert.deepEqual(ticket.levels(), ['', '', ''], 'no stop and no target from before the pause');
+    assert.equal(ticket.strip(), RESUMED_DETAIL('GBP/USD'));
+    /* The Markets table shows the website's row for it; a market without a pause keeps its reading. */
+    await app.openMarkets();
+    const row = app.row('GBP/USD');
+    assert.equal(row.badge, 'Stale data');
+    assert.equal(row.title, RESUMED_DETAIL('GBP/USD'));
+    assert.equal(row.source, 'source: Deriv public candles \u00b7 resumed, waiting for a finished candle');
+    assert.equal(row.levels, false);
+    assert.match(app.row('EUR/USD').badge, /^(Buy|Sell)/);
+
+    /* Twenty seconds after the next 5-minute close: the candle that began with the new session has finished. */
+    clock.advance(close + 320 - clock.now());
+    await app.open('trade');
+    ticket.choose('EUR/USD');
+    ticket.choose('GBP/USD');
+    await app.waitFor(() => /^Levels from live analysis/.test(ticket.note.textContent), 'levels from the first reading of the new session');
+    for (const level of ticket.levels()) assert.ok(Number(level) > 0, 'a stop and two targets: ' + ticket.levels().join(' / '));
+    assert.equal(ticket.strip(), 'LIVE SIGNAL LEVELS');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('PC app, its own server: right after a pause the Gold monitor shows no signal; the first one comes when a 5-minute candle of the new session has closed', async () => {
+  const market = directionalMarket();
+  /* Set once the page clock is settled: no gold price between `from` and `to`. */
+  let pause = null;
+  const candleRows = (code, granularity, count, now) => market(code, granularity, count, now).filter((row) => !pause || code !== 'frxXAUUSD' || row.epoch < pause.from || row.epoch + granularity > pause.to);
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { ticks: true, candleRows } });
+  try {
+    const clock = pageClock(app);
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    const tickNow = () => {
+      const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+      stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: 'frxXAUUSD', quote: GOLD_TICK, epoch: Math.floor(clock.now()) } }) });
+    };
+    const analyses = () => app.requests.filter((r) => r.path === '/api/signals/analyze');
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    const close = clock.settle();
+    /* Gold gave its first price two seconds ago, after half an hour without one (its daily break lasts an hour). */
+    pause = { from: clock.now() - 1800, to: clock.now() - 2 };
+    tickNow();
+    const asked = analyses().length;
+    await app.open('gold');
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => analyses().length > asked && analyses().at(-1).status != null && text('goldSignalBadge') === 'UNAVAILABLE', 'the monitor to withhold the signal');
+    /* The PC's server had no reading to give, and said so. */
+    assert.equal(analyses().at(-1).status, 409);
+    assert.equal(text('goldRationale'), 'Deriv Gold has just resumed after a pause: no 5-minute candle has closed since. The first reading comes with the next 5-minute close. No old signal is being presented as current.');
+    assert.equal(text('goldSignal'), '\u2014');
+    assert.deepEqual(['goldEntry', 'goldSL', 'goldTP1', 'goldTP2'].map(text), ['\u2014', '\u2014', '\u2014', '\u2014']);
+    assert.equal(text('goldMeasured'), '');
+    assert.equal([...doc.querySelectorAll('#toasts .toast b')].filter((el) => /^Gold\/USD signal/.test(el.textContent)).length, 0, 'no alert from before the pause');
+
+    /* Twenty seconds after the next 5-minute close: the candle that began with the new session has finished. */
+    clock.advance(close + 320 - clock.now());
+    tickNow();
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => /^(LIVE ANALYSIS|CHECK DATA) /.test(text('goldFeedStatus')), 'the first reading of the new session');
+    assert.equal(analyses().at(-1).status, 200, 'this one is the server\'s reading');
+    assert.match(text('goldSignalUpdated'), new RegExp('^Reading of the ' + hhmm(close + 300) + ' candle close '));
+    assert.ok(text('goldSignal') === 'BUY' || text('goldSignal') === 'SELL');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
 test('the same candles at the same moment: the PC app (Exness not connected) and the website show the same Gold reading and the same signal cards', async () => {
   const market = directionalMarket();
   /* The website as it runs live: the AURUM cloud cannot reach Deriv, so this browser reads the candles itself. */

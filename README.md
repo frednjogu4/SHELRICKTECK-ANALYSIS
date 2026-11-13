@@ -480,7 +480,13 @@ close**:
   the market says `resumed, waiting for a finished candle` until a 5-minute
   candle of the new session has closed. A reading belongs to a 5-minute candle
   that traded, and is current while its close is less than two candles behind
-  the feed.
+  the feed. The Worker passes such a reading on marked `candle_current: false`
+  and the page withholds it. The PC's server withholds it itself, because the PC
+  is where an order ticket is filled from a reading: its scan row carries no
+  signal and no level, an analysis or a six-role request is answered with HTTP
+  409, and no news or AI request is made for it. On the order ticket, levels
+  that were filled in from an earlier reading are withdrawn when the market is
+  closed, paused or has just resumed; levels the trader typed stay.
 - Each card says which close it was read at (`read at the 14:35 candle
   close`). The Gold monitor still checks every minute, and looks again a few
   seconds after each 5-minute close.

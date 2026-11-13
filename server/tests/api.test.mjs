@@ -5,6 +5,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createStore, todayKey } from '../lib/store.js';
 import { createApp, configFromEnv } from '../app.js';
+import { runDeterministicAnalysis } from '../lib/analyzer.js';
+import { localDecision } from '../lib/localdecision.js';
+import { closedCandleSets } from '../lib/closedcandles.js';
 
 /* ================================================================
  * API tests run against a STUB feed injected via createApp({feed}).
@@ -222,9 +225,14 @@ async function withFeed(fetchCandles, run) {
   const config = Object.assign(configFromEnv({ ANTHROPIC_API_KEY: '', DAILY_BUDGET_USD: '5' }), { apiKey: '', backtestRatePerMin: 1000 });
   const app = createApp({ store: createStore(join(dir, 'store.json')), config, feed: { symbols: stubFeed.symbols, fetchCandles } });
   const s = await new Promise((r) => { const x = app.listen(0, '127.0.0.1', () => r(x)); });
-  const call = (path, body) => fetch(`http://127.0.0.1:${s.address().port}${path}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
-  }).then((r) => r.json());
+  const origin = `http://127.0.0.1:${s.address().port}`;
+  const send = (path, body, headers = {}) => fetch(origin + path, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body)
+  });
+  const call = (path, body) => send(path, body).then((r) => r.json());
+  /* the answer with its HTTP status */
+  call.full = (path, body, headers) => send(path, body, headers).then(async (r) => ({ status: r.status, body: await r.json() }));
+  call.get = (path) => fetch(origin + path).then((r) => r.json());
   try { return await run(call); }
   finally { s.close(); rmSync(dir, { recursive: true, force: true }); }
 }
@@ -269,20 +277,90 @@ test('scan and analyze: the candle that is still forming does not change the rea
   });
 });
 
-test('scan and analyze: a market that has just resumed after a pause says so, and its close is from before the pause', async () => {
+test('a market that has just resumed after a pause: scan, analysis and the six-role panel hand out no reading from before it', async () => {
   /* Nothing traded for the 40 minutes before the newest candle. */
-  const fetchCandles = async (sym, g, n) => {
+  const afterPause = (sym, g, n) => {
     const newest = Math.floor(STUB_NOW / g) * g;
     return stubCandles(sym, g, n).filter((c) => c.time >= newest || c.time < newest - 2400);
   };
-  await withFeed(fetchCandles, async (call) => {
-    const scan = (await call('/api/signals/scan', { symbols: ['EUR/USD'] })).results[0];
-    const gold = await call('/api/signals/analyze', { symbol: 'XAU/USD', force: true, technicalOnly: true });
-    for (const reading of [scan, gold]) {
-      assert.equal(reading.candle_current, false);
-      assert.equal(reading.latest_candle_time, STUB_CLOSE + 120, 'the feed itself is current');
-      assert.ok(reading.candle_close > 0 && reading.latest_candle_time - reading.candle_close >= 2400);
-    }
+  /* What the rule makes of those candles: a BUY with the entry, the stop and the target of the market before the
+     pause. This is what the routes returned, marked candle_current:false, before they withheld it. */
+  const before = closedCandleSets({ m1: afterPause('EUR/USD', 60, 120), m5: afterPause('EUR/USD', 300, 120), h1: afterPause('EUR/USD', 3600, 120) });
+  assert.equal(before.current, false);
+  assert.ok(STUB_CLOSE - before.close >= 2400, 'the close is from before the pause');
+  const stale = localDecision(runDeterministicAnalysis('EUR/USD', before.sets));
+  assert.equal(stale.signal, 'BUY', 'the stub no longer reads as a BUY before the pause: the test needs a signal to withhold');
+  assert.ok(stale.entry > 0 && stale.stop_loss > 0 && stale.tp1 > 0);
+
+  /* Requests this server makes to the outside (the news brief, an AI engine) while the test runs. */
+  const outbound = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (input, init) => {
+    const url = String(input && input.url ? input.url : input);
+    if (url.startsWith('http://127.0.0.1:')) return realFetch(input, init);
+    outbound.push(url);
+    return Promise.reject(new Error('written by the test: no network'));
+  };
+  let paused = false;
+  try {
+    await withFeed(async (sym, g, n) => (paused ? afterPause(sym, g, n) : stubCandles(sym, g, n)), async (call) => {
+      const withNews = { symbol: 'EUR/USD', force: true, withNews: true };
+      const newsKey = { 'x-ai-perplexity': 'written-by-the-test' };
+
+      /* While the market runs: a reading, a news request for it, and the reading is kept. */
+      const running = await call.full('/api/signals/analyze', withNews, newsKey);
+      assert.equal(running.status, 200);
+      assert.equal(running.body.candle_current, true);
+      assert.deepEqual(outbound, ['https://api.perplexity.ai/chat/completions']);
+      assert.equal((await call.get('/api/signals/history?limit=20')).signals.length, 1);
+
+      paused = true;
+      const scan = await call.full('/api/signals/scan', { symbols: ['EUR/USD'] });
+      const gold = await call.full('/api/signals/analyze', { symbol: 'XAU/USD', force: true, technicalOnly: true });
+      const full = await call.full('/api/signals/analyze', withNews, newsKey);
+      const roles = await call.full('/api/pipeline/analyze', { symbol: 'EUR/USD' });
+
+      /* The scan still answers for its other markets; this market's row holds no reading. */
+      assert.equal(scan.status, 200);
+      assert.deepEqual([gold.status, full.status, roles.status], [409, 409, 409]);
+      for (const [name, symbol, answer] of [['scan', 'EUR/USD', scan.body.results[0]], ['gold monitor', 'XAU/USD', gold.body], ['analysis', 'EUR/USD', full.body], ['six roles', 'EUR/USD', roles.body]]) {
+        assert.equal(answer.error, 'STALE_DATA', name);
+        assert.equal(answer.data_state, 'stale', name);
+        assert.equal(answer.symbol, symbol, name);
+        assert.equal(answer.detail, symbol + ' has just resumed after a pause: no 5-minute candle has closed since, so a reading would describe the market before the pause. The first reading comes with the next 5-minute close.', name);
+        assert.equal(answer.candle_current, false, name);
+        assert.equal(answer.latest_candle_time, STUB_CLOSE + 120, name + ': the feed itself is current');
+        assert.equal(answer.candle_close, before.close, name + ': the close it would have been read at');
+        for (const field of ['signal', 'bias', 'confidence', 'entry', 'stop_loss', 'tp1', 'tp2', 'rrr', 'price', 'mtf_signal', 'votes', 'pipeline', 'meta']) {
+          assert.equal(field in answer, false, name + ': no ' + field + ' from before the pause');
+        }
+      }
+      /* Nothing was paid for and nothing was kept: no second news request, no second stored signal. */
+      assert.deepEqual(outbound, ['https://api.perplexity.ai/chat/completions']);
+      assert.equal((await call.get('/api/signals/history?limit=20')).signals.length, 1);
+
+      /* With a finished candle of the new session the market is read again. */
+      paused = false;
+      const again = (await call('/api/signals/scan', { symbols: ['EUR/USD'] })).results[0];
+      assert.equal(again.error, undefined);
+      assert.equal(again.candle_current, true);
+      assert.equal(again.candle_close, STUB_CLOSE);
+    });
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('a feed without one finished 5-minute candle is left to the analysis: a WAIT that says it has no candles, not a pause', async () => {
+  const one = (sym, g) => stubCandles(sym, g, 120).slice(-1);
+  await withFeed(async (sym, g) => one(sym, g), async (call) => {
+    const scan = await call.full('/api/signals/scan', { symbols: ['EUR/USD'] });
+    assert.equal(scan.status, 200);
+    const row = scan.body.results[0];
+    assert.equal(row.error, undefined);
+    assert.equal(row.signal, 'WAIT');
+    assert.equal(row.data_ok, false);
+    assert.equal(row.wait_reason, 'FEED_ERROR');
+    assert.equal(row.candle_close, 0);
+    assert.equal(row.candle_current, false);
   });
 });
 

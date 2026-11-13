@@ -81,6 +81,29 @@ function cleanSuppliedCandleSets(supplied) {
   return { m1: cleanRows(supplied.m1, 'm1'), m5: cleanRows(supplied.m5, 'm5'), h1: cleanRows(supplied.h1, 'h1') };
 }
 
+/* A market that has only just resumed after a pause (the weekend, the daily break of gold): the
+   feed is current again, but every finished candle is from before the pause, so closedCandleSets()
+   reports `current: false` (lib/closedcandles.js). A reading made then gives the direction, the
+   entry, the stop and the targets of the market as it stood before the pause.
+
+   This server hands out no such reading. The PC is where an order ticket is filled from a reading,
+   so the three routes that read a market answer with this instead: no signal and no level, and
+   before any news or AI request is paid for and before anything is stored. It says why in the
+   words of the website's row for the same state (src/hostedscan.js, resumedReading) and keeps the
+   three candle fields. The first reading comes with the next 5-minute close.
+
+   (The read-only Worker returns such a reading marked candle_current:false, and the page withholds
+   it. A caller of this server does not have to know the mark to be safe.) */
+const isResumed = (closed) => closed.close > 0 && !closed.current;
+function resumedAnswer(symbol, source, latestCandleTime, closed) {
+  return {
+    symbol, error: 'STALE_DATA', data_state: 'stale',
+    detail: symbol + ' has just resumed after a pause: no 5-minute candle has closed since, so a reading would describe the market before the pause. The first reading comes with the next 5-minute close.',
+    source, data_source: source + ' \u00b7 resumed, waiting for a finished candle',
+    latest_candle_time: latestCandleTime, candle_close: closed.close, candle_current: false
+  };
+}
+
 export function createApp({ store, config, feed, derivConn = null, patDeps = {} }) {
   const app = express();
   app.set('trust proxy', 1); /* behind the Railway LB: req.ip = real client so per-IP rate limits key correctly */
@@ -304,10 +327,14 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
       /* One reading per finished 5-minute candle, the same one the Cloudflare site and the
          browser make from these candles (lib/closedcandles.js). `latest_candle_time` stays the
          newest 1-minute candle the feed returned, finished or not: it says whether the feed is
-         current. `candle_close` is the 5-minute close the reading belongs to; `candle_current`
-         is false while the market has only just resumed after a pause. */
+         current. `candle_close` is the 5-minute close the reading belongs to. `candle_current`
+         is true for a reading this route hands out; it is false only when the feed holds no
+         finished 5-minute candle at all (candle_close 0), which the analysis reports itself. */
       const latestCandleTime = Number(candleSets.m1[candleSets.m1.length - 1]?.time || 0);
       const closed = closedCandleSets(candleSets);
+      /* Just resumed after a pause: no reading (see resumedAnswer above). 409: the request is in
+         order, the market is not in a state to be read yet. */
+      if (isResumed(closed)) return res.status(409).json(resumedAnswer(symbol, dataSource, latestCandleTime, closed));
       const det = runDeterministicAnalysis(symbol, closed.sets);
       const price = det.analyses.m1?.currentPrice ?? null;
       const sentiment = det.sentiment || { score: 50, bias: 'neutral', source: 'derived' };
@@ -402,6 +429,9 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         /* Finished candles only, as of the last 5-minute close: the same reading the Cloudflare
            site makes (lib/closedcandles.js; see /api/signals/analyze above for the three fields). */
         const closed = closedCandleSets({ m1, m5, h1 });
+        const latestCandleTime = Number(m1?.[m1.length - 1]?.time || 0);
+        /* Just resumed after a pause: a row without a reading (see resumedAnswer above). */
+        if (isResumed(closed)) return Object.assign(resumedAnswer(symbol, 'Deriv public candles', latestCandleTime, closed), { ts: Date.now() });
         const det = runDeterministicAnalysis(symbol, closed.sets);
         const dec = localDecision(det);
         const price = det.analyses.m1?.currentPrice ?? null;
@@ -413,7 +443,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
           confidence: dec.confidence,
           entry: dec.entry, stop_loss: dec.stop_loss, tp1: dec.tp1, tp2: dec.tp2,
           rrr: dec.rrr, tf: 'MTF 1m/5m/1h', model: 'technical',
-          latest_candle_time: Number(m1?.[m1.length - 1]?.time || 0), candle_close: closed.close, candle_current: closed.current,
+          latest_candle_time: latestCandleTime, candle_close: closed.close, candle_current: closed.current,
           ts: Date.now()
         };
       } catch (e) {
@@ -493,6 +523,8 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
          panel was made from (/api/signals/analyze, lib/closedcandles.js), so the six roles and
          that reading speak of the same candles. */
       const closed = closedCandleSets(candleSets);
+      /* Just resumed after a pause: the six roles are not asked to judge the market as it was before it. */
+      if (isResumed(closed)) return res.status(409).json(resumedAnswer(symbol, dataSource, Number(candleSets.m1?.[candleSets.m1.length - 1]?.time || 0), closed));
       const det = runDeterministicAnalysis(symbol, closed.sets);
       const dec = localDecision(det);
       const pipeline = runPipeline({

@@ -1534,9 +1534,10 @@ async function fallbackSignalBatch(symbols,reason){
   return symbols.map(symbol=>{
     const r=found.get(symbol);
     if(!r)return {symbol,error:'FEED_ERROR',detail:'No fallback result returned for '+symbol+'.',source:'unavailable',data_source:'unavailable'};
-    /* The PC's server reads at the 5-minute close, as the cloud does (closedcandles.js). A reading it made
-       from before a pause describes the market as it was then; it is not shown, and the row is the cloud's. */
-    if(!r.error&&r.candle_current===false)return resumedReading(r);
+    /* The PC's server reads at the 5-minute close, as the cloud does (closedcandles.js). A market that has just
+       resumed after a pause has no reading yet: the server sends a row without one (server/app.js, resumedAnswer),
+       and a reading that is only marked candle_current:false is withheld here. Either way the row is the cloud's. */
+    if(r.candle_current===false)return resumedReading(r);
     const label=fallbackSourceFor(r)+' · fallback (Exness unavailable: '+reason+')';
     return Object.assign({},r,{source:label,data_source:label,fallback:true,fallback_reason:reason});
   });
@@ -2042,12 +2043,24 @@ async function autofillLevels(sym){
       const j=await r.json();
       if(!isCurrent())return; /* a slower response for the previous symbol is stale */
       sig=(j.results||[])[0];
+      /* A market that has just resumed after a pause has no reading yet (closedcandles.js): nothing from before
+         the pause may fill the ticket. The PC's server sends a row without a reading; one that is only marked is withheld here. */
+      if(sig&&sig.candle_current===false)sig=resumedReading(sig);
     }
     /* shared: chart strip + markets badges. A cloud-viewer state (stale, no data, unavailable) replaces
        an older reading too, so levels from before a market closed never stay on screen as current. */
     if(sig&&(!sig.error||signalState(sig)))state.mktScan[sym]=sig;
     updateChartLevels();
-    if(!sig||sig.error){ note.textContent=sig&&signalState(sig)&&sig.detail?String(sig.detail):'Live levels unavailable for '+sym+' right now.'; return; }
+    if(!sig||sig.error){
+      /* The market is closed, paused or has just resumed: levels that came from an earlier reading go with it.
+         Levels the trader typed, or took over from the analysis panel, stay (levelsForSym '__manual__'); so does
+         everything when the answer merely failed. */
+      if(sig&&signalState(sig)==='stale'&&levelsForSym!=='__manual__'){
+        ['orderSL','orderTP','orderTP2'].forEach((id)=>{ const el=$('#'+id); if(el)el.value=''; });
+        levelsForSym=null; updateRisk();
+      }
+      note.textContent=sig&&signalState(sig)&&sig.detail?String(sig.detail):'Live levels unavailable for '+sym+' right now.'; return;
+    }
     if(levelsForSym==='__manual__'){ /* user/AI applied levels meanwhile — do not stomp */
       note.innerHTML='Ticket levels kept (applied manually / from the AI signal) — <a href="#" id="levelsAgain">use live signal levels instead</a>.';
       const a=$('#levelsAgain'); if(a)a.onclick=(e)=>{ e.preventDefault(); levelsForSym=null; autofillLevels(sym); };
@@ -3554,6 +3567,7 @@ async function azAnalyze() {
           });
           if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.detail||e.error||('API '+res.status));}
           data=await res.json();
+          if(data.candle_current===false)throw new Error(RESUMED_NOTE(sym)); /* never shown: the Exness reading above is the current one */
         }catch(apiError){data=Object.assign({},bundle,{candle_sets:undefined,ai_note:'AI service unavailable; displaying Exness technical analysis.'});meta={mode:'technical',reason:'exness_local_fallback',engines:[]};}
       }
     }catch(exnessError){
@@ -3564,6 +3578,7 @@ async function azAnalyze() {
         try{
           const res=await api('/api/signals/analyze',{method:'POST',headers:Object.assign({'x-aurum-user':state.user||'local'},keyHeaders()),body:{symbol:sym,force:true,withNews:hasAnyKey()}});
           const j=await res.json();if(!res.ok)throw new Error(j.detail||j.error||'analysis fallback unavailable');
+          if(j.candle_current===false)throw new Error(RESUMED_NOTE(sym)); /* never shown: the scan reading above is the current one */
           data=Object.assign({},j,{data_source:fallback.data_source,fallback:true,fallback_reason:fallback.fallback_reason});
         }catch(_fallbackAnalysisError){data=fallback;meta={mode:'technical',reason:'labelled_source_fallback',engines:[]};}
       }else{data=fallback;meta={mode:'technical',reason:'labelled_source_fallback',engines:[]};}
@@ -5683,6 +5698,7 @@ async function loadPipelineFlow(){
     const response=await api('/api/pipeline/analyze',{method:'POST',body,timeoutMs:30000});
     const r=await response.json();
     if(!response.ok)throw new Error(r&&r.detail||r&&r.error||'pipeline request failed');
+    if(r&&r.candle_current===false)throw new Error(RESUMED_NOTE(sym)); /* the six roles judged the market as it was before a pause */
     const p=r&&r.pipeline; if(!p)throw new Error(r&&r.detail||'no pipeline result');
     sourceLabel=sourceLabel||String(r.data_source||'source unavailable');
     const chip=(w)=>{
