@@ -30,6 +30,7 @@ import { DERIV_CODE_MAP } from '../server/lib/symbols.js';
 import { runDeterministicAnalysis, votesSummary, waitReason } from '../server/lib/analyzer.js';
 import { localDecision } from '../server/lib/localdecision.js';
 import { isFeedFailure } from './derivhistory.js';
+import { closedCandleSets } from './closedcandles.js';
 
 export const DERIV_SOURCE = 'Deriv public candles';
 export const YAHOO_SOURCE = 'Yahoo Finance public daily data';
@@ -64,9 +65,15 @@ export function isDerivBacked(symbol) {
  * same result the Worker's /api/signals/scan and /api/signals/analyze return
  * for the same candles (tests/platform/hosted-scan.test.mjs holds the two
  * together), so a market reads the same wherever it is computed.
+ *
+ * The reading is made from finished candles, as of the last 5-minute close
+ * (closedcandles.js): `candle_close` is that close. `latest_candle_time` stays
+ * the start of the newest 1-minute candle the feed returned, finished or not,
+ * because it answers a different question: is the feed current?
  */
 export function buildDerivReading(symbol, sets, nowMs = Date.now()) {
-  const det = runDeterministicAnalysis(symbol, sets);
+  const closed = closedCandleSets(sets);
+  const det = runDeterministicAnalysis(symbol, closed.sets);
   const decision = localDecision(det);
   const wr = decision.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
   const latest = sets.m1[sets.m1.length - 1];
@@ -85,6 +92,8 @@ export function buildDerivReading(symbol, sets, nowMs = Date.now()) {
     source: DERIV_SOURCE,
     data_source: DERIV_SOURCE,
     latest_candle_time: Number(latest?.time || 0),
+    candle_close: closed.close,
+    candle_current: closed.current,
     ts: nowMs,
     sentiment_score: 50,
     sentiment_source: 'derived',
@@ -149,6 +158,17 @@ function staleReading(symbol, ageSec, computed, latestCandleTime) {
     source: DERIV_SOURCE,
     data_source: DERIV_SOURCE + (known ? ' · last candle ' + ageText(ageSec) + ' ago' : ' · candle time unknown'),
     latest_candle_time: latestCandleTime || 0
+  };
+}
+
+/* The feed is current again after a pause, but every finished candle is from before it (closedcandles.js). */
+function resumedReading(reading) {
+  return {
+    symbol: reading.symbol, error: 'STALE_DATA', data_state: 'stale', computed: reading.computed,
+    detail: reading.symbol + ' has just resumed after a pause: no 5-minute candle has closed since, so a reading would describe the market before the pause. The first reading comes with the next 5-minute close.',
+    source: DERIV_SOURCE,
+    data_source: DERIV_SOURCE + ' \u00b7 resumed, waiting for a finished candle',
+    latest_candle_time: reading.latest_candle_time || 0
   };
 }
 
@@ -246,6 +266,7 @@ export function createHostedScanner({ fetchCandles, cloudScan, now = () => Date.
   function byFreshness(reading, nowMs) {
     const age = candleAgeSec(reading, nowMs);
     if (age == null || age > LIVE_MAX_AGE_SEC) return staleReading(reading.symbol, age, reading.computed, reading.latest_candle_time);
+    if (reading.candle_current === false) return resumedReading(reading);
     return { ...reading, data_state: 'live' };
   }
 

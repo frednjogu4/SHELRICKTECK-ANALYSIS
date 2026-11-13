@@ -327,10 +327,10 @@ Since 2026-11 the score shown for a BUY or SELL then **moves with the market**
 
 | Where | What is shown |
 |---|---|
-| AI Signals → Market scanner cards | live score, bar, and the full sentence under the bar |
+| AI Signals → Market scanner cards | live score, bar, the full sentence under the bar, then what the replay measured for that market |
 | Markets table, Overview signal list | live score in the badge |
-| Sniper alerts: Selected markets, Live Sniper setups | a **Confidence** column: live score and `6.0 pips with` / `6.0 pips against` / `stop reached` / `target 1 reached`; the detail line (eye icon) has the full sentence |
-| Gold / US Dollar monitor | **Confidence** under the signal: live score, bar and the full sentence; followed from the gold price the monitor itself shows (Exness MT5 in the PC app, otherwise the public Deriv tick) |
+| Sniper alerts: Selected markets, Live Sniper setups | a **Confidence** column: live score and `6.0 pips with` / `6.0 pips against` / `stop reached` / `target 1 reached`; then `measured 39.6%` or `not measured`; the detail line (eye icon) has the full sentences |
+| Gold / US Dollar monitor | **Confidence** under the signal: live score, bar and the full sentence; followed from the gold price the monitor itself shows (Exness MT5 in the PC app, otherwise the public Deriv tick); under it what the replay measured on gold |
 
 What does **not** move: a WAIT (nothing to follow); the daily index readings
 (US30, NAS100, SPX500 have no entry, stop or target, so their score changes
@@ -361,37 +361,218 @@ read and `This BUY reading is no longer the newest for this market: refresh
 to see the latest.` A stop or target is noticed on every tick, whether or
 not that market is on screen at the time.
 
-**What a replay of the rule showed (November 2026).** The 1m/5m/1h rule and
-its levels (stop 1.5 × ATR of the 5-minute candles, target 1 at 2.25 × ATR, so
-a reward of 1.5 for a risk of 1) were replayed minute by minute, with the
-repository's own `runDeterministicAnalysis` and `localDecision`, on 1-minute
-gold candles from January 2020 to 11 November 2026 (an OANDA-derived public
-series, not Exness prices). An alert was counted whenever the signal changed
-to BUY or SELL, as the Gold monitor notifies; each was followed until its stop
-or its target 1.
+**One reading per finished 5-minute candle** (`src/closedcandles.js`, since
+2026-11-13). Until then a 1m/5m/1h reading was made from whatever candles the
+feed held at the moment of the look, the three forming ones included, and a
+market looked at every minute could change its mind every minute. A reading is
+now made from **finished candles only, as they stood at the last 5-minute
+close**:
 
-| | Alerts | Target 1 before the stop |
+- Looking again before the next 5-minute close gives the same reading, so a
+  market can change (and alert) at most once per 5-minute candle. On gold the
+  replay below counts about 46 alerts a weekday instead of about 100.
+- The close is taken from the candles themselves, not from the device clock,
+  and a candle counts as finished only when its own series shows a later one.
+  A copy of a series from just before a close is never read as if the candle
+  had closed; the reading then stays the one of the close before until the
+  copy is renewed (`src/derivhistory.js` renews it at once after a close).
+- After a pause (the weekend, the daily break of gold, a quiet market) the
+  first new price makes the feed current again while every finished candle is
+  still from before the pause. No reading is shown then, and no alert is sent:
+  the market says `resumed, waiting for a finished candle` until a 5-minute
+  candle of the new session has closed. A reading belongs to a 5-minute candle
+  that traded, and is current while its close is less than two candles behind
+  the feed.
+- Each card says which close it was read at (`read at the 14:35 candle
+  close`). The Gold monitor still checks every minute, and looks again a few
+  seconds after each 5-minute close.
+- This holds wherever the page or the Worker makes the reading: Deriv markets
+  on the cloud, the Exness paths of the PC app, the Gold monitor on both. **Not
+  changed:** readings made by the PC's own Node server (`server/app.js`), which
+  still looks every minute with forming candles; they name no close.
+- It is not a better signal. The votes, thresholds and levels in `server/lib`
+  are untouched; only the moment they are read at changed.
+
+**What a replay of the rule measured, shown beside every signal**
+(`src/measured.js`, `scripts/replay-rule.mjs`). The rule was replayed on
+historical 1-minute prices with the repository's own code. An alert is a
+reading that says BUY or SELL when the reading before it said something else;
+each alert was followed until its stop or its target 1 (the stop is counted
+when both lie inside one 1-minute bar). With a stop of 1.5 × ATR and a target
+1 of 2.25 × ATR, **40%** of alerts must reach target 1 first to break even,
+before the spread.
+
+| Market | Period | Alerts | Per weekday | Target 1 first | Alerts, look every minute | Per weekday | Target 1 first |
+|---|---|---|---|---|---|---|---|
+| Gold (XAU/USD) | Jan 2020 – Nov 2026 | 82,069 | 46 | **39.6%** | 177,715 | 100 | 39.8% |
+| EUR/USD | Mar – Sep 2026 | 6,453 | 49 | **40.2%** | 13,990 | 106 | 39.9% |
+| GBP/USD | Mar – Sep 2026 | 6,444 | 49 | **36.9%** | 13,876 | 105 | 36.8% |
+| AUD/USD | Mar – Sep 2026 | 6,560 | 50 | **39.3%** | 13,968 | 106 | 39.4% |
+| USD/JPY | Mar – Sep 2026 | 6,272 | 48 | **40.5%** | 13,703 | 104 | 40.1% |
+| USD/CHF | Mar – Sep 2026 | 6,273 | 48 | **38.6%** | 13,523 | 102 | 38.7% |
+| USD/CAD | Mar – Sep 2026 | 6,364 | 48 | **40.9%** | 13,887 | 105 | 41.2% |
+| US30 | Mar – Sep 2026 | 6,087 | 46 | **39.7%** | 13,055 | 99 | 39.9% |
+| NAS100 | Mar – Sep 2026 | 5,827 | 44 | **40.7%** | 12,536 | 95 | 41.4% |
+| SPX500 | Mar – Sep 2026 | 5,952 | 45 | **40.7%** | 12,923 | 98 | 40.3% |
+
+The first three figure columns are the rule as it runs now (one reading per
+5-minute close), the last three the rule as it ran before. Gold over the whole
+period, as it runs now:
+
+| Gold, Jan 2020 – 11 Nov 2026, one reading per 5-minute close | Alerts | Target 1 first |
 |---|---|---|
-| Needed to break even at 1.5 : 1, before the spread | | 40.0% |
-| The rule as it is, gold 2020 – Nov 2026 | 174,239 (about 96 a day) | **39.8%** |
-| Each single year 2020 … 2026 | 21,000 – 26,000 | 39.0% – 40.6% |
-| Score below 60 / 60–64 / 65–69 / 70–74 / 75–79 | | 40.2 / 39.4 / 39.7 / 40.2 / 40.1% |
-| Only alerts where the 1-hour vote agrees | 83,976 | 40.4% |
-| Only alerts where all three timeframes agree | 10,875 | 40.6% |
-| A coin flip at the same moments, same stop and target (2025–2026) | 46,816 | 39.8% |
-| The opposite of the signal, same moments (2025–2026) | 46,816 | 40.4% |
-| GBP/USD and EUR/USD, 26 Mar – 25 Sep 2026 | 13,349 and 13,511 | 36.7% and 39.3% |
+| Each single year 2020 … 2026 | 10,236 – 12,119 | 38.6 / 39.8 / 39.5 / 39.1 / 40.4 / 39.9 / 39.9% |
+| Score below 60 / 60–64 / 65–69 / 70–74 / 75–79 / 80 and above | 6,087 / 27,178 / 23,012 / 20,429 / 5,067 / 296 | 39.4 / 39.9 / 39.2 / 39.7 / 39.4 / 40.2% |
+| All three timeframes agree | 7,831 | 39.4% |
+| The 1-hour vote agrees / is neutral / is against | 34,851 / 21,997 / 25,221 | 40.0 / 39.0 / 39.5% |
+| BUY / SELL | 41,964 / 40,105 | 39.8 / 39.4% |
+| Control: the opposite direction at the same moments, same distances | 82,069 | 40.6% |
+| Control: a coin flip at the same moments, same distances | 82,069 | 39.8% |
 
 In words: on this data the rule's direction was right as often as a coin's,
 its score did not separate better alerts from worse ones, and stricter
-versions of the same votes did not change that. With a spread to pay on about
-90 alerts a day, following every alert loses steadily. The live movement of
-the score described above does not change this either: it reports where the
-price is against a reading, it does not predict where it goes next.
-Limits of the replay: one data source that is not the broker's; one look per
-minute at the close of the minute; when a stop and a target fell inside the
-same minute the stop was counted (counting the target instead changes the
-figures by less than 0.1 point).
+versions of the same votes did not change that. The six-month figures of the
+other markets lie between 37% and 41%; with about 6,000 alerts each they are
+known to about ±1.2 points at best, so none of them is evidence of an edge.
+(The coin flip itself moves by that much from one run to the next: on GBP/USD
+it reached 38.4% in one run and 39.8% in another.) One reading per 5-minute
+candle halves the number of alerts and leaves the share where it was: per gold
+alert at 0.01 lot the replay gives −$0.02 before the spread and −$0.27 after an
+assumed $0.25, about −$22,000 over the period against −$43,700 with a look
+every minute. Fewer alerts cost less; they do not win more often. The live
+movement of the score does not change this either: it reports where the price
+is against a reading, it does not predict where it goes next.
+
+What the page shows (`measuredText` in `src/measured.js`): under a BUY or SELL
+of the 1m/5m/1h rule, the figure of that market and of the timing that made
+the reading, for example `Measured in a replay on gold (Jan 2020 – Nov 2026):
+39.6% of 82,069 signals of this rule reached target 1 before the stop; 40% is
+needed to break even, before the spread. Not a forecast.` A market that was
+not replayed says so and gives the range of the ten that were. A WAIT has no
+such line. A daily index reading (US30, NAS100, SPX500 on the cloud) has no
+stop or target, so it has no measured result, and its card says why its three
+boxes are empty. Alerts and shared messages end with the same figure in one
+line. The numbers are fixed in `src/measured.js`; they do not update by
+themselves, and `tests/platform/measured.test.mjs` keeps this table, the page
+and the module equal.
+
+To repeat a run (the price data is not in this repository):
+
+```
+node scripts/replay-rule.mjs --data <folder of 1-minute CSV files> --symbol XAU/USD \
+     --from 2020-01-01 --to 2027-01-01 --by-year --spread 0.25 [--timing minute]
+```
+
+Data used: gold, the public archive
+`parshant65-lang/Gold-XAUUSD-1m-2020-2025-Historical-Data` on GitHub at commit
+`b2cfdc5` (2 January 2020 to 11 November 2026 13:11 UTC); the other nine
+markets, the free six-month 1-minute samples published on GitHub by
+getdata.finance (26 March to 25 September 2026). Neither is Exness's or
+Deriv's price series. As a check of one source against the other, gold over
+the same six months gives 39.8% of 6,045 alerts in the first and 39.7% of
+6,002 in the second.
+
+Limits of the replay: one price series per market that is not the broker's;
+the alert is taken at the price of the 5-minute close it belongs to, while a
+person sees it some seconds later; no spread, slippage or overnight cost
+unless stated; when a stop and a target fall inside the same minute the stop
+is counted. The earlier version of this section gave 39.3% for EUR/USD and
+36.7% for GBP/USD with a look every minute: those came from a first replay
+program that was not kept; the figures above are from the script in this
+repository, which gives 39.9% and 36.8% for the same data and timing.
+
+One more fact about the gold archive, found while measuring releases (next
+section): its files say their bar times are UTC, but until mid-2025 they are
+broker time (Athens: UTC+2, UTC+3 in summer), and from then on UTC. The replay
+above is not affected, because the rule never looks at the clock: a shift by
+whole hours leaves every 5-minute and 1-hour candle as it is. Anything that
+compares these bars with clock times has to convert them first.
+
+### News: which markets, and standing aside around a release
+
+The News view answers three questions and leaves a fourth unanswered on
+purpose.
+
+1. **Which markets does a headline concern?** The ones it names
+   (`src/newsimpact.js`): a pair written out is that pair; a currency or its
+   central bank is every listed market priced in it; a company such as Nvidia
+   is the indices it is a large part of (NAS100, US100, SPX500). A headline
+   that names nothing this application follows gets no market.
+2. **Buy or sell?** Beside each market stands that market's own price reading
+   at this moment (Buy, Sell or Wait, the same reading the Markets view
+   shows). It is not taken from the headline.
+3. **When to stop and when to start again around a release?** For every
+   high-impact entry of the calendar: no new trade from 30 minutes before the
+   release until 30 minutes after it, in the markets priced in its currency.
+   Times are Nairobi time (EAT). The same note appears in the line above the
+   chart for the market selected there, and on the Gold page: under the gold
+   signal, in its table of dollar releases, and at the start of the alert it
+   sends 15 and 5 minutes before a high-impact dollar release. A reading stays
+   shown during the period; the note says that no new trade belongs in it.
+4. **Which way will the news move the price?** Not answered, because it is not
+   known. The calendar source gives the forecast and the previous figure, not
+   the result, and the wording of a headline does not decide a price. On the
+   cloud no direction is derived from a headline at all. (The PC server still
+   attaches its keyword chip, `biasFor` in `server/lib/news.js`: it takes the
+   first currency of a fixed list that the title mentions, any "up" or "down"
+   word anywhere in the title, and the major pair of that currency. For the
+   real headline "Euro Falls as US Dollar gains on inflation concerns, Fed
+   rate hike bets" it answers "BUY USD/JPY", a market the headline does not
+   mention.)
+
+The cloud reads the same public sources as the PC server: the RSS feeds of
+FXStreet, Investing.com and CNBC, and the ForexFactory weekly calendar.
+`GET /api/news/feed` and `GET /api/news/calendar` pass on what those sources
+publish, name each source, say which one did not answer, and keep an answer
+for 5 and 30 minutes so that a source is not asked for every request. When no
+source answers, the page says so and shows nothing in its place. One
+exception, for the calendar only: while its source does not answer, the copy
+that was read last is passed on for up to six hours, and the calendar card
+says when it was read ("read at 14:05 EAT") and, once that is more than 45
+minutes ago, that the source has not answered since. A week's schedule is published
+days ahead; a copy a few hours old is still the schedule, and the page would
+otherwise lose its stand-aside periods whenever the source refuses one
+request. The page reads the calendar again every ten minutes while the News
+view, the chart or the Gold page is open, and one minute after a read that
+failed.
+
+**Why 30 minutes either side.** Measured on gold with `scripts/news-window.mjs`
+(6 January 2020 to 1 April 2023): 386 high-impact US data releases and rate
+decisions of a public copy of the ForexFactory calendar, 379 with prices. In
+the minute of the release the 1-minute price range was 5.4 times the usual
+one, and 1.8 times 15 to 29 minutes later. "A stop distance" is the distance
+the rule puts its stop at (1.5 x the 5-minute ATR before the release):
+
+| Price a full stop distance away from where it stood | At a release | Same weekday and hour a week earlier, no release |
+|---|---|---|
+| within 1 minute | 54% | 5% |
+| within 15 minutes | 84% | 50% |
+| in both directions within 15 minutes | 21% | 2% |
+
+Which way it went is not known beforehand. An alert of the rule stays open
+30 minutes at the median, so one taken in the half hour before a release is
+still open at the release about as often as not. The rule's own alerts near a
+release are few (a few hundred in each group), so these figures are uncertain
+by 4 to 5 points either way: 37.5% of 510 alerts in the 30 minutes before a
+release reached target 1 first, 34.1% of 369 in the 30 minutes after, against
+39.4% of 37,250 with no release within an hour. None of the groups reaches the
+40% needed to break even. The period is a precaution against the first minute,
+not a way to make the rule profitable.
+
+```
+node scripts/news-window.mjs --bars <folder of 1-minute CSV files> --events <calendar CSV> \
+     --from 2020-01-06 --to 2023-04-01 --bars-clock eet
+```
+
+Data used: the gold archive named above (its bars before mid-2025 are on the
+Athens clock: `--bars-clock eet`), and the calendar file `events.csv` of
+`EPSOFT/dataset-forexfactory` on GitHub at commit `a36d527` (January 2007 to
+March 2023, times on the New York clock). The clocks were checked against each
+other: in 165 of the 386 releases the largest 1-minute move of the two hours
+either side falls exactly on the listed minute. Limits: gold only, US releases
+only, a calendar that ends in March 2023; other markets and other currencies
+were not measured and get the same period as a precaution; spreads, which
+widen at a release, are not in the price bars.
 
 ### Before any deployment
 
@@ -499,7 +680,7 @@ from the package replaces nothing newer.
   app routes such as `/app` and deep links get the app page, anything that
   looks like a file (`/missing.js`, `/.env`, `/wp-login.php`) gets a plain `404`.
 - **API surface.** `GET /api/health`, `/api/signals/usage`, `/api/signals/history`,
-  `/api/markets/deriv`; `POST /api/signals/scan`, `/api/signals/analyze`,
+  `/api/markets/deriv`, `/api/news/feed`, `/api/news/calendar`; `POST /api/signals/scan`, `/api/signals/analyze`,
   `/api/markets/deriv/candles`, `/api/markets/deriv/tick`, `/api/history/candles`.
   `/api/deriv*`, `/api/risk*` and `/api/ctl*` are refused first with `403` for
   every method. Any other `/api` path answers `501 cloudflare_route_not_migrated`.

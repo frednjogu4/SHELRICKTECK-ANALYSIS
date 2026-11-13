@@ -130,6 +130,15 @@ for (const symbol of DERIV_SYMBOLS) {
     for (const key of Object.keys(analyze).filter((name) => name !== 'meta')) {
       assert.deepEqual(inBrowser[key], analyze[key], `analysis field "${key}"`);
     }
+    /* All three name the 5-minute close the reading was made at, and it is the same one. */
+    assert.ok(inBrowser.candle_close > 0 && inBrowser.candle_close % 300 === 0);
+    assert.ok(inBrowser.candle_close <= inBrowser.latest_candle_time, 'a close the feed has already passed');
+    assert.equal(scan.candle_close, inBrowser.candle_close);
+    assert.equal(analyze.candle_close, inBrowser.candle_close);
+    /* ...and that the reading is current: the feed did not just resume after a pause. */
+    assert.equal(inBrowser.candle_current, true);
+    assert.equal(scan.candle_current, true);
+    assert.equal(analyze.candle_current, true);
     assert.equal(inBrowser.meta.mode, 'technical');
     assert.deepEqual(inBrowser.meta.engines, []);
   });
@@ -427,6 +436,59 @@ test('a slow device clock and no tick: a market that has just closed is still to
 });
 
 /* ---------------------------------------------------------------- no data */
+
+/* A market that gave no price for the `pauseSec` seconds before its newest candle: the feed holds the candles from
+   before the pause and the one of the price that ended it, and nothing in between. */
+function resumedSets(symbol, pauseSec) {
+  const now = nowSec();
+  return Object.fromEntries(SCAN_TIMEFRAMES.map(([key, granularity]) => {
+    const newest = Math.floor(now / granularity) * granularity;
+    const candles = normalizeCandles(rowsFor(symbol, granularity)).filter((candle) => candle.time >= newest || candle.time < newest - pauseSec);
+    return [key, candles];
+  }));
+}
+
+test('a market that has just resumed after a pause: no live reading until a 5-minute candle of the new session has closed', async () => {
+  /* EUR/USD gave its first price a moment ago, after 40 minutes without one. USD/JPY ran through. */
+  const sets = { 'EUR/USD': resumedSets('EUR/USD', 2400) };
+  const fetchCandles = async (symbol, granularity) => {
+    const key = SCAN_TIMEFRAMES.find(([, period]) => period === granularity)[0];
+    return sets[symbol] ? sets[symbol][key] : normalizeCandles(rowsFor(symbol, granularity));
+  };
+  const scanner = createHostedScanner({ fetchCandles, cloudScan: cloud({ deriv: 'down' }).cloudScan });
+  const [eur, jpy] = await scanner.scan(['EUR/USD', 'USD/JPY']);
+
+  /* The newest candle is seconds old, so the feed is current; but every finished candle is 40 minutes old or more. */
+  assert.equal(signalState(eur), 'stale');
+  assert.equal(eur.error, 'STALE_DATA');
+  assert.equal(eur.computed, 'browser');
+  assert.match(eur.detail, /^EUR\/USD has just resumed after a pause: no 5-minute candle has closed since, so a reading would describe the market before the pause\. The first reading comes with the next 5-minute close\.$/);
+  assert.equal(eur.data_source, DERIV_SOURCE + ' \u00b7 resumed, waiting for a finished candle');
+  assert.ok(eur.latest_candle_time > 0);
+  for (const field of SIGNAL_FIELDS) assert.equal(eur[field], undefined, 'no ' + field + ' from before the pause');
+  assert.equal(signalState(jpy), 'live');
+
+  /* What the reading would have been: made at a close from before the pause, and it says so itself. */
+  const withheld = buildDerivReading('EUR/USD', sets['EUR/USD'], Date.now());
+  assert.equal(withheld.candle_current, false);
+  assert.ok(withheld.latest_candle_time - withheld.candle_close >= 2400);
+});
+
+test('the same from the AURUM cloud: a reading it made from before a pause is not shown as live', async () => {
+  const candleTime = nowSec();
+  const cloudScan = async (symbols) => new Map(symbols.map((symbol) => [symbol, {
+    symbol, signal: 'BUY', confidence: 70, entry: 1, stop_loss: 0.9, tp1: 1.15, source: DERIV_SOURCE,
+    latest_candle_time: candleTime, candle_close: candleTime - 2400, candle_current: symbol !== 'EUR/USD'
+  }]));
+  const scanner = createHostedScanner({ fetchCandles: async () => { throw feedDown(); }, cloudScan });
+  const [eur, gbp] = await scanner.scan(['EUR/USD', 'GBP/USD']);
+  assert.equal(signalState(eur), 'stale');
+  assert.equal(eur.computed, 'cloud');
+  assert.match(eur.detail, /has just resumed after a pause/);
+  assert.equal(eur.signal, undefined);
+  assert.equal(signalState(gbp), 'live');
+  assert.equal(gbp.signal, 'BUY');
+});
 
 test('no data: Deriv answered but has no usable history — reported as such, and the cloud is not asked', async () => {
   for (const failure of [new CandleError('empty', 'Deriv returned no usable candles for this market and timeframe.'), new CandleError('provider', 'Symbol is not available. [InvalidSymbol]')]) {

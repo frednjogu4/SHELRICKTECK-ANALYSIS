@@ -55,6 +55,18 @@ export function isFeedFailure(error) {
 export function ttlFor(granularity) { return granularity <= 60 ? 20000 : granularity <= 300 ? 60000 : 300000; }
 
 /**
+ * True while no candle of this period has closed between two moments. A copy
+ * of a series is not reused across such a close: the candle that was forming
+ * when the copy was taken has finished since, and the copy still shows it as
+ * it stood. Readings are made from finished candles (closedcandles.js), so
+ * they need the candle as it closed.
+ */
+export function sameCandle(thenMs, nowMs, granularity) {
+  const periodMs = Number(granularity) * 1000;
+  return Math.floor(thenMs / periodMs) === Math.floor(nowMs / periodMs);
+}
+
+/**
  * Deriv candle rows -> { time, open, high, low, close, volume }.
  * Rows that are not finite, not positive, or not a consistent OHLC bar are
  * dropped. Same rule as the Cloudflare Worker, so both analyse identical bars.
@@ -295,7 +307,7 @@ export function createCandleClient({
     if (!GRANULARITIES.includes(g) || !Number.isInteger(n) || n < 1 || n > 1000) return Promise.reject(new CandleError('invalid', 'Invalid Deriv candle request.'));
     const key = dsym + '|' + g + '|' + n;
     const hit = cache.get(key);
-    if (hit && now() - hit.at < ttlFor(g)) return Promise.resolve(hit.candles);
+    if (hit && now() - hit.at < ttlFor(g) && sameCandle(hit.at, now(), g)) return Promise.resolve(hit.candles);
     if (inFlight.has(key)) return inFlight.get(key);
     const promise = new Promise((resolve, reject) => {
       enqueue({ payload: { ticks_history: dsym, count: n, end: 'latest', style: 'candles', granularity: g }, resolve, reject, attempts: 0, timer: null, reqId: 0 });

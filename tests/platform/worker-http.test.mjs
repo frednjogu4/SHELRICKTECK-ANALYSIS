@@ -110,7 +110,7 @@ test('a known route with the wrong method is 405 with an Allow header, not 501',
 
 test('unknown API routes stay 501 JSON and never fall through to the HTML shell', async () => {
   const { send, calls } = setup();
-  for (const path of ['/api', '/api/', '/api/nope', '/api/health/', '/api/news/feed', '/api/health%2f..', '/api/constructor', '/api/__proto__']) {
+  for (const path of ['/api', '/api/', '/api/nope', '/api/health/', '/api/news', '/api/news/', '/api/news/feed/', '/api/news/expectations', '/api/wa/push', '/api/health%2f..', '/api/constructor', '/api/__proto__']) {
     const res = await send(path);
     assert.equal(res.status, 501, path);
     assert.match(res.headers.get('content-type'), /^application\/json/, path);

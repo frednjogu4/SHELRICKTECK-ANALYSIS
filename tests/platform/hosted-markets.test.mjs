@@ -32,6 +32,8 @@ import { DERIV_INSTRUMENTS, INDEX_INSTRUMENTS, derivCandleRows, basePriceFor, ya
 import { tradingDayText } from '../../src/bestpick.js';
 import { runDeterministicAnalysis } from '../../server/lib/analyzer.js';
 import { localDecision } from '../../server/lib/localdecision.js';
+import { closedCandleSets } from '../../src/closedcandles.js';
+import { CALENDAR_URL, HEADLINE_SOURCES } from '../../cloudflare/news.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
@@ -75,15 +77,18 @@ before(async () => {
  *   candleAgeSec  how old the newest candle is, on both sides
  *   ticks         answer every price subscription with one tick
  *   yahooBars     options for the Yahoo fixture: { newestBarAt, session } (see market-fixtures.mjs)
+ *   candleRows    (code, granularity, count, nowSec) => rows, a market written by the test in place of
+ *                 the built-in series, whose candles do not keep their content from one minute to the next
  *   rewriteScan   (results) => results, applied to what the Worker answers to /api/signals/scan:
  *                 lets a test hand the page a reading of its own writing for one market
  *   scanTakesMs   page time that passes while a scan request is answered
  *   scanGate      () => Promise, awaited before a scan request is answered
+ *   news          { feeds: { address: RSS text }, calendar: rows } written by the test; offline without it
  * `pcApi`, when given, replaces the Worker: the page then runs as the PC app
  * and `pcApi(path, body)` answers its API requests with { status, body }.
  */
 async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, bridgeApi = null } = {}) {
-  const state = { browserDeriv: 'ok', cloudDeriv: 'ok', yahoo: 'ok', candleAgeSec: 0, ticks: false, yahooBars: {}, rewriteScan: null, scanTakesMs: 0, scanGate: null, ...world };
+  const state = { browserDeriv: 'ok', cloudDeriv: 'ok', yahoo: 'ok', candleAgeSec: 0, ticks: false, yahooBars: {}, rewriteScan: null, scanTakesMs: 0, scanGate: null, candleRows: null, ...world };
   const problems = [];
   const warnings = [];
   const requests = [];
@@ -93,7 +98,9 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, bridg
   let closing = false;
 
   const symbolOf = (code) => DERIV_INSTRUMENTS.find((instrument) => instrument.deriv === code);
-  const rows = (code, granularity, count) => derivCandleRows({ count, granularity, end: nowSec() + clock.shiftMs / 1000 - state.candleAgeSec, base: basePriceFor(code) });
+  const rows = (code, granularity, count) => (state.candleRows
+    ? state.candleRows(code, granularity, count, nowSec() + clock.shiftMs / 1000 - state.candleAgeSec)
+    : derivCandleRows({ count, granularity, end: nowSec() + clock.shiftMs / 1000 - state.candleAgeSec, base: basePriceFor(code) }));
 
   const worker = createReadOnlyWorker({
     requestImpl: async (payload) => {
@@ -101,7 +108,19 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, bridg
       if (payload.ticks_history) return { candles: rows(payload.ticks_history, payload.granularity, payload.count) };
       throw new Error('unexpected Deriv request in this test');
     },
-    fetchImpl: async () => {
+    fetchImpl: async (address) => {
+      /* The headline feeds and the calendar are offline unless a test writes them: `world.news` is
+         { feeds: { address: text }, calendar: rows }. Every other address is Yahoo's daily series. */
+      const url = String(address);
+      if (url === CALENDAR_URL) {
+        if (!state.news || state.news.calendar == null) throw new Error('the calendar source is offline in this test');
+        return Response.json(state.news.calendar);
+      }
+      if (HEADLINE_SOURCES.some((source) => source.url === url)) {
+        const text = state.news && state.news.feeds && state.news.feeds[url];
+        if (text == null) throw new Error('this headline source is offline in this test');
+        return new Response(text);
+      }
       if (state.yahoo !== 'ok') throw new Error('Yahoo Finance HTTP 503');
       return Response.json(yahooChartFixture(state.yahooBars));
     },
@@ -359,7 +378,8 @@ test('entering the workspace: its first scan is already read in this browser —
     const cards = [...grid.querySelectorAll('.sig-card')].map((card) => ({ symbol: card.querySelector('.sym-name').textContent, why: card.querySelector('.sig-why').textContent }));
     const fromDeriv = cards.filter((card) => DERIV_SYMBOLS.includes(card.symbol));
     assert.equal(fromDeriv.length, 6, 'each of the six Deriv markets of that scan has a card');
-    for (const card of fromDeriv) assert.match(card.why, / · source: Deriv public candles · analysed in this browser$/, card.symbol);
+    /* ...and says which 5-minute close the reading was made at. */
+    for (const card of fromDeriv) assert.match(card.why, / · source: Deriv public candles · analysed in this browser · read at the \d\d:\d\d candle close$/, card.symbol);
     assert.equal(cards.length - fromDeriv.length, 3, 'plus the three daily index readings');
     assert.match(app.doc.getElementById('sigStamp').textContent, /^Updated \d\d:\d\d:\d\d · technical · live candles$/, 'nothing is reported as stale, missing or unavailable');
     for (const symbol of app.scannedByApiAfterEntering()) assert.ok(INDEX_SYMBOLS.includes(symbol), `${symbol} was sent to the AURUM cloud although this browser can read it`);
@@ -481,7 +501,7 @@ test('Signals view: once the feed is back, Refresh reads the markets in this bro
     app.click(app.doc.getElementById('refreshSigs'));
     await app.waitFor(() => grid.querySelectorAll('.sig-card').length === 6, 'six signal cards after Refresh');
     for (const card of grid.querySelectorAll('.sig-card')) {
-      assert.match(card.querySelector('.sig-why').textContent, / · source: Deriv public candles · analysed in this browser$/);
+      assert.match(card.querySelector('.sig-why').textContent, / · source: Deriv public candles · analysed in this browser · read at the \d\d:\d\d candle close$/);
     }
     assert.match(app.doc.getElementById('sigStamp').textContent, /^Updated \d\d:\d\d:\d\d · technical · live candles · 3 unavailable$/);
     assert.deepEqual(app.problems, []);
@@ -1160,7 +1180,13 @@ const pushTick = (app, code, quote) => {
   assert.ok(stream, 'the price stream is open');
   stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: code, quote, epoch: nowSec() } }) });
 };
-const NO_LEVELS = 'Daily reading with no entry, stop or target: this score moves only when one of its daily votes changes.';
+const NO_LEVELS = 'Daily index reading from daily closing prices: it has no entry, stop or target, so nothing here moves with the price and there is no measured result. Levels need minute-by-minute prices, which for indices come only from Exness MT5 in the PC app.';
+/* What the replay measured (src/measured.js). A reading written by these tests comes from the PC's server, which looks every minute: "minute".
+   A reading made in the page from finished candles belongs to a 5-minute close: "close". */
+const EUR_MEASURED_CLOSE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 40.2% of 6,453 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const GOLD_MEASURED_MINUTE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.8% of 177,715 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const GOLD_MEASURED_CLOSE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 82,069 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const EUR_MEASURED_MINUTE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 39.9% of 13,990 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const CLOCK = '\\d\\d:\\d\\d:\\d\\d';
 
 test('live confidence, scanner cards: the score moves with the price since the reading, and the card says by how much', async () => {
@@ -1175,6 +1201,15 @@ test('live confidence, scanner cards: the score moves with the price since the r
     };
     /* The reading says 70. The feed ticks 6 pips above its entry, a third of the way to the target: 70 + 5. */
     await app.waitFor(() => shown('EUR/USD') && shown('EUR/USD').score === '75%', 'the card to show the score at the live price');
+    /* Under it: what a replay of the rule measured on this market. A WAIT has no such line; a daily reading says why in its own sentence. */
+    const measured = (symbol) => card(symbol).querySelector('.sig-measured').textContent;
+    assert.equal(measured('EUR/USD'), EUR_MEASURED_MINUTE);
+    assert.equal(measured('GBP/USD'), '');
+    assert.equal(measured('US30'), '');
+    /* The alert of the same reading ends with that figure; the alert of a daily reading says that it has none. */
+    const alertBody = (title) => { const el = [...app.doc.querySelectorAll('#toasts .toast')].find((toast) => toast.querySelector('b').textContent === title); return el ? el.querySelector('span').textContent : null; };
+    assert.match(alertBody('Signal update \u00b7 EUR/USD'), /\nMeasured in a replay on EUR\/USD: 39\.9% of such signals reached TP1 before the SL \(break-even 40% before the spread\)\. Not a forecast\.$/);
+    assert.match(alertBody('Signal update \u00b7 US30'), /\nNot measured: a daily reading has no stop or target\.$/);
     assert.equal(shown('EUR/USD').bar, '75%');
     assert.match(shown('EUR/USD').note, new RegExp('^6\\.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 49\\.99940, ' + CLOCK + ' \u00b7 score as read 70%$'));
 
@@ -1258,11 +1293,11 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
       box.dispatchEvent(new app.window.Event('change', { bubbles: true }));
     }
     const cells = (symbol) => [...rowOf(symbol).children].map((td) => td.textContent);
-    await app.waitFor(() => cells('EUR/USD')[3] === '75%6.0 pips with', 'the live score in the selected-markets table');
+    await app.waitFor(() => cells('EUR/USD')[3] === '75%6.0 pips withmeasured 39.9%', 'the live score in the selected-markets table');
     assert.equal(cells('EUR/USD').length, headers(watchTable).length, 'one cell under every header');
     assert.equal(cells('GBP/USD')[3], '20%', 'a WAIT shows the score as read, with nothing to follow');
     assert.equal(cells('AUD/USD')[3], '\u2014', 'a reading without a score shows a dash, not 0%');
-    assert.equal(cells('US30')[3], '90%', 'a daily reading shows its score as read: there is no level to measure from');
+    assert.equal(cells('US30')[3], '90%not measured', 'a daily reading shows its score as read: there is no level to measure from');
 
     /* The setups table lists the BUYs and the SELL, not the WAIT. */
     const setups = () => doc.querySelector('#sniperSignalList table');
@@ -1270,10 +1305,18 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     const setupCells = (symbol) => { const tr = [...setups().querySelectorAll('tbody tr')].find((el) => el.children[0].textContent === symbol); return tr ? [...tr.children].map((td) => td.textContent) : null; };
     assert.equal(setups().querySelectorAll('tbody tr').length, 3);
     assert.equal(setupCells('EUR/USD').length, 8);
-    assert.equal(setupCells('EUR/USD')[2], '75%6.0 pips with');
+    assert.equal(setupCells('EUR/USD')[2], '75%6.0 pips withmeasured 39.9%');
     assert.equal(setupCells('AUD/USD')[2], '\u2014');
-    assert.equal(setupCells('US30')[2], '90%');
+    assert.equal(setupCells('US30')[2], '90%not measured');
     assert.equal(setupCells('GBP/USD'), null);
+
+    /* Under each score: what the replay measured for that market. The full sentence is the tooltip.
+       These readings come from the PC's server, which still looks every minute: the figure is the one of that timing. */
+    const measuredIn = (tr) => { const el = tr.querySelector('[data-measured]'); return el ? { text: el.textContent, title: el.getAttribute('title') } : null; };
+    assert.deepEqual(measuredIn(rowOf('EUR/USD')), { text: 'measured 39.9%', title: EUR_MEASURED_MINUTE });
+    assert.deepEqual(measuredIn(rowOf('US30')), { text: 'not measured', title: NO_LEVELS });
+    assert.equal(measuredIn(rowOf('GBP/USD')), null, 'a WAIT of the 1m/5m/1h rule is not a signal to measure');
+    assert.equal(measuredIn(rowOf('AUD/USD')), null);
 
     /* The eye icon: the detail line. */
     app.click(doc.querySelector('[data-sniper-view="EUR/USD"]'));
@@ -1282,15 +1325,16 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     /* This box styles <b> as a heading on a line of its own: the score stays inside its sentence. */
     assert.equal(detail.querySelector('.hint [data-live-conf]').tagName, 'SPAN');
     assert.match(detail.querySelector('[data-live-note]').textContent, /^6\.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 49\.99940, /);
+    assert.equal(detail.querySelector('[data-measured]').textContent, EUR_MEASURED_MINUTE);
 
     /* One tick against the reading moves all three. */
     pushTick(app, 'frxEURUSD', EUR_TICK - 12 * PIP);
-    assert.equal(cells('EUR/USD')[3], '55%6.0 pips against');
-    assert.equal(setupCells('EUR/USD')[2], '55%6.0 pips against');
+    assert.equal(cells('EUR/USD')[3], '55%6.0 pips againstmeasured 39.9%');
+    assert.equal(setupCells('EUR/USD')[2], '55%6.0 pips againstmeasured 39.9%');
     assert.match(detail.textContent, /Confidence: 55% \u00b7 Source: /);
     assert.match(detail.querySelector('[data-live-note]').textContent, /^6\.0 pips against this BUY \u00b7 50% of the way to the stop /);
-    assert.equal(cells('US30')[3], '90%', 'the daily reading is left as it was');
-    assert.equal(setupCells('US30')[2], '90%');
+    assert.equal(cells('US30')[3], '90%not measured', 'the daily reading is left as it was');
+    assert.equal(setupCells('US30')[2], '90%not measured');
     assert.equal(cells('GBP/USD')[3], '20%');
 
     /* The scanner reads EUR/USD again, as WAIT. These tables still hold the BUY of the last market scan:
@@ -1301,8 +1345,8 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     await app.waitFor(() => liveCard(app, 'EUR/USD') && liveCard(app, 'EUR/USD').direction === 'WAIT', 'the newer reading on the scanner card');
     pushTick(app, 'frxEURUSD', EUR_TICK);
     assert.equal(cells('EUR/USD')[2], 'BUY', 'the row is still the BUY');
-    assert.equal(cells('EUR/USD')[3], '70%not the newest reading');
-    assert.equal(setupCells('EUR/USD')[2], '70%not the newest reading');
+    assert.equal(cells('EUR/USD')[3], '70%not the newest readingmeasured 39.9%');
+    assert.equal(setupCells('EUR/USD')[2], '70%not the newest readingmeasured 39.9%');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -1332,6 +1376,12 @@ test('live confidence, Gold monitor: the score is shown, moves with the gold pri
     await app.open('gold');
     await app.waitFor(() => text('goldSignal') === 'SELL', 'the first gold analysis');
 
+    /* Under the score: what the replay measured on gold. This analysis comes from the PC's server: the every-minute figure. */
+    assert.equal(text('goldMeasured'), GOLD_MEASURED_MINUTE);
+    const goldAlert = [...doc.querySelectorAll('#toasts .toast')].find((toast) => /^Gold\/USD signal (ready|changed)$/.test(toast.querySelector('b').textContent));
+    assert.match(goldAlert.querySelector('span').textContent, /\nMeasured in a replay on gold: 39\.8% of such signals reached TP1 before the SL \(break-even 40% before the spread\)\. Not a forecast\.$/);
+    assert.match(text('goldSignalUpdated'), /^Last analysis: /, 'the PC server does not say which close its reading belongs to');
+
     /* 3 dollars with the SELL, 13% of the way to the target: 71 + 2. */
     assert.equal(text('goldConfidence'), '73%');
     assert.equal(doc.getElementById('goldConfidenceBar').style.width, '73%');
@@ -1349,6 +1399,7 @@ test('live confidence, Gold monitor: the score is shown, moves with the gold pri
     await app.waitFor(() => text('goldSignal') === 'WAIT', 'the WAIT analysis');
     assert.equal(text('goldConfidence'), '38%');
     assert.equal(text('goldConfidenceNote'), 'No confirmed direction, so there is no entry, stop or target to follow.');
+    assert.equal(text('goldMeasured'), '', 'a WAIT is not a signal to measure');
 
     /* The analysis fails (the local API, and the browser's own read of Deriv behind it): no score is left standing. */
     answer = null;
@@ -1358,6 +1409,19 @@ test('live confidence, Gold monitor: the score is shown, moves with the gold pri
     assert.equal(text('goldConfidence'), '\u2014');
     assert.equal(doc.getElementById('goldConfidenceBar').style.width, '0%');
     assert.equal(text('goldConfidenceNote'), 'No current analysis, so no score is shown.');
+    assert.equal(text('goldMeasured'), '');
+
+    /* A signal again, and a failure straight after it: the replay figure of the vanished signal is not left standing. */
+    answer = sell;
+    app.state.browserDeriv = 'ok';
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => text('goldSignal') === 'SELL', 'the signal again');
+    assert.equal(text('goldMeasured'), GOLD_MEASURED_MINUTE);
+    answer = null;
+    app.state.browserDeriv = 'down';
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => text('goldSignalBadge') === 'UNAVAILABLE', 'the second failure');
+    assert.equal(text('goldMeasured'), '');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -1508,22 +1572,25 @@ test('live confidence, Gold monitor: a stop crossed while another view is open s
    These tests are about which price a reading is measured against, not about what the rule
    concludes. They need a reading with a direction, so they ask the rule itself which of a few
    plain series it reads as BUY or SELL, and take the entry, the target and the score from its
-   answer. */
+   answer. The rule is asked as the application asks it: with the candles that had finished by
+   the last 5-minute close (src/closedcandles.js). */
 const BRIDGE_TF = { M1: 60, M5: 300, H1: 3600 };
 const BRIDGE_SHAPES = [{ slope: -0.0004, wobble: 0.002 }, { slope: 0.0008, wobble: 0 }, { slope: -0.0008, wobble: 0 }, { slope: 0.0004, wobble: 0.002 }];
-function bridgeCandles(timeframe, shape, level) {
+/* `pauseSec`: the terminal's market gave no price for that long before its newest candle, so it holds the candles
+   from before the pause and the one of the price that ended it. */
+function bridgeCandles(timeframe, shape, level, pauseSec = 0) {
   const period = BRIDGE_TF[timeframe], newest = Math.floor(nowSec() / period) * period;
   return Array.from({ length: 120 }, (_unused, i) => {
     const mid = level * (1 + shape.slope * i + shape.wobble * Math.sin(i / 7));
     const open = mid * 0.9998, close = mid * 1.0002;
     return { time: newest - (119 - i) * period, open: Number(open.toFixed(6)), high: Number((close * 1.0004).toFixed(6)), low: Number((open * 0.9996).toFixed(6)), close: Number(close.toFixed(6)) };
-  });
+  }).filter((candle) => candle.time >= newest || candle.time < newest - pauseSec);
 }
 /* A market for the bridge: the first series the rule reads as a direction, and what the rule says about it. */
 function bridgeMarket(symbol, { name, level, digits }) {
   for (const shape of BRIDGE_SHAPES) {
     const sets = { m1: bridgeCandles('M1', shape, level), m5: bridgeCandles('M5', shape, level), h1: bridgeCandles('H1', shape, level) };
-    const decision = localDecision(runDeterministicAnalysis(symbol, sets));
+    const decision = localDecision(runDeterministicAnalysis(symbol, closedCandleSets(sets).sets));
     if (decision.signal === 'BUY' || decision.signal === 'SELL') {
       /* `price` is the terminal's quote at this moment (a test moves it); `known` is whether the terminal has the market. */
       return { name, level, digits, shape, decision, price: decision.entry, known: true, third: decision.entry + (decision.tp1 - decision.entry) / 3 };
@@ -1541,7 +1608,7 @@ const exnessBridge = (markets) => (frame) => {
   if (frame.type === 'positions') return { type: 'positions', list: [] };
   if (frame.type === 'history') {
     const m = market(frame.symbol);
-    return m ? { type: 'history', symbol: m.name, timeframe: frame.timeframe, candles: bridgeCandles(frame.timeframe, m.shape, m.level) }
+    return m ? { type: 'history', symbol: m.name, timeframe: frame.timeframe, candles: bridgeCandles(frame.timeframe, m.shape, m.level, m.pauseSec || 0) }
       : { type: 'error', message: 'Symbol is not available in the connected MT5 terminal.' };
   }
   if (frame.type === 'quote') {
@@ -1579,6 +1646,10 @@ test('live confidence, Exness connected: a reading made from Exness candles is m
     const first = liveCard(app, 'EUR/USD');
     assert.equal(first.direction, direction);
     assert.equal(first.score, base + '%');
+    /* A reading made in the page from finished candles: it says which close it belongs to, and the replay figure is the one of that timing. */
+    assert.match(source(), / \u00b7 read at the \d\d:\d\d candle close$/);
+    const measuredOnCard = () => [...app.doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === 'EUR/USD').querySelector('.sig-measured').textContent;
+    assert.equal(measuredOnCard(), EUR_MEASURED_CLOSE);
     assert.match(first.note, new RegExp('^No move yet \u00b7 first read at ' + eur.decision.entry.toFixed(5).replace('.', '\\.') + ', ' + CLOCK + EXNESS_SAMPLED));
 
     /* The Deriv stream quotes this market at 50: far beyond any level of the Exness reading. Nothing moves. */
@@ -1602,6 +1673,9 @@ test('live confidence, Exness connected: a reading made from Exness candles is m
     const third = liveCard(app, 'EUR/USD');
     assert.equal(third.direction, 'BUY');
     assert.equal(third.score, '75%', '70 as read, 6 of 18 pips toward its own target');
+    /* The fallback reading comes from the PC's server, which looks every minute and names no close. */
+    assert.doesNotMatch(source(), /candle close/);
+    assert.equal(measuredOnCard(), EUR_MEASURED_MINUTE);
     assert.match(third.note, new RegExp('^6\\.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 49\\.99940, ' + CLOCK + ' \u00b7 score as read 70%$'));
     pushTick(app, 'frxEURUSD', EUR_TICK - 12 * PIP);
     assert.equal(liveCard(app, 'EUR/USD').score, '55%', '6 of 12 pips toward its stop: 70 - 15');
@@ -1662,6 +1736,9 @@ test('live confidence, Gold monitor on Exness: the score follows the Exness gold
     const first = shown();
     assert.equal(first.score, base + '%');
     assert.match(first.note, /^No move yet \u00b7 first read at /);
+    /* Made in the page from finished candles: the close it belongs to, and the replay figure of that timing. */
+    assert.match(text('goldSignalUpdated'), /^Reading of the \d\d:\d\d candle close \u00b7 checked .* \u00b7 the next reading comes with the next 5-minute close; no fixed expiry\.$/);
+    assert.equal(text('goldMeasured'), GOLD_MEASURED_CLOSE);
 
     /* Deriv quotes gold at a few hundred here: far beyond every level of this reading. Nothing moves. */
     pushTick(app, 'frxXAUUSD', GOLD_TICK + 5);
@@ -1687,6 +1764,696 @@ test('live confidence, Gold monitor on Exness: the score follows the Exness gold
     await app.waitFor(() => /^No live price right now /.test(text('goldConfidenceNote')), 'the stale Exness tick');
     assert.equal(text('goldSignal'), direction, 'the analysis is still shown');
     assert.equal(text('goldConfidence'), base + '%', 'the score as read');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* ---------------------------------------------------------------- the questions of 13 November 2026 */
+
+test('index cards on the cloud: a daily reading says on the card why it has no entry, stop or target, whether it reads BUY or WAIT', async () => {
+  /* As on the screenshot: NAS100 WAIT 66%, US30 BUY 82%, SPX500 WAIT 66%, three empty boxes each. */
+  const as = { NAS100: { signal: 'WAIT', bias: 'bearish', confidence: 66 }, US30: { signal: 'BUY', bias: 'bullish', confidence: 82 }, SPX500: { signal: 'WAIT', bias: 'bearish', confidence: 66 } };
+  const app = await bootApp({ world: { ticks: true, rewriteScan: (results) => results.map((reading) => (as[reading.symbol] ? { ...reading, ...as[reading.symbol] } : reading)) } });
+  try {
+    await app.enter();
+    await app.open('signals');
+    await app.waitFor(() => Object.keys(as).every((symbol) => liveCard(app, symbol)), 'the three index cards');
+    const cardEl = (symbol) => [...app.doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === symbol);
+    const check = () => {
+      for (const [symbol, reading] of Object.entries(as)) {
+        assert.deepEqual(liveCard(app, symbol), { direction: reading.signal, score: reading.confidence + '%', bar: reading.confidence + '%', note: NO_LEVELS }, symbol);
+        assert.deepEqual(['e', 's', 't'].map((key) => cardEl(symbol).querySelector('[data-l="' + key + '"]').textContent), ['\u2014', '\u2014', '\u2014'], symbol + ': the three boxes stay empty');
+        assert.equal(cardEl(symbol).querySelector('.sig-measured').textContent, '', symbol + ': the sentence above already says that nothing was measured');
+        assert.match(cardEl(symbol).querySelector('.sig-why').textContent, / \u00b7 DAILY \(index\) \u00b7 source: Yahoo Finance public daily data \u00b7 AURUM cloud analysis$/);
+      }
+    };
+    check();
+    /* A price tick repaints every score and sentence on the page: the explanation stays. */
+    pushTick(app, 'frxEURUSD', EUR_TICK);
+    check();
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* A market whose price is a function of time, so that a candle keeps its content whenever it is asked for, as
+   a real one does. `drift` is the relative move per minute. The built-in series of this file cannot do this. */
+function steadyMarket(drift) {
+  const anchor = nowSec();
+  const priceAt = (base, t) => base * Math.exp((drift * (t - anchor)) / 60);
+  return (code, granularity, count, now) => {
+    const base = basePriceFor(code), newest = Math.floor(now / granularity) * granularity;
+    return Array.from({ length: count }, (_unused, i) => {
+      const start = newest - (count - 1 - i) * granularity, end = Math.min(start + granularity, now);
+      const open = priceAt(base, start), close = priceAt(base, end);
+      return { epoch: start, open, high: Math.max(open, close), low: Math.min(open, close), close };
+    });
+  };
+}
+/* The first steady market the rule reads as BUY or SELL. The tests below need a signal; which one does not matter. */
+function directionalMarket() {
+  for (const drift of [0.00002, 0.00005, 0.0001, -0.00002, -0.00005, -0.0001]) {
+    const market = steadyMarket(drift), now = nowSec();
+    const sets = Object.fromEntries([['m1', 60], ['m5', 300], ['h1', 3600]].map(([key, granularity]) => [key, market('frxEURUSD', granularity, 120, now).map((row) => ({ time: row.epoch, open: row.open, high: row.high, low: row.low, close: row.close }))]));
+    if (['BUY', 'SELL'].includes(localDecision(runDeterministicAnalysis('EUR/USD', closedCandleSets(sets).sets)).signal)) return market;
+  }
+  return assert.fail('the rule reads none of these steady markets as BUY or SELL any more: add one that it does');
+}
+
+/* The page's clock in seconds, and a way to move it. `settle()` leaves room for two looks inside one 5-minute candle
+   and returns the close that candle began with. */
+function pageClock(app) {
+  let shift = 0;
+  const now = () => Date.now() / 1000 + shift;
+  const advance = (seconds) => { shift += seconds; app.advanceClock(seconds * 1000); };
+  const settle = () => { if (now() % 300 > 180) advance(320 - (now() % 300)); return Math.floor(now() / 300) * 300; };
+  return { now, advance, settle };
+}
+const hhmm = (seconds) => new Date(seconds * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+test('one reading per finished 5-minute candle: looking again before the next close changes nothing, and the next close brings the next reading', async () => {
+  const app = await bootApp({ world: { candleRows: directionalMarket() } });
+  try {
+    const clock = pageClock(app), pageNow = clock.now, advance = clock.advance;
+    const doc = app.doc;
+    const cardEl = () => [...doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === 'EUR/USD');
+    const snapshot = () => {
+      const el = cardEl();
+      return {
+        direction: el.querySelector('.badge').textContent, scoreAsRead: el.querySelector('[data-live-conf]').dataset.liveBase,
+        entry: el.querySelector('[data-l="e"]').textContent, stop: el.querySelector('[data-l="s"]').textContent, target: el.querySelector('[data-l="t"]').textContent,
+        why: el.querySelector('.sig-why').textContent, measured: el.querySelector('.sig-measured').textContent
+      };
+    };
+    const candleRequests = () => app.sockets.reduce((total, entry) => total + entry.sent.filter((message) => message.style === 'candles' && message.ticks_history === 'frxEURUSD').length, 0);
+    const look = async () => {
+      app.click(doc.getElementById('refreshSigs'));
+      assert.equal(doc.getElementById('sigStamp').textContent, 'Scanning\u2026');
+      await app.waitFor(() => /^Updated /.test(doc.getElementById('sigStamp').textContent) && cardEl(), 'the scan to finish');
+      return snapshot();
+    };
+
+    await app.enter();
+    await app.open('signals');
+    const close = clock.settle();
+
+    const first = await look();
+    assert.ok(first.direction === 'BUY' || first.direction === 'SELL', 'the page reads the chosen market as a direction, as the rule did when asked');
+    assert.match(first.why, new RegExp(' \u00b7 source: Deriv public candles \u00b7 analysed in this browser \u00b7 read at the ' + hhmm(close) + ' candle close$'));
+    assert.equal(first.measured, EUR_MEASURED_CLOSE);
+
+    /* A minute later, in the same 5-minute candle: the feed is asked again, one more 1-minute candle has finished,
+       the forming candles have moved on, and the reading is the same in every figure. */
+    const asked = candleRequests();
+    advance(61);
+    const second = await look();
+    assert.ok(candleRequests() > asked, 'the candles were fetched again, not reused');
+    assert.deepEqual(second, first);
+
+    /* Twenty seconds after the next 5-minute close: the next reading, made at that close, at another price. */
+    advance(close + 320 - pageNow());
+    const third = await look();
+    assert.match(third.why, new RegExp(' \u00b7 read at the ' + hhmm(close + 300) + ' candle close$'));
+    assert.equal(third.direction, first.direction);
+    assert.notEqual(third.entry, first.entry);
+
+    /* The Sniper detail of the same market names the close too, and gives the same replay figure. */
+    await app.open('sniper');
+    app.click(doc.getElementById('sniperPickerToggle'));
+    await app.waitFor(() => doc.querySelector('[data-sniper-view="EUR/USD"]') && doc.querySelector('[data-sniper-watch="EUR/USD"]').closest('tr').querySelector('[data-live-conf]'), 'the scanned EUR/USD row');
+    app.click(doc.querySelector('[data-sniper-view="EUR/USD"]'));
+    const detail = doc.getElementById('sniperSelectedDetail');
+    assert.match(detail.textContent, / \u00b7 MTF 1m\/5m\/1h \u00b7 read at the \d\d:\d\d candle close\. Analysis only \u2014 no order sent\./);
+    assert.equal(detail.querySelector('[data-measured]').textContent, EUR_MEASURED_CLOSE);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Gold monitor on the cloud: one reading per finished 5-minute candle, and a new look seconds after each close', async () => {
+  /* As on the live site: the AURUM cloud cannot reach Deriv, so the monitor reads Deriv's gold candles in this browser. */
+  const app = await bootApp({ world: { cloudDeriv: 'down', ticks: true, candleRows: directionalMarket() } });
+  try {
+    const clock = pageClock(app);
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    const levelsShown = () => ({ signal: text('goldSignal'), entry: text('goldEntry'), stop: text('goldSL'), target: text('goldTP1'), measured: text('goldMeasured') });
+    const closeShown = () => (/^Reading of the (\d\d:\d\d) candle close /.exec(text('goldSignalUpdated')) || [])[1];
+    /* The monitor analyses only with a gold price under two minutes old: after the clock has been moved, the feed ticks again. */
+    const tickNow = () => {
+      const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+      stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: 'frxXAUUSD', quote: GOLD_TICK, epoch: Math.floor(clock.now()) } }) });
+    };
+    /* A look asked for by hand: done when the "checked" time has moved on. */
+    const look = async () => {
+      const before = text('goldSignalUpdated');
+      tickNow();
+      app.click(doc.getElementById('goldAnalyzeBtn'));
+      await app.waitFor(() => text('goldSignalUpdated') !== before && text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the gold analysis');
+      return levelsShown();
+    };
+
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    const close = clock.settle();
+    await app.open('gold');
+    await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the first gold analysis');
+    assert.match(text('goldFeedStatus'), /^LIVE ANALYSIS \u00b7 Deriv public candles \u00b7 labelled fallback/);
+
+    const first = levelsShown();
+    assert.ok(first.signal === 'BUY' || first.signal === 'SELL', 'the page reads the chosen market as a direction, as the rule did when asked');
+    assert.equal(closeShown(), hhmm(close));
+    assert.equal(first.measured, GOLD_MEASURED_CLOSE);
+
+    /* A minute later, inside the same 5-minute candle: the same reading in every figure. */
+    clock.advance(61);
+    assert.deepEqual(await look(), first);
+    assert.equal(closeShown(), hhmm(close));
+
+    /* After the next close: the next reading, at another price. */
+    clock.advance(close + 320 - clock.now());
+    const next = await look();
+    assert.equal(closeShown(), hhmm(close + 300));
+    assert.notEqual(next.entry, first.entry);
+
+    /* The monitor on its own. Thirty seconds before the following close it makes its regular check... */
+    clock.advance(close + 570 - clock.now());
+    const beforeCheck = text('goldSignalUpdated');
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => text('goldSignalUpdated') !== beforeCheck, 'the regular check');
+    assert.equal(closeShown(), hhmm(close + 300), 'the candle has not closed yet');
+    /* ...and ten seconds after that close it has looked again, although its regular minute is not over. */
+    clock.advance(40);
+    const afterClose = text('goldSignalUpdated');
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => text('goldSignalUpdated') !== afterClose, 'the look right after the close');
+    assert.equal(closeShown(), hhmm(close + 600));
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Sniper entry alert: the message ends with what the replay measured for that market', async () => {
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, world: { ticks: true } });
+  try {
+    await app.enter();
+    await app.open('sniper');
+    const doc = app.doc;
+    app.click(doc.getElementById('sniperPickerToggle'));
+    await app.waitFor(() => doc.querySelector('[data-sniper-watch="EUR/USD"]'), 'the market list');
+    for (const symbol of ['EUR/USD', 'US30']) {
+      const box = doc.querySelector('[data-sniper-watch="' + symbol + '"]');
+      box.checked = true;
+      box.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+    }
+    app.click(doc.getElementById('sniperMonitorToggle'));
+    const alertBody = (title) => { const el = [...doc.querySelectorAll('#toasts .toast')].find((toast) => toast.querySelector('b').textContent === title); return el ? el.querySelector('span').textContent : null; };
+    await app.waitFor(() => alertBody('Sniper entry setup \u00b7 EUR/USD'), 'the entry alert for EUR/USD');
+    assert.match(alertBody('Sniper entry setup \u00b7 EUR/USD'), /\nSignal alert only \u2014 no order was placed\.\nMeasured in a replay on EUR\/USD: 39\.9% of such signals reached TP1 before the SL \(break-even 40% before the spread\)\. Not a forecast\.$/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* ---------------------------------------------------------------- a market that has just resumed after a pause */
+
+test('Gold monitor on the cloud: right after a pause no signal is shown; the first one comes when a 5-minute candle of the new session has closed', async () => {
+  const market = directionalMarket();
+  /* Set once the page clock is settled: no gold price between `from` and `to`. A feed has a candle only for a period with a price in it. */
+  let pause = null;
+  const candleRows = (code, granularity, count, now) => market(code, granularity, count, now).filter((row) => !pause || code !== 'frxXAUUSD' || row.epoch < pause.from || row.epoch + granularity > pause.to);
+  const app = await bootApp({ world: { cloudDeriv: 'down', ticks: true, candleRows } });
+  try {
+    const clock = pageClock(app);
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    const tickNow = () => {
+      const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+      stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: 'frxXAUUSD', quote: GOLD_TICK, epoch: Math.floor(clock.now()) } }) });
+    };
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    const close = clock.settle();
+    /* Gold gave its first price two seconds ago, after half an hour without one (its daily break lasts an hour). */
+    pause = { from: clock.now() - 1800, to: clock.now() - 2 };
+    tickNow();
+    await app.open('gold');
+    await app.waitFor(() => text('goldSignalBadge') === 'UNAVAILABLE', 'the monitor to withhold the signal');
+    assert.equal(text('goldRationale'), 'Deriv Gold has just resumed after a pause: no 5-minute candle has closed since. The first reading comes with the next 5-minute close. No old signal is being presented as current.');
+    assert.equal(text('goldSignal'), '\u2014');
+    assert.deepEqual(['goldEntry', 'goldSL', 'goldTP1'].map(text), ['\u2014', '\u2014', '\u2014']);
+    assert.equal(text('goldMeasured'), '');
+    assert.equal([...doc.querySelectorAll('#toasts .toast b')].filter((el) => /^Gold\/USD signal/.test(el.textContent)).length, 0, 'no alert from before the pause');
+
+    /* Twenty seconds after the next 5-minute close: the candle that began with the new session has finished. */
+    clock.advance(close + 320 - clock.now());
+    tickNow();
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the first reading of the new session');
+    assert.match(text('goldSignalUpdated'), new RegExp('^Reading of the ' + hhmm(close + 300) + ' candle close '));
+    assert.ok(text('goldSignal') === 'BUY' || text('goldSignal') === 'SELL');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Gold monitor: an answer of the signal API that was made from before a pause is not shown; the browser reads the candles itself', async () => {
+  const made = nowSec() - 2400;
+  const fromBeforeThePause = {
+    symbol: 'XAU/USD', signal: 'SELL', bias: 'bearish', confidence: 71, mtf_signal: 'SELL_CONFIRMED', votes: 'written by the test', data_ok: true,
+    entry: 9999.99, price: 9999.99, stop_loss: 10014.99, tp1: 9977.49, tp2: 9959.99, rationale: 'written by the test', risks: [], model: 'technical', source: 'Deriv public candles',
+    candle_close: made, candle_current: false
+  };
+  const pcApi = (path, body) => (path === '/api/signals/analyze' ? { status: 200, body: { ...fromBeforeThePause, latest_candle_time: nowSec() } } : liveScanApi(path, body));
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi, world: { ticks: true } });
+  try {
+    await app.enter();
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await app.open('gold');
+    await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'a gold analysis');
+    assert.notEqual(text('goldEntry'), '9,999.99', 'the entry from before the pause is not on the page');
+    /* What is shown was read by this browser from Deriv candles, at a close of the last few minutes. */
+    const shownClose = (/^Reading of the (\d\d:\d\d) candle close /.exec(text('goldSignalUpdated')) || [])[1];
+    const lastClose = Math.floor(nowSec() / 300) * 300;
+    assert.ok([hhmm(lastClose), hhmm(lastClose - 300)].includes(shownClose), 'read at ' + shownClose);
+    assert.notEqual(shownClose, hhmm(made));
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Exness connected: a terminal whose market has just resumed gives no Exness reading; the labelled fallback says why', async () => {
+  const eur = { ...bridgeMarket('EUR/USD', { name: 'EURUSDm', level: 1.08, digits: 5 }), pauseSec: 2400 };
+  const gold = { ...bridgeMarket('XAU/USD', { name: 'XAUUSDm', level: 4000, digits: 2 }), pauseSec: 2400 };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, bridgeApi: exnessBridge({ 'EUR/USD': eur, XAUUSD: gold }), world: { ticks: true } });
+  try {
+    await app.enter();
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the Deriv gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await connectExness(app);
+
+    /* The scanner: the terminal's newest candle and quote are current, but its finished candles are 40 minutes old. */
+    await app.open('signals');
+    app.click(doc.getElementById('refreshSigs'));
+    const why = () => { const el = [...doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === 'EUR/USD'); return el ? el.querySelector('.sig-why').textContent : ''; };
+    await app.waitFor(() => /fallback \(Exness unavailable/.test(why()), 'the fallback reading');
+    assert.match(why(), /source: Deriv public candles \u00b7 fallback \(Exness unavailable: Exness EUR\/USD has just resumed after a pause: no 5-minute candle has closed since\./);
+    assert.doesNotMatch(why(), /Exness MT5 local candles/);
+
+    /* The Gold monitor: the same refusal, and the Deriv fallback carries the reason. */
+    await app.open('gold');
+    await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the gold analysis');
+    assert.match(text('goldFeedStatus'), /^LIVE ANALYSIS \u00b7 Deriv public candles \u00b7 labelled fallback \(reason: Exness MT5 unavailable: Exness Gold has just resumed after a pause/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* ---------------------------------------------------------------- news: which markets, their own readings, standing aside */
+
+/* Made-up feeds and calendar rows written by these tests: fixtures, not news. Nothing below asserts what a
+   headline or a release means for a market; a reading shown beside one is a reading written by the test. */
+const [FXSTREET_FEED, , CNBC_FEED] = HEADLINE_SOURCES.map((source) => source.url);
+const feedXml = (items) => '<rss><channel>' + items.map((item) => '<item><title>' + item.title + '</title><link>' + item.link + '</link>'
+  + (item.at ? '<pubDate>' + new Date(item.at).toUTCString() + '</pubDate>' : '') + '</item>').join('') + '</channel></rss>';
+const newsFeeds = () => ({
+  [CNBC_FEED]: feedXml([{ title: 'Fixture: Nvidia chief Jensen Huang opens a test event', link: 'https://cnbc.example/nvidia', at: Date.now() - 10 * 60000 }]),
+  [FXSTREET_FEED]: feedXml([
+    { title: 'Fixture: Gold steadies in a test headline', link: 'https://fx.example/gold', at: Date.now() - 5 * 60000 },
+    { title: 'Fixture: council opens a new park', link: 'https://fx.example/park' }
+  ])
+});
+const GOLD_SELL_VOTES = '1m -4 SELL · 5m -3 SELL · 1h +2 WAIT';
+/* Readings written by the test for the markets the fixtures name; every other market keeps the reading it got. */
+const newsReadings = (results) => results.map((reading) => {
+  if (reading.symbol === 'XAU/USD') return { ...reading, signal: 'SELL', bias: 'bearish', confidence: 71, votes: GOLD_SELL_VOTES, entry: 4000, stop_loss: 4003, tp1: 3995.5, tp2: 3992 };
+  if (reading.symbol === 'EUR/USD') return { ...reading, signal: 'WAIT', bias: 'bearish', confidence: 30, votes: '1m -2 WAIT · 5m -2 WAIT · 1h +1 WAIT', entry: 1.1, stop_loss: 1.0992, tp1: 1.1008, tp2: 1.1016, wait_reason: 'MTF_LEAN_NOT_CONFIRMED' };
+  if (reading.symbol === 'NAS100') return { ...reading, signal: 'BUY', bias: 'bullish', confidence: 82 };
+  return reading;
+});
+const flat = (el) => el.textContent.replace(/\s+/g, ' ').trim();
+const feedRow = (app, title) => [...app.doc.querySelectorAll('#newsFeed tbody tr')].find((tr) => tr.textContent.includes(title));
+const calendarRow = (app, name) => [...app.doc.querySelectorAll('#newsCal tbody tr')].find((tr) => tr.textContent.includes(name));
+/* The line under a release: its markets and its stand-aside period. null when the release has none. */
+const calendarDetail = (app, name) => { const next = calendarRow(app, name).nextElementSibling; return next && next.classList.contains('news-sub') ? next : null; };
+const eat = (ms) => new Date(ms + 3 * 3600000).toISOString().slice(11, 16);
+const calendarRows = (now) => [
+  { title: 'Fixture rate decision', country: 'USD', impact: 'High', date: new Date(now + 20 * 60000).toISOString(), forecast: '1.0%', previous: '0.9%' },
+  { title: 'Fixture output figure', country: 'GBP', impact: 'High', date: new Date(now + 120 * 60000).toISOString() },
+  { title: 'Fixture survey', country: 'EUR', impact: 'Medium', date: new Date(now - 30 * 60000).toISOString() },
+  { title: 'Fixture trade balance', country: 'CNY', impact: 'High', date: new Date(now + 40 * 60000).toISOString() }
+];
+
+test('News on the Cloudflare site: a headline names its markets and shows their own price readings, with no direction taken from the headline', async () => {
+  const app = await bootApp({ world: { browserDeriv: 'down', rewriteScan: newsReadings, news: { feeds: newsFeeds(), calendar: [] } } });
+  try {
+    await app.enter();
+    await app.open('news');
+    await app.waitFor(() => feedRow(app, 'Nvidia') && /Sell \d+%/.test(flat(feedRow(app, 'Gold steadies'))), 'headlines with the readings of their markets');
+
+    const nvidia = flat(feedRow(app, 'Nvidia').querySelector('.news-concern'));
+    assert.match(nvidia, /^Concerns Nvidia → NAS100 Buy 82% · daily /, nvidia);
+    assert.match(nvidia, /SPX500 .*US100 /, 'the three index markets Nvidia is part of');
+    assert.ok(nvidia.endsWith('Nvidia is one of the largest companies in the Nasdaq-100 and the S&P 500, so news about it concerns those indices.'), nvidia);
+    assert.equal(flat(feedRow(app, 'Gold steadies').querySelector('.news-concern')), 'Concerns Gold → XAU/USD Sell 71%');
+    assert.equal(feedRow(app, 'Gold steadies').querySelector('[data-news-markets]').dataset.newsNamed, 'XAU/USD');
+    assert.equal(flat(feedRow(app, 'new park').querySelector('.news-concern')), 'Names no market of this application.');
+    assert.match(flat(feedRow(app, 'Gold steadies')), /FXStreet · (\w{3} )?\d\d:\d\d EAT/, 'source and Nairobi time under the headline');
+
+    /* Nothing is derived from the wording of a headline: no keyword chip, no order button, no validity countdown. */
+    const feed = app.doc.getElementById('newsFeed');
+    assert.equal(feed.querySelectorAll('.news-exec, [data-nv]').length, 0);
+    assert.doesNotMatch(flat(feed), /heuristic|sniper|Execute/i);
+    for (const row of feed.querySelectorAll('tbody tr')) assert.equal(row.cells.length, 2, 'a headline and its buttons: no chip column on the cloud');
+    assert.match(flat(app.doc.getElementById('newsSources')), /^Sources: FXStreet — 2 headlines · Investing\.com — not available \(unreachable\) · CNBC — 1 headline · read at (\w{3} )?\d\d:\d\d EAT$/);
+    assert.match(flat(feed), /No direction is derived from a headline.*It is not a forecast of what the news will do to the price: a headline does not tell the direction\.$/);
+    assert.equal(feedRow(app, 'Nvidia').querySelector('a[target="_blank"]').getAttribute('href'), 'https://cnbc.example/nvidia');
+
+    /* The name of a market opens its chart. */
+    app.click(feedRow(app, 'Gold steadies').querySelector('[data-news-open="XAU/USD"]'));
+    await app.waitFor(() => app.doc.getElementById('view-trade').classList.contains('active'), 'the chart view');
+    assert.equal(app.doc.getElementById('chartSymbol').value, 'XAU/USD');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('News calendar: Nairobi time, the markets of each release, and a stand-aside period that follows the clock', async () => {
+  const start = Date.now();
+  const app = await bootApp({ world: { browserDeriv: 'down', rewriteScan: newsReadings, news: { feeds: newsFeeds(), calendar: calendarRows(start) } } });
+  try {
+    await app.enter();
+    await app.open('news');
+    await app.waitFor(() => calendarRow(app, 'Fixture rate decision') && /Sell \d+%/.test(flat(calendarDetail(app, 'Fixture rate decision'))), 'the calendar with the readings of its markets');
+    const aside = (name) => { const detail = calendarDetail(app, name); return detail ? detail.querySelector('.news-aside') : null; };
+    const release = start + 20 * 60000;
+
+    const usd = calendarRow(app, 'Fixture rate decision');
+    assert.match(flat(usd.cells[0]), new RegExp('^(\\w{3} )?' + eat(release) + ' EAT$'), 'the time of the release on the Nairobi clock');
+    assert.equal(usd.cells[0].getAttribute('title'), new Date(release).toISOString().slice(0, 16).replace('T', ' ') + ' UTC');
+    assert.match(flat(calendarDetail(app, 'Fixture rate decision')), /^USD markets .*XAU\/USD Sell 71%/, 'the dollar markets, a Buy or Sell reading first');
+    const onChart = app.doc.getElementById('chartSymbol').value;
+    assert.equal(onChart, 'EUR/USD');
+    assert.deepEqual([...calendarDetail(app, 'Fixture rate decision').querySelectorAll('[data-news-open]')].slice(0, 2).map((link) => link.dataset.newsOpen), [onChart, 'XAU/USD'], 'the market on the chart comes first, then the one with a Buy or Sell reading');
+    assert.match(flat(aside('Fixture rate decision')), new RegExp('^STAND ASIDE NOW · release in (19|20) min · no new trade until ' + eat(release + 30 * 60000) + ' EAT$'));
+    assert.ok(aside('Fixture rate decision').classList.contains('on'));
+    assert.match(flat(usd), /f: 1\.0% · p: 0\.9%/, 'forecast and previous as the source gives them');
+
+    assert.equal(flat(aside('Fixture output figure')), 'No new trade ' + eat(start + 90 * 60000) + '–' + eat(start + 150 * 60000) + ' EAT (30 min before to 30 min after)');
+    assert.ok(!aside('Fixture output figure').classList.contains('on'));
+    assert.match(flat(calendarDetail(app, 'Fixture survey')), /^EUR markets /);
+    assert.equal(aside('Fixture survey'), null, 'a medium-impact release has no stand-aside period');
+    assert.equal(flat(calendarDetail(app, 'Fixture trade balance')), 'no market of this application is priced in CNY');
+    assert.equal(aside('Fixture trade balance'), null);
+
+    const box = () => flat(app.doc.getElementById('newsAside'));
+    assert.match(box(), new RegExp('^Stand aside now · USD — Fixture rate decision at (\\w{3} )?' + eat(release) + ' EAT\\. No new trade in USD markets until ' + eat(release + 30 * 60000) + ' EAT \\(EUR/USD, '));
+    assert.match(box(), new RegExp('Next · GBP — Fixture output figure at (\\w{3} )?' + eat(start + 120 * 60000) + ' EAT\\. No new trade in GBP markets from ' + eat(start + 90 * 60000) + ' to ' + eat(start + 150 * 60000) + ' EAT'));
+    const note = flat(app.doc.getElementById('newsCal'));
+    assert.match(note, /Source: ForexFactory public weekly calendar · read at \d\d:\d\d EAT · times are Nairobi time \(EAT, UTC\+3\)/);
+    assert.match(note, /Measured on gold around 379 high-impact US releases/);
+    assert.match(note, /not the result: which way a release moves a market is not shown, because it is not known\.$/);
+    assert.doesNotMatch(note, /sniper|all times UTC|trade them inside/i);
+
+    /* One minute after the release: still inside the period. No price tick is needed for the clock to be followed. */
+    app.advanceClock(21 * 60000);
+    app.runIntervals(1000);
+    await app.waitFor(() => /released/.test(flat(aside('Fixture rate decision'))), 'the period after the release');
+    assert.match(flat(aside('Fixture rate decision')), new RegExp('^STAND ASIDE · released · no new trade for another (28|29) min, until ' + eat(release + 30 * 60000) + ' EAT$'));
+    assert.match(box(), /^Stand aside now · USD/);
+
+    /* Half an hour after the release the period is over, and the box no longer names the dollar. */
+    app.advanceClock(30 * 60000);
+    app.runIntervals(1000);
+    await app.waitFor(() => /over since/.test(flat(aside('Fixture rate decision'))), 'the end of the period');
+    assert.equal(flat(aside('Fixture rate decision')), 'Stand-aside period over since ' + eat(release + 30 * 60000) + ' EAT');
+    assert.ok(!aside('Fixture rate decision').classList.contains('on'));
+    assert.doesNotMatch(box(), /· USD —/, 'no dollar period is running or coming');
+    assert.match(box(), /^Next · GBP — Fixture output figure/);
+
+    /* The calendar source stops answering. The cloud passes on the schedule it read last, the card says when that was
+       read and that the source has been silent since, and the stand-aside period of the next release is still shown. */
+    const calendarReads = () => app.requests.filter((r) => r.path === '/api/news/calendar');
+    const settled = async () => { await app.waitFor(() => calendarReads().every((r) => r.status !== null), 'no calendar read under way'); await new Promise((r) => setTimeout(r, 30)); };
+    await settled();
+    /* First a read that succeeds, 82 minutes after the start: the open view asks by itself, and the cloud's half hour is over. */
+    const reads = calendarReads().length;
+    app.advanceClock(31 * 60000);
+    const readFrom = Date.now() + 82 * 60000;
+    await app.waitFor(() => { app.runIntervals(1000); return calendarReads().length > reads; }, 'the calendar read again while the view stayed open');
+    await settled();
+    const readUntil = Date.now() + 82 * 60000;
+    assert.doesNotMatch(flat(app.doc.getElementById('newsCal')), /has not answered since/);
+    /* Then silence for 50 minutes. */
+    app.state.news = { feeds: newsFeeds() };
+    app.advanceClock(50 * 60000);
+    await app.waitFor(() => { app.runIntervals(1000); return /has not answered since/.test(flat(app.doc.getElementById('newsCal'))); }, 'the note about the silent source');
+    assert.match(flat(app.doc.getElementById('newsCal')), new RegExp('Source: ForexFactory public weekly calendar · read at (\\w{3} )?(' + eat(readFrom) + '|' + eat(readUntil) + ') EAT \\(the source has not answered since: this is the schedule as it stood then\\) · times are Nairobi time'));
+    assert.match(flat(aside('Fixture output figure')), new RegExp('^STAND ASIDE · released · no new trade for another (16|17|18) min, until ' + eat(start + 150 * 60000) + ' EAT$'), 'the period of the last release, from the copy');
+    assert.doesNotMatch(flat(app.doc.getElementById('newsCal')), /Calendar unavailable/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('the line above the chart: direction with its score, what each timeframe shows, levels for a Buy or Sell only, the measured result and a coming release', async () => {
+  const start = Date.now();
+  const app = await bootApp({ world: { browserDeriv: 'down', rewriteScan: newsReadings, news: { feeds: newsFeeds(), calendar: calendarRows(start) } } });
+  try {
+    await app.enter();
+    await app.open('trade');
+    const select = app.doc.getElementById('chartSymbol');
+    const choose = (symbol) => { select.value = symbol; select.dispatchEvent(new app.window.Event('change', { bubbles: true })); };
+    const strip = app.doc.getElementById('chartLevels');
+
+    choose('XAU/USD');
+    await app.waitFor(() => /Sell \d+%/.test(flat(strip)) && /Stand aside/.test(flat(strip)), 'the gold reading and the coming release on the strip');
+    const gold = flat(strip);
+    assert.match(gold, /^LIVE SIGNAL LEVELS Sell 71% now: down on 1m and 5m, up on 1h E 4000\.00 · SL 4003\.00 · TP1 3995\.50 · TP2 3992\.00 measured 39\.6% % = how strongly the timeframes agree, not the chance of profit /, gold);
+    assert.match(gold, new RegExp('Stand aside · USD Fixture rate decision at (\\w{3} )?' + eat(start + 20 * 60000) + ' EAT · no new trade until ' + eat(start + 50 * 60000) + ' EAT$'));
+    assert.equal(strip.querySelector('[data-chart-measured]').getAttribute('title'), GOLD_MEASURED_CLOSE);
+    assert.match(strip.querySelector('[data-chart-trend]').getAttribute('title'), /it does not say that the direction will continue/);
+    assert.equal(strip.querySelector('[data-chart-event]').dataset.chartEvent, 'aside');
+
+    /* A Wait that leans down: the direction it leans, no entry, stop or target. */
+    choose('EUR/USD');
+    await app.waitFor(() => /Wait · leans down/.test(flat(strip)), 'the euro reading on the strip');
+    const euro = flat(strip);
+    assert.match(euro, /^LIVE SIGNAL LEVELS Wait · leans down now: down on 1m and 5m, no clear direction on 1h no entry, stop or target: they come only with a Buy or Sell reading % = how strongly/, euro);
+    assert.doesNotMatch(euro, /\bSL\b|TP1|unconfirmed|1\.0992|measured/, 'the placeholder levels of a Wait are not shown');
+    assert.match(euro, /Stand aside · USD Fixture rate decision/, 'EUR/USD is a dollar market as well');
+
+    assert.equal(app.requests.filter((r) => r.path === '/api/news/calendar').length, 1, 'the calendar is read once for the line above the chart, not at every change of market');
+
+    /* Once the period is over the note is gone, without a price tick. */
+    app.advanceClock(51 * 60000);
+    app.runIntervals(1000);
+    await app.waitFor(() => !/Stand aside/.test(flat(strip)), 'the strip after the period');
+    assert.doesNotMatch(flat(strip), /Fixture rate decision/);
+    /* A chart that stays open reads the calendar again by itself: a release added since then appears without a change of market. */
+    await app.waitFor(() => app.requests.filter((r) => r.path === '/api/news/calendar' && r.status === 200).length === 2, 'the calendar read again while the chart stays open');
+    await new Promise((r) => setTimeout(r, 30)); /* the page takes the answer in */
+    app.state.news = { feeds: newsFeeds(), calendar: [{ title: 'Fixture added release', country: 'USD', impact: 'High', date: new Date(start + 150 * 60000).toISOString() }] };
+    app.advanceClock(31 * 60000);
+    /* The page's one-second round, again and again as in a browser: it reads the calendar when that is due and redraws the line. */
+    await app.waitFor(() => { app.runIntervals(1000); return /Fixture added release/.test(flat(strip)); }, 'the release that was added to the calendar');
+    assert.match(flat(strip), new RegExp('High-impact release (\\w{3} )?' + eat(start + 150 * 60000) + ' EAT · USD Fixture added release · no new trade from ' + eat(start + 120 * 60000) + ' EAT$'));
+
+    /* In the Markets view a Wait shows no levels either. */
+    await app.open('markets');
+    await app.waitFor(() => app.doc.querySelector('.market-levels'), 'levels of a Buy or Sell reading');
+    for (const levels of app.doc.querySelectorAll('.market-levels')) assert.doesNotMatch(flat(levels), /unconfirmed|≈/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('the line above the chart says when the calendar could not be read, instead of showing no release', async () => {
+  const app = await bootApp({ world: { browserDeriv: 'down', rewriteScan: newsReadings } });
+  try {
+    await app.enter();
+    await app.open('trade');
+    const select = app.doc.getElementById('chartSymbol');
+    select.value = 'XAU/USD';
+    select.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+    const strip = app.doc.getElementById('chartLevels');
+    await app.waitFor(() => /calendar not available/.test(flat(strip)), 'the note about the calendar');
+    assert.ok(flat(strip).endsWith('calendar not available: scheduled releases unknown'), flat(strip));
+    assert.equal(strip.querySelector('[data-chart-event]').dataset.chartEvent, 'unknown');
+    await app.open('news');
+    await app.waitFor(() => /Calendar unavailable/.test(flat(app.doc.getElementById('newsCal'))) && /Headline feed unavailable/.test(flat(app.doc.getElementById('newsFeed'))), 'both cards say what failed');
+    assert.match(flat(app.doc.getElementById('newsCal')), /No events are assumed\..*Scheduled releases are unknown until the calendar loads: nothing here says there are none\.$/);
+    assert.match(flat(app.doc.getElementById('newsFeed')), /No headline source could be read from the cloud right now \(FXStreet: unreachable; Investing\.com: unreachable; CNBC: unreachable\)\. No substitute headlines are shown\./);
+
+    /* The source answers again. Nothing is pressed: the open view tries again, here two minutes later, and shows the calendar. */
+    const back = Date.now() + 121000;
+    app.state.news = { calendar: [{ title: 'Fixture rate decision', country: 'USD', impact: 'High', date: new Date(back + 20 * 60000).toISOString() }] };
+    app.advanceClock(121000);
+    app.runIntervals(1000);
+    await app.waitFor(() => calendarRow(app, 'Fixture rate decision'), 'the calendar after the source came back');
+    assert.doesNotMatch(flat(app.doc.getElementById('newsCal')), /Calendar unavailable/);
+    await app.open('trade');
+    app.runIntervals(1000);
+    await app.waitFor(() => /Stand aside · USD Fixture rate decision/.test(flat(strip)), 'the release on the strip after the source came back');
+    assert.doesNotMatch(flat(strip), /calendar not available/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('the PC app keeps its keyword chip and its order button where its server sends them, beside the markets a headline names', async () => {
+  const pcApi = (path, body) => {
+    if (path === '/api/news/feed') return { status: 200, body: { note: 'Direction chips are a keyword heuristic — not AI, not advice.', items: [
+      { title: 'Fixture: euro headline', link: 'https://example.test/euro', source: 'Test wire', t: Date.now(), bias: { ccy: 'EUR', tone: 'up', pair: 'EUR/USD', dir: 'BUY', engine: 'heuristic' } },
+      { title: 'Fixture: plain headline', link: 'javascript:alert(1)', source: 'Test wire', bias: null }
+    ] } };
+    if (path === '/api/news/calendar') return { status: 200, body: { day: pcDay, source: 'test calendar', events: [{ time_utc: new Date(pcRelease).toISOString().slice(11, 16), country: 'USD', event: 'Fixture PC release', impact: 'High', forecast: '', previous: '' }] } };
+    return liveScanApi(path, body);
+  };
+  /* The PC server sends the entries of the UTC day with a clock time and no moment: a release 40 minutes ahead, or 20 minutes ago when that would be tomorrow. */
+  const started = Date.now();
+  const pcDay = new Date(started).toISOString().slice(0, 10);
+  const pcRelease = Math.floor((new Date(started + 40 * 60000).toISOString().slice(0, 10) === pcDay ? started + 40 * 60000 : started - 20 * 60000) / 60000) * 60000;
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi });
+  try {
+    await app.enter();
+    await app.open('news');
+    await app.waitFor(() => feedRow(app, 'euro headline'), 'the headlines of the PC server');
+    const euro = feedRow(app, 'euro headline');
+    assert.match(flat(euro.cells[0]), /^BUY EUR\/USD · heuristic$/);
+    assert.equal(euro.querySelectorAll('.news-exec').length, 1);
+    assert.match(flat(euro.querySelector('.news-concern')), /^Concerns Euro → EUR\/USD /);
+    const plain = feedRow(app, 'plain headline');
+    assert.equal(plain.querySelectorAll('.news-exec').length, 0);
+    for (const link of plain.querySelectorAll('a[target="_blank"]')) assert.equal(link.getAttribute('href'), '#', 'an address that is not a web address is not made a link');
+    assert.match(flat(app.doc.getElementById('newsFeed')), /then goes STALE and Execute stands down/);
+    assert.equal(app.doc.getElementById('newsSources'), null, 'the PC server names its source on each headline only');
+    /* The calendar of the PC server, in its own shape, gives the same stand-aside period: in the News view and on the Gold page. */
+    const period = eat(pcRelease - 30 * 60000) + '–' + eat(pcRelease + 30 * 60000) + ' EAT';
+    await app.waitFor(() => calendarRow(app, 'Fixture PC release'), 'the release of the PC calendar');
+    const pcAside = flat(calendarDetail(app, 'Fixture PC release').querySelector('.news-aside'));
+    if (pcRelease > started) assert.equal(pcAside, 'No new trade ' + period + ' (30 min before to 30 min after)');
+    else assert.match(pcAside, new RegExp('^STAND ASIDE · released · no new trade for another \\d+ min, until ' + eat(pcRelease + 30 * 60000) + ' EAT$'));
+    assert.doesNotMatch(flat(app.doc.getElementById('newsCal')), /read at/, 'the PC server does not say when it read its source, and no time is made up');
+    await app.open('gold');
+    await app.waitFor(() => app.doc.querySelector('#goldEvents [data-gold-aside-span]'), 'the release on the Gold page of the PC app');
+    assert.equal(flat(app.doc.querySelector('#goldEvents [data-gold-aside-span]')), 'no new trade ' + period);
+    assert.equal(app.doc.querySelectorAll('#goldEvents tbody tr').length, 1);
+    assert.equal(app.requests.filter((r) => r.path === '/api/news/calendar').length, 1, 'one calendar for the page on the PC as well');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Gold page on the cloud: the dollar releases with their stand-aside period, the note under the signal, and an alert before a release that says to stand aside', async () => {
+  const start = Date.now();
+  /* On a whole minute, as a calendar lists its releases: 50 to 51 minutes ahead. */
+  const release = Math.floor(start / 60000) * 60000 + 51 * 60000;
+  const app = await bootApp({ world: { cloudDeriv: 'down', ticks: true, candleRows: directionalMarket(), news: { feeds: newsFeeds(), calendar: [
+    { title: 'Fixture output figure', country: 'GBP', impact: 'High', date: new Date(start + 10 * 60000).toISOString() },
+    { title: 'Fixture rate decision', country: 'USD', impact: 'High', date: new Date(release).toISOString() },
+    { title: 'Fixture stock report', country: 'USD', impact: 'Medium', date: new Date(release + 150 * 60000).toISOString() },
+    /* Within the next 24 hours, and (unless the test starts in the first minutes of a UTC day) on the next UTC day. */
+    { title: 'Fixture later figure', country: 'USD', impact: 'High', date: new Date(release + 23 * 3600000).toISOString() },
+    { title: 'Fixture far figure', country: 'USD', impact: 'High', date: new Date(release + 26 * 3600000).toISOString() }
+  ] } } });
+  try {
+    const clock = pageClock(app);
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    const eventRow = (name) => [...doc.querySelectorAll('#goldEvents tbody tr')].find((tr) => tr.textContent.includes(name));
+    const aside = () => flat(doc.getElementById('goldAside'));
+    const alerts = () => [...doc.querySelectorAll('#toasts .toast')].filter((toast) => toast.querySelector('b').textContent === 'Gold news alert').map((toast) => toast.querySelector('span').textContent);
+    const tickNow = () => {
+      const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+      stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: 'frxXAUUSD', quote: GOLD_TICK, epoch: Math.floor(clock.now()) } }) });
+    };
+    const utc = (ms) => new Date(ms).toISOString().slice(11, 16);
+    const period = eat(release - 30 * 60000) + '–' + eat(release + 30 * 60000) + ' EAT';
+    /* A moment as the page writes it: the Nairobi clock, with the weekday when that is not today's Nairobi day. */
+    const nairobiDay = (ms) => new Date(ms + 3 * 3600000).toISOString().slice(0, 10);
+    const stamp = (ms) => (nairobiDay(ms) === nairobiDay(start) ? '' : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(ms + 3 * 3600000).getUTCDay()] + ' ') + eat(ms) + ' EAT';
+
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await app.open('gold');
+    await app.waitFor(() => eventRow('Fixture rate decision') && text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the dollar releases and the first gold analysis');
+
+    /* The table: dollar releases only, both clocks, and the stand-aside period of a high-impact one. */
+    const row = eventRow('Fixture rate decision');
+    assert.equal(flat(row.cells[0]), utc(release) + ' UTC · ' + stamp(release));
+    assert.equal(flat(row.cells[1]), 'High');
+    assert.equal(flat(row.cells[2].querySelector('[data-gold-aside-span]')), 'no new trade ' + period);
+    assert.equal(row.cells[2].firstChild.textContent, 'Fixture rate decision');
+    assert.equal(flat(eventRow('Fixture stock report').cells[2]), 'Fixture stock report', 'a medium-impact release has no stand-aside period');
+    assert.equal(eventRow('Fixture output figure'), undefined, 'a release of another currency is not a gold release');
+    const later = eventRow('Fixture later figure');
+    assert.ok(later, 'a release within the next 24 hours is listed, whichever UTC day it is on');
+    assert.equal(flat(later.cells[0]), utc(release + 23 * 3600000) + ' UTC · ' + stamp(release + 23 * 3600000), 'with its weekday when it is not today in Nairobi');
+    assert.equal(eventRow('Fixture far figure'), undefined, 'more than 24 hours ahead is not listed');
+    assert.equal(doc.querySelectorAll('#goldEvents tbody tr').length, 3);
+    assert.equal(app.requests.filter((r) => r.path === '/api/news/calendar').length, 1, 'one calendar for the page');
+
+    /* Under the signal: the release that is coming, while the reading itself stays shown. */
+    assert.ok(['BUY', 'SELL'].includes(text('goldSignal')));
+    assert.equal(aside(), 'High-impact release ' + stamp(release) + ' · USD Fixture rate decision · no new trade from ' + eat(release - 30 * 60000) + ' EAT');
+    assert.equal(doc.querySelector('#goldAside [data-chart-event]').dataset.chartEvent, 'ahead');
+    assert.deepEqual(alerts(), [], 'no alert 50 minutes before');
+
+    /* The Refresh button reads the calendar again; the monitor's own round every five minutes uses the copy the page has, for ten minutes. */
+    const answered = (path) => app.requests.filter((r) => r.path === path && r.status !== null).length;
+    app.click(doc.getElementById('goldNewsRefresh'));
+    await app.waitFor(() => answered('/api/news/calendar') === 2 && answered('/api/news/feed') === 2, 'the calendar read again on request');
+    await new Promise((r) => setTimeout(r, 30));
+    clock.advance(6 * 60);
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => answered('/api/news/feed') === 3, 'the regular round of the monitor');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(answered('/api/news/calendar'), 2, 'the copy read six minutes ago is used');
+    assert.ok(eventRow('Fixture rate decision'), 'and the table is drawn from it');
+
+    /* A quarter of an hour before the release: the period is running, and the alert says so before anything else. */
+    clock.advance((release - 14.5 * 60000) / 1000 - clock.now());
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => alerts().length === 1, 'the alert 15 minutes before');
+    assert.match(aside(), new RegExp('^Stand aside · USD Fixture rate decision at (\\w{3} )?' + eat(release) + ' EAT · no new trade until ' + eat(release + 30 * 60000) + ' EAT$'));
+    assert.equal(doc.querySelector('#goldAside [data-chart-event]').dataset.chartEvent, 'aside');
+    const head = (minutes) => 'USD high-impact event in about ' + minutes + ' minutes: Fixture rate decision (' + utc(release) + ' UTC / ' + eat(release) + ' EAT). Stand aside: no new Gold trade ' + period + ' (30 min before to 30 min after). Expect possible volatility; check the live quote and spread.';
+    const first = alerts()[0];
+    assert.ok(first.startsWith(head(15) + '\nGold reading now, for information only (the stand-aside period applies to it):\n🟡 Gold/USD technical signal · '), first);
+    assert.doesNotMatch(first, /Current Gold signal/);
+
+    /* The same check a few seconds later does not repeat the alert; five minutes before there is the second one. */
+    app.runIntervals(10000);
+    assert.equal(alerts().length, 1);
+    clock.advance((release - 4.5 * 60000) / 1000 - clock.now());
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => alerts().length === 2, 'the alert 5 minutes before');
+    assert.ok(alerts().some((body) => body.startsWith(head(5))), alerts().join('\n---\n'));
+
+    /* Half an hour after the release the note is gone. */
+    clock.advance((release + 30.5 * 60000) / 1000 - clock.now());
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => aside() === '', 'the note after the period');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Gold page: a calendar that cannot be read is said under the signal and in the table, and no alert is made from it', async () => {
+  const app = await bootApp({ world: { cloudDeriv: 'down', ticks: true, candleRows: directionalMarket() } });
+  try {
+    const doc = app.doc;
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await app.open('gold');
+    await app.waitFor(() => /USD calendar unavailable/.test(flat(doc.getElementById('goldEvents'))) && flat(doc.getElementById('goldAside')) !== '', 'the missing calendar on the Gold page');
+    assert.match(flat(doc.getElementById('goldEvents')), /No upcoming-event claim is being made\.$/);
+    assert.equal(flat(doc.getElementById('goldAside')), 'calendar not available: scheduled releases unknown');
+    assert.match(flat(doc.getElementById('goldHeadlines')), /^Headline feed unavailable/);
+    assert.equal([...doc.querySelectorAll('#toasts .toast b')].filter((el) => el.textContent === 'Gold news alert').length, 0);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });

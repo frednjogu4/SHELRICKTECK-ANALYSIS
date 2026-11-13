@@ -27,7 +27,10 @@ import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudS
 import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
 import { candleHistory } from './derivhistory.js';
 import { createHostedScanner, signalState, summarizeReadings } from './hostedscan.js';
+import { closedCandleSets, nextReadingCheck } from './closedcandles.js';
+import { measuredText, measuredLine, isDailyReading } from './measured.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
+import { headlineConcerns, eventConcerns, eventTime, currenciesOf, marketsForCurrency, eatClock, eatDay, eatDayBounds, eatStamp, standAside, exposureFor, exposureForCurrency, releaseMeasuredText, trendWords, STAND_ASIDE } from './newsimpact.js';
 
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));
@@ -66,7 +69,14 @@ const chgOf=I=>{ if(I.p==null||I.open==null)return null; return ((I.p-I.open)/I.
 const STREAM_FEED='stream';
 const feedOfReading=r=>r&&r.model==='technical-exness'?'exness':STREAM_FEED;
 const signalRuns=createSignalTracker({feedOf:feedOfReading}), goldRuns=createSignalTracker();
-const NO_LEVELS_NOTE='Daily reading with no entry, stop or target: this score moves only when one of its daily votes changes.';
+/* Why an index card of the cloud has three empty boxes: said on the card itself, for BUY, SELL and WAIT alike. */
+const DAILY_NOTE='Daily index reading from daily closing prices: it has no entry, stop or target, so nothing here moves with the price and there is no measured result. Levels need minute-by-minute prices, which for indices come only from Exness MT5 in the PC app.';
+const NO_LEVELS_NOTE='This reading has no entry, stop or target, so its score does not move with the price.';
+/* A market that ticks again after a pause, with every finished candle still from before it: no reading yet (closedcandles.js). */
+const RESUMED_NOTE=what=>what+' has just resumed after a pause: no 5-minute candle has closed since. The first reading comes with the next 5-minute close.';
+/* "14:35" for the 5-minute close a reading was made at; '' for a reading that does not say (the PC server's, the daily ones). */
+const timeHM=t=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+const closeText=r=>Number(r&&r.candle_close)>0?timeHM(Number(r.candle_close)*1000):'';
 function liveReading(symbol){const I=bySym[symbol];return signalRuns.read(symbol,I&&I.p!=null?I.p:null,STREAM_FEED);}
 function liveNoteText(live,symbol,short){const I=bySym[symbol],digits=(I&&I.d)||2;return describeLive(live,{short:!!short,time:timeStr,price:v=>fmtPx(v,digits),sampled:at=>'measured at the Exness price of '+at+', updated at each analysis'});}
 const hasLevels=r=>Number(r&&r.entry)>0&&Number(r&&r.stop_loss)>0&&Number(r&&r.tp1)>0;
@@ -75,7 +85,8 @@ const hasLevels=r=>Number(r&&r.entry)>0&&Number(r&&r.stop_loss)>0&&Number(r&&r.t
    are a snapshot until Refresh). When the newest analysis is a different reading (another
    direction, another venue, WAIT or a failure), the card keeps its own score and says so; it
    never borrows the numbers of a different reading. */
-function liveView(symbol,side,base,levels,short,feedName){
+function liveView(symbol,side,base,levels,short,feedName,daily){
+  if(daily)return {score:base,note:short?'':DAILY_NOTE};
   const directional=side==='BUY'||side==='SELL';
   const live=directional?liveReading(symbol):null;
   if(live&&live.signal===side&&live.feed===feedName)return {score:live.confidence,note:liveNoteText(live,symbol,short)};
@@ -83,19 +94,19 @@ function liveView(symbol,side,base,levels,short,feedName){
   if(!levels)return {score:base,note:short?'':NO_LEVELS_NOTE};
   return {score:base,note:short?'not the newest reading':'This '+side+' reading is no longer the newest for this market: refresh to see the latest.'};
 }
-const liveViewOf=(r,short)=>liveView(r.symbol,r.signal,Number(r.confidence)||0,hasLevels(r),short,feedOfReading(r));
+const liveViewOf=(r,short)=>liveView(r.symbol,r.signal,Number(r.confidence)||0,hasLevels(r),short,feedOfReading(r),isDailyReading(r));
 function liveScore(r){return r&&r.symbol?liveViewOf(r).score:(Number(r&&r.confidence)||0);}
 /* The sentence beside a reading's score: how far the market has moved since it was first read. */
 function liveNoteFor(r,short){return r&&!r.error?liveViewOf(r,short).note:'';}
 /* What paintLiveConfidence() needs to redo that computation on every tick. `role` is Conf, Bar or Note. */
-function setLiveData(el,r,role){el.dataset['live'+role]=r.symbol;el.dataset.liveSide=r.signal||'';el.dataset.liveBase=String(Number(r.confidence)||0);el.dataset.liveLevels=hasLevels(r)?'1':'0';el.dataset.liveFeed=feedOfReading(r);}
-function liveData(r,role,short){return ' data-live-'+role+'="'+escHtml(r.symbol)+'" data-live-side="'+escHtml(r.signal||'')+'" data-live-base="'+(Number(r.confidence)||0)+'" data-live-levels="'+(hasLevels(r)?1:0)+'" data-live-feed="'+feedOfReading(r)+'"'+(short?' data-live-short="1"':'');}
+function setLiveData(el,r,role){el.dataset['live'+role]=r.symbol;el.dataset.liveSide=r.signal||'';el.dataset.liveBase=String(Number(r.confidence)||0);el.dataset.liveLevels=hasLevels(r)?'1':'0';el.dataset.liveFeed=feedOfReading(r);el.dataset.liveDaily=isDailyReading(r)?'1':'0';}
+function liveData(r,role,short){return ' data-live-'+role+'="'+escHtml(r.symbol)+'" data-live-side="'+escHtml(r.signal||'')+'" data-live-base="'+(Number(r.confidence)||0)+'" data-live-levels="'+(hasLevels(r)?1:0)+'" data-live-feed="'+feedOfReading(r)+'" data-live-daily="'+(isDailyReading(r)?1:0)+'"'+(short?' data-live-short="1"':'');}
 /* '<b data-live-conf="EUR/USD" …>75%</b>': a score that paintLiveConfidence() keeps current between renders. */
 function liveScoreHtml(r,tag='b'){return '<'+tag+liveData(r,'conf')+'>'+liveScore(r)+'%</'+tag+'>';}
 function liveNoteHtml(r,short){return '<div class="tiny faint"'+liveData(r,'note',short)+'>'+escHtml(liveNoteFor(r,short))+'</div>';}
 /* Runs on every price tick: rewrites the scores, bars and sentences already on the page. */
 function paintLiveConfidence(){
-  const view=(el,symbol)=>liveView(symbol,el.dataset.liveSide,Number(el.dataset.liveBase)||0,el.dataset.liveLevels==='1',el.dataset.liveShort==='1',el.dataset.liveFeed);
+  const view=(el,symbol)=>liveView(symbol,el.dataset.liveSide,Number(el.dataset.liveBase)||0,el.dataset.liveLevels==='1',el.dataset.liveShort==='1',el.dataset.liveFeed,el.dataset.liveDaily==='1');
   $$('[data-live-conf]').forEach(el=>{el.textContent=view(el,el.dataset.liveConf).score+'%';});
   $$('[data-live-bar]').forEach(el=>{el.style.width=view(el,el.dataset.liveBar).score+'%';});
   $$('[data-live-note]').forEach(el=>{el.textContent=view(el,el.dataset.liveNote).note;});
@@ -104,7 +115,13 @@ function paintLiveConfidence(){
 /* Confidence cell of the Sniper tables: the live score and a short note for a BUY/SELL, the score as read for a WAIT, a dash when the reading carries no score. */
 function sniperConfidenceCell(r){
   if(!r||r.error||r.confidence==null||!Number.isFinite(Number(r.confidence)))return '—';
-  return r.signal==='BUY'||r.signal==='SELL'?liveScoreHtml(r)+liveNoteHtml(r,true):escHtml(String(Number(r.confidence)))+'%';
+  const score=r.signal==='BUY'||r.signal==='SELL'?liveScoreHtml(r)+liveNoteHtml(r,true):escHtml(String(Number(r.confidence)))+'%';
+  return score+measuredShortHtml(r);
+}
+/* "measured 39.6%" / "not measured" under a score in a table; the full sentence is the tooltip. '' for a WAIT of the 1m/5m/1h rule. */
+function measuredShortHtml(r){
+  const short=measuredText(r,{short:true});
+  return short?'<div class="tiny faint" data-measured="'+escHtml(r.symbol)+'" title="'+escHtml(measuredText(r)||DAILY_NOTE)+'">'+escHtml(short)+'</div>':'';
 }
 
 /* ---------- built-in WhatsApp number ----------
@@ -404,12 +421,27 @@ function goto(view){
   render(view);
   if(view==='markets'){ mktScanRefresh(); }
   if(view==='trade') setTimeout(()=>tv.mountChart($('#tvChart'),state.chart.sym),40);
-  if(view==='news'){ setTimeout(()=>{ tv.mountNews($('#tvNews')); tv.mountCalendar($('#tvCalendar')); },40); renderNewsFeed(); renderNewsCal(); }
+  if(view==='news'){ setTimeout(()=>{ tv.mountNews($('#tvNews')); tv.mountCalendar($('#tvCalendar')); },40); renderNewsFeed(); renderNewsCal(); mktScanRefresh(); }
   window.scrollTo({top:0,behavior:'instant'in window?'instant':'auto'});
 }
 $$('.nav-item').forEach(b=>b.onclick=()=>goto(b.dataset.view));
 document.addEventListener('click',e=>{
   const g=e.target.closest('[data-goto]'); if(g) goto(g.dataset.goto);
+});
+/* The countdowns and stand-aside states of the News view, and the release note in the line above the chart,
+   follow the clock and not the price feed: they keep running when no price tick arrives. */
+setInterval(()=>{ try{
+  /* The calendar is read again while the News view or the chart stays open: a page left open over a
+     week-end must not go on showing last week's releases, and a read that failed is tried again. */
+  if((state.view==='news'||state.view==='trade')&&calendarDue())loadCalendar().then(()=>{ if(state.view==='news')paintNewsCal(); }).catch(()=>{}); /* the chart's line is redrawn by the next round, a second later */
+  if(state.view==='news')updateNewsTimeline(); else if(state.view==='trade')updateChartLevels();
+}catch(e){} },1000);
+/* News view: a market named beside a headline or a release opens its chart. */
+document.addEventListener('click',e=>{
+  const m=e.target.closest('[data-news-open]'); if(!m)return;
+  e.preventDefault();
+  const sym=m.dataset.newsOpen;
+  if(bySym[sym]){ setChartSymbol(sym); goto('trade'); }
 });
 function openSidebar(){ $('#sidebar').classList.add('open'); $('#scrim').classList.add('open'); $('#hamburger').setAttribute('aria-expanded','true'); try{ document.body.style.overflow='hidden'; }catch(e){} }
 function closeSidebar(){ $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('open'); $('#hamburger').setAttribute('aria-expanded','false'); try{ document.body.style.overflow=''; }catch(e){} }
@@ -1317,6 +1349,7 @@ function renderSignals(){
       '<div class="row between"><span class="tiny muted">Confidence</span><b class="mono"></b></div>'+
       '<div class="conf-bar"><i></i></div>'+
       '<div class="tiny faint sig-live" style="margin-top:6px;line-height:1.45"></div>'+
+      '<div class="tiny faint sig-measured" style="margin-top:4px;line-height:1.45"></div>'+
       '<div class="sig-levels">'+
         '<div><div class="k">Entry</div><div class="v" data-l="e"></div></div>'+
         '<div><div class="k">Stop</div><div class="v down" data-l="s"></div></div>'+
@@ -1332,10 +1365,11 @@ function renderSignals(){
     const cb=card.querySelector('.conf-bar i'); cb.style.width=score+'%'; setLiveData(cb,sig,'Bar');
     const cv=card.querySelector('.row.between b'); cv.textContent=score+'%'; setLiveData(cv,sig,'Conf');
     const cn=card.querySelector('.sig-live'); cn.textContent=liveNoteFor(sig); setLiveData(cn,sig,'Note');
+    card.querySelector('.sig-measured').textContent=measuredText(sig);
     card.querySelector('[data-l="e"]').textContent=fmtPx(sig.entry,I.d);
     card.querySelector('[data-l="s"]').textContent=fmtPx(sig.stop_loss,I.d);
     card.querySelector('[data-l="t"]').textContent=fmtPx(sig.tp1,I.d);
-    card.querySelector('.sig-why').textContent=String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase()+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable');
+    card.querySelector('.sig-why').textContent=String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase()+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
     card.querySelector('.sig-chart').onclick=()=>openSignalSymbol(sig.symbol);
     card.querySelector('.sig-use').onclick=()=>{
       state.side=sig.signal==='SELL'?'SELL':'BUY';
@@ -1424,14 +1458,18 @@ async function exnessSignalFor(I,includeCandles=false){
   if(!sets.m1||!sets.m5||!sets.h1)throw new Error('Exness MT5 did not return all required M1/M5/H1 candles.');
   const q=qr&&qr.quotes&&qr.quotes[0],price=signalPriceFromQuote(q);
   if(!q||!(price>0)||!marketCandleFresh(q.time,120000))throw new Error('No fresh Exness MT5 quote for '+I.s+'.');
-  const det=runDeterministicAnalysis(I.s,sets),short=['m1','m5','h1'].find(k=>det.analyses[k].error);
+  /* Finished candles only, as of the last 5-minute close (closedcandles.js). The freshness checks below are about
+     the feed, so they keep looking at the newest candles it returned. */
+  const closed=closedCandleSets(sets);
+  const det=runDeterministicAnalysis(I.s,closed.sets),short=['m1','m5','h1'].find(k=>det.analyses[k].error);
   if(short){const a=det.analyses[short];throw new Error('Exness '+a.timeframe+' history: '+(a.have||0)+'/'+(a.required||50)+' verified candles.');}
+  if(!closed.current)throw new Error(RESUMED_NOTE('Exness '+I.s));
   const newest={m1:sets.m1.at(-1),m5:sets.m5.at(-1),h1:sets.h1.at(-1)};
   const limits={m1:180000,m5:660000,h1:7260000};
   const stale=['m1','m5','h1'].find(k=>!newest[k]||!marketCandleFresh(newest[k].time,limits[k]));
   if(stale)throw new Error('Exness latest '+({m1:'M1',m5:'M5',h1:'H1'}[stale])+' candle is stale.');
   const dec=localDecision(det),wr=dec.signal==='WAIT'?waitReason(det,{maxAgeSec:3*3600+300}):null;
-  return {symbol:I.s,price,signal:dec.signal,bias:dec.bias,confidence:dec.confidence,entry:dec.entry,stop_loss:dec.stop_loss,tp1:dec.tp1,tp2:dec.tp2,rrr:dec.rrr,mtf_signal:det.mtfSignal,data_ok:true,votes:votesSummary(det.analyses),wait_reason:wr&&wr.code,wait_detail:wr&&wr.detail,tf:'MTF 1m/5m/1h',model:'technical-exness',source:'Exness MT5 local candles',data_source:'Exness MT5 local candles · '+String(q.symbol||I.s),latest_candle_time:newest.m1.time,ts:Date.now(),fallback:false,...(includeCandles?{candle_sets:sets}: {})};
+  return {symbol:I.s,price,signal:dec.signal,bias:dec.bias,confidence:dec.confidence,entry:dec.entry,stop_loss:dec.stop_loss,tp1:dec.tp1,tp2:dec.tp2,rrr:dec.rrr,mtf_signal:det.mtfSignal,data_ok:true,votes:votesSummary(det.analyses),wait_reason:wr&&wr.code,wait_detail:wr&&wr.detail,tf:'MTF 1m/5m/1h',model:'technical-exness',source:'Exness MT5 local candles',data_source:'Exness MT5 local candles · '+String(q.symbol||I.s),latest_candle_time:newest.m1.time,candle_close:closed.close,ts:Date.now(),fallback:false,...(includeCandles?{candle_sets:sets}: {})};
 }
 function fallbackSourceFor(r){
   if(r&&r.source)return String(r.source);
@@ -1542,7 +1580,7 @@ function emitSignalAlerts(results){
     if(previous===fingerprint)continue;
     store.set(key,fingerprint);
     if(signal==='BUY'||signal==='SELL'){
-      const details='Market: '+symbol+' · '+signal+' '+(Number(r.confidence)||0)+'% ('+(r.tf||'technical scan')+')\nEntry reference: '+level('entry')+' · SL: '+level('stop_loss')+' · TP1: '+level('tp1')+' · TP2 / exit reference: '+level('tp2')+'\nSource: '+source+'\nAnalysis only — no order was placed. Verify current price and spread before acting.';
+      const details='Market: '+symbol+' · '+signal+' '+(Number(r.confidence)||0)+'% ('+(r.tf||'technical scan')+')\nEntry reference: '+level('entry')+' · SL: '+level('stop_loss')+' · TP1: '+level('tp1')+' · TP2 / exit reference: '+level('tp2')+'\nSource: '+source+'\nAnalysis only — no order was placed. Verify current price and spread before acting.'+(measuredLine(r)?'\n'+measuredLine(r):'');
       notify('Signal update · '+symbol,details,{tag:'signal-'+symbol+'-'+signal,kind:signal==='BUY'?'ok':'warn'});
     }else if(previous&&(String(previous).startsWith('BUY|')||String(previous).startsWith('SELL|'))){
       notify('Signal withdrawn · '+symbol,'The latest scan is WAIT. Source: '+source+'. Recheck before acting.',{tag:'signal-'+symbol+'-wait',kind:'warn'});
@@ -1572,6 +1610,7 @@ async function mktScanRefresh(force){
     state.mktScanFailed=!results.some(r=>!r.error);
     if(results.length){mktScanAt=Date.now();if(state.view!=='sniper')emitSignalAlerts(results);}
     if(state.view==='markets') renderMarkets(true);
+    if(state.view==='news') paintNewsReadings();
     if(state.view==='sniper'){renderSniperMarketList();renderSniperSelectedDetail();renderSniperSignalAlerts(results,new Set());}
   }catch(e){state.mktScanFailed=true;if(state.view==='markets')renderMarkets(true);}
   finally{mktScanBusy=false;}
@@ -1580,16 +1619,16 @@ function scanLevelsHtml(I){
   const r=state.mktScan[I.s];
   if(!r||r.error)return '';
   const f=(v)=>Number.isFinite(Number(v))?Number(v).toFixed(I.d):null;
+  /* Entry, stop and targets belong to a Buy or Sell reading only. A Wait carries placeholder numbers
+     (always a stop below and targets above the price, whichever way the market leans): they are not shown. */
+  if(r.signal!=='BUY'&&r.signal!=='SELL')return '';
   const e=f(r.entry), sl=f(r.stop_loss), t1=f(r.tp1), t2=f(r.tp2);
   if(!e&&!sl)return '';
-  const conf=r.signal==='BUY'||r.signal==='SELL';
-  return '<div class="tiny market-levels '+(conf?'mono':'mono faint')+'" title="Entry '+(e||'—')+' · Stop loss '+(sl||'—')+' · Take profit 1 '+(t1||'—')+(t2?' · Take profit 2 '+t2:'')+'" style="margin-top:3px;white-space:nowrap">'
-    +(conf?'':'\u2248 ')
+  return '<div class="tiny market-levels mono" title="Entry '+(e||'—')+' · Stop loss '+(sl||'—')+' · Take profit 1 '+(t1||'—')+(t2?' · Take profit 2 '+t2:'')+'" style="margin-top:3px;white-space:nowrap">'
     +'<span class="faint">E</span> '+(e||'\u2014')
     +' \u00b7 <span style="color:var(--red)">SL</span> '+(sl||'\u2014')
     +' \u00b7 <span style="color:var(--green)">TP1</span> '+(t1||'\u2014')
     +(t2?' \u00b7 <span style="color:var(--green)">TP2</span> '+t2:'')
-    +(conf?'':' <span class="faint">(unconfirmed)</span>')
     +'</div>';
 }
 function signalBadge(I){
@@ -1983,6 +2022,7 @@ let levelsForSym=null;
 let levelsRequestSeq=0;
 ['orderSL','orderTP','orderTP2'].forEach((id)=>{ const el=document.getElementById(id); if(el)el.addEventListener('input',()=>{ levelsForSym='__manual__'; }); });
 async function autofillLevels(sym){
+  loadCalendar().catch(()=>{}); /* scheduled releases for the line above the chart; at most one read in ten minutes */
   const requestId=++levelsRequestSeq;
   const isCurrent=()=>requestId===levelsRequestSeq&&state.chart.sym===sym;
   const note=$('#levelsNote'); if(!note)return;
@@ -2034,10 +2074,40 @@ async function autofillLevels(sym){
 function updateChartLevels(){
   const el=document.getElementById('chartLevels'); if(!el)return;
   const I=bySym[state.chart.sym]; if(!I){ el.innerHTML=''; return; }
-  const raw=scanLevelsHtml(I);
-  const html=raw?raw.replace(/^<div[^>]*>/,'<span>').replace(/<\/div>$/,'</span>'):'';
-  const out=html?('<span class="faint">LIVE SIGNAL LEVELS</span>&nbsp; '+html):'<span class="faint">No confirmed levels yet \u2014 the scan fills entry/SL/TP when timeframes align.</span>';
+  const r=state.mktScan[I.s];
+  let out;
+  if(!r||r.error){
+    /* no reading, or a market that is closed, stale or unavailable: nothing is called live */
+    out='<span class="faint">'+(r&&r.detail?escHtml(String(r.detail)):'No confirmed levels yet \u2014 the scan fills entry/SL/TP when timeframes align.')+'</span>';
+  }else{
+    /* Direction first: Buy, Sell or Wait with the agreement score, then what each timeframe shows now,
+       then the levels (a Buy or Sell only) and what was measured for signals of this rule. */
+    const raw=scanLevelsHtml(I);
+    const levels=raw?raw.replace(/^<div[^>]*>/,'<span>').replace(/<\/div>$/,'</span>'):'';
+    const trend=isDailyReading(r)?'':trendWords(r.votes);
+    const measured=measuredText(r,{short:true});
+    out='<span class="faint">LIVE SIGNAL LEVELS</span>&nbsp; '+readingChip(I.s).html
+      +(trend?' <span data-chart-trend title="What the finished candles of each timeframe show at the last 5-minute close. It describes the market now; it does not say that the direction will continue.">now: '+escHtml(trend)+'</span>':'')
+      +(levels?' '+levels:' <span class="faint">no entry, stop or target: they come only with a Buy or Sell reading</span>')
+      +(measured?' <span class="faint" data-chart-measured title="'+escHtml(measuredText(r)||'')+'">'+escHtml(measured)+'</span>':'')
+      +' <span class="faint" data-chart-score-note>% = how strongly the timeframes agree, not the chance of profit</span>';
+  }
+  out+=chartEventHtml(I.s);
   if(el.dataset.h!==out){ el.innerHTML=out; el.dataset.h=out; }
+}
+/* The line above the chart: a high-impact release that concerns this market, now or within three hours.
+   Without a calendar the line says so: an unknown calendar is not an empty one. */
+function chartEventHtml(sym){
+  if(!currenciesOf(sym).length)return '';
+  const entries=calendarEntries();
+  if(entries==null)return state.calAt?' <span class="faint" data-chart-event="unknown" title="'+escHtml(state.calError||'')+'">calendar not available: scheduled releases unknown</span>':'';
+  const now=Date.now();
+  const x=exposureFor(sym,entries,now,{aheadMin:180});
+  if(!x)return '';
+  const what=x.events.slice(0,2).map(e=>(e.country||'')+' '+(e.event||'')).join(', ')+(x.events.length>2?' and '+(x.events.length-2)+' more':'');
+  return x.phase==='aside'
+    ?' <span class="chart-event on" data-chart-event="aside" title="'+escHtml(releaseMeasuredText())+'">Stand aside · '+escHtml(what)+' at '+escHtml(eatStamp(x.t,now))+' · no new trade until '+eatClock(x.until)+' EAT</span>'
+    :' <span class="chart-event" data-chart-event="ahead" title="'+escHtml(releaseMeasuredText())+'">High-impact release '+escHtml(eatStamp(x.t,now))+' · '+escHtml(what)+' · no new trade from '+eatClock(x.from)+' EAT</span>';
 }
 function updateTradeHeader(){
   const I=bySym[state.chart.sym]; if(!I)return;
@@ -3459,13 +3529,16 @@ async function azAnalyze() {
       if(await isCloudflareHostedApp()){
         /* Cloudflare staging is public-facing. Keep Exness candles entirely in
            this browser: never POST local MT5 history to the hosted Worker. */
-        const sets=bundle.candle_sets,det=runDeterministicAnalysis(sym,sets),last=sets.m1&&sets.m1[sets.m1.length-1],decision=localDecision(det);
+        /* The same finished candles the scanner reading was made from, so the same reading results. (bundle.candle_sets
+           are the candles as MT5 returned them: the PC's server, which is sent them in the other branch, refuses a
+           1-minute series whose newest candle is more than three minutes old.) */
+        const closedSets=closedCandleSets(bundle.candle_sets).sets,det=runDeterministicAnalysis(sym,closedSets),decision=localDecision(det);
         const wr=decision.signal==='WAIT'?waitReason(det,{maxAgeSec:3*3600+300}):null;
         data=Object.assign({},decision,{
           symbol:sym,price:det.analyses.m1&&det.analyses.m1.currentPrice,
           mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),
           data_ok:det.ok,data_source:'Exness MT5 local candles · analyzed in this browser',
-          latest_candle_time:last&&last.time,
+          latest_candle_time:bundle.latest_candle_time,candle_close:bundle.candle_close,
           sentiment_score:50,sentiment_source:'derived',news:{available:false,reason:'exness_local_only'},
           wait_reason:wr&&wr.code||null,wait_detail:wr&&wr.detail||null
         });
@@ -3890,9 +3963,8 @@ const GOLD_NEWS_MATCH=/(gold|xau|bullion|dollar|\bUSD\b|federal reserve|\bfed\b|
 let goldMonitorTimer=null, goldAnalysisBusy=false, goldNewsBusy=false, goldAnalysisAt=0, goldNextAttemptAt=0, goldAnalysisError='', goldNewsAt=0;
 let goldCalendarDay='', goldCalendarEvents=[], goldCalendarError='', goldHeadlineItems=[], goldHeadlineError='', goldMt5Quote=null, goldLastNotifiedKey=(()=>{try{return localStorage.getItem('aurum_gold_signal_last')||'';}catch(_e){return '';}})();
 function goldCalendarTime(e){
-  if(!goldCalendarDay||!e||!e.time_utc||!/^[0-9]{1,2}:[0-9]{2}$/.test(e.time_utc))return null;
-  const [h,m]=e.time_utc.split(':').map(Number), t=Date.parse(goldCalendarDay+'T00:00:00Z');
-  return Number.isFinite(t)?t+h*3600000+m*60000:null;
+  /* The moment of an entry: its own `t` and day where the calendar gives them (the cloud's whole week), else its UTC clock on the calendar's day. */
+  return goldCalendarDay&&e?eventTime(e,goldCalendarDay):null;
 }
 function goldEATTime(t){try{return new Intl.DateTimeFormat('en-GB',{timeZone:'Africa/Nairobi',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(t));}catch(_e){return '—';}}
 function goldUsdEvent(e){ return /^(USD|US|UNITED STATES)$/i.test(String(e&&e.country||'').trim()); }
@@ -3910,11 +3982,19 @@ function renderGoldEvents(){
     .map(e=>Object.assign({},e,{_time:goldCalendarTime(e)}))
     .filter(e=>e._time==null||(e._time>=now-2*3600000&&e._time<=now+24*3600000));
   if(!rows.length){el.innerHTML='<div class="hint">No scheduled USD medium/high-impact entries are listed in the current public calendar. This does not mean there will be no unscheduled news.</div>';return;}
-  el.innerHTML='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Time UTC / EAT</th><th>Impact</th><th>Event</th><th>Countdown</th></tr></thead><tbody>'+rows.map(e=>'<tr><td class="mono tiny">'+(e._time!=null?escHtml(e.time_utc)+' UTC · '+escHtml(goldEATTime(e._time))+' EAT':'All day')+'</td><td><span class="badge '+(e.impact==='High'?'sell':'gray')+'">'+escHtml(e.impact)+'</span></td><td class="tiny">'+escHtml(e.event||'')+'</td><td>'+(e._time==null?'<span class="badge gray">time unavailable</span>':'<span class="badge tiny gray" data-gold-event="'+e._time+'">—</span>')+'</td></tr>').join('')+'</tbody></table></div><div class="hint tiny">Calendar: ForexFactory public weekly schedule via AURUM API · times UTC · refreshes periodically. Scheduled events only; breaking headlines may arrive without warning.</div>';
+  el.innerHTML='<div class="tbl-wrap"><table class="tbl news-tbl"><thead><tr><th>Time UTC / EAT</th><th>Impact</th><th>Event</th><th>Countdown</th></tr></thead><tbody>'+rows.map(e=>'<tr><td class="mono tiny nowrap">'+(e._time!=null?escHtml(e.time_utc)+' UTC · '+escHtml(eatStamp(e._time,now)):'All day')+'</td><td class="nowrap"><span class="badge '+(e.impact==='High'?'sell':'gray')+'">'+escHtml(e.impact)+'</span></td><td class="tiny">'+escHtml(e.event||'')+(e.impact==='High'&&e._time!=null?'<div class="faint" data-gold-aside-span style="white-space:nowrap">no new trade '+eatClock(e._time-STAND_ASIDE.beforeMin*60000)+'–'+eatClock(e._time+STAND_ASIDE.afterMin*60000)+' EAT</div>':'')+'</td><td class="nowrap">'+(e._time==null?'<span class="badge gray">time unavailable</span>':'<span class="badge tiny gray" data-gold-event="'+e._time+'">—</span>')+'</td></tr>').join('')+'</tbody></table></div><div class="hint tiny">Calendar: ForexFactory public weekly schedule via AURUM API · times UTC · refreshes periodically. Scheduled events only; breaking headlines may arrive without warning.</div>';
   updateGoldEventCountdowns();
+}
+/* Under the Gold signal: the same note as above the chart. A reading stays shown during a stand-aside
+   period; the note says that no new trade belongs in it. */
+function updateGoldAside(){
+  const el=$('#goldAside');if(!el)return;
+  const out=chartEventHtml(GOLD_SYMBOL).trim();
+  if(el.dataset.h!==out){el.innerHTML=out;el.dataset.h=out;}
 }
 function updateGoldEventCountdowns(){
   const now=Date.now();
+  updateGoldAside();
   $$('#goldEvents [data-gold-event]').forEach(el=>{
     const t=Number(el.dataset.goldEvent), d=t-now, mins=d/60000;
     el.textContent=d>0?newsTLabel(t):(d>=-15*60000?'released '+Math.max(0,Math.floor(-d/60000))+'m ago':'passed');
@@ -3927,11 +4007,12 @@ function updateGoldEventCountdowns(){
     const mins=(t-now)/60000;
     for(const milestone of [15,5]){
       if(mins<=milestone&&mins>milestone-1.2){
-        const key=[goldCalendarDay,e.time_utc,e.country,e.event,milestone].join('|');
+        const key=[e.day||goldCalendarDay,e.time_utc,e.country,e.event,milestone].join('|');
         if(goldEventAlertSeen(key))continue;
         markGoldEventAlert(key);
-        const current=state.goldAnalysis?'\nCurrent Gold signal:\n'+goldSignalMessage(state.goldAnalysis):'\nGold signal unavailable right now; no direction is invented.';
-        const message='USD high-impact event in about '+milestone+' minutes: '+e.event+' ('+e.time_utc+' UTC / '+goldEATTime(t)+' EAT). Expect possible volatility; check the live quote and spread.'+current;
+        const aside='Stand aside: no new Gold trade '+eatClock(t-STAND_ASIDE.beforeMin*60000)+'–'+eatClock(t+STAND_ASIDE.afterMin*60000)+' EAT ('+STAND_ASIDE.beforeMin+' min before to '+STAND_ASIDE.afterMin+' min after).';
+        const current=state.goldAnalysis?'\nGold reading now, for information only (the stand-aside period applies to it):\n'+goldSignalMessage(state.goldAnalysis):'\nGold signal unavailable right now; no direction is invented.';
+        const message='USD high-impact event in about '+milestone+' minutes: '+e.event+' ('+e.time_utc+' UTC / '+goldEATTime(t)+' EAT). '+aside+' Expect possible volatility; check the live quote and spread.'+current;
         notify('Gold news alert',message,{tag:'gold-news-'+key,kind:'warn'});
         pushWA('🟡 Gold/USD scheduled-news alert\n'+message+'\nAURUM analysis only — no order sent.');
       }
@@ -3945,21 +4026,20 @@ function renderGoldHeadlines(){
   if(!list.length){el.innerHTML='<div class="hint">No Gold/USD-related headlines found in the available feed. This is not confirmation that no news exists.</div>';return;}
   el.innerHTML=list.map(it=>'<div class="news-row"><div class="grow"><a class="headline" href="'+escHtml(it.link||'#')+'" target="_blank" rel="noopener">'+escHtml(it.title)+'</a><div class="src">'+escHtml(it.source||'')+(it.published?' · '+escHtml(it.published):'')+'</div></div><span class="badge gray">HEADLINE</span></div>').join('');
 }
-async function refreshGoldNews(){
+async function refreshGoldNews(force){
   if(goldNewsBusy)return;goldNewsBusy=true;
   try{
-    const [calResult,headResult]=await Promise.allSettled([api('/api/news/calendar'),api('/api/news/feed')]);
-    if(calResult.status==='fulfilled'){
-      const cr=calResult.value,cj=await cr.json().catch(()=>({}));
-      if(cr.ok){goldCalendarDay=cj.day||new Date().toISOString().slice(0,10);goldCalendarEvents=Array.isArray(cj.events)?cj.events:[];goldCalendarError='';}
-      else goldCalendarError=cj.detail||cj.error||'Calendar unavailable';
-    }else goldCalendarError=String(calResult.reason&&calResult.reason.message||'Calendar unavailable');
+    /* The calendar is the page's one calendar (News view, the line above the chart, this page): the
+       stand-aside period shown here is then the same one as everywhere else. */
+    const [,headResult]=await Promise.allSettled([loadCalendar(force===true),api('/api/news/feed')]);
+    if(state.calError)goldCalendarError=state.calError;
+    else{goldCalendarDay=state.calDay;goldCalendarEvents=calendarEntries()||[];goldCalendarError='';}
     if(headResult.status==='fulfilled'){
       const nr=headResult.value,nj=await nr.json().catch(()=>({}));
       if(nr.ok){goldHeadlineItems=Array.isArray(nj.items)?nj.items:[];goldHeadlineError='';}
       else{goldHeadlineItems=[];goldHeadlineError=nj.detail||nj.error||'Headline feed unavailable';}
     }else{goldHeadlineItems=[];goldHeadlineError=String(headResult.reason&&headResult.reason.message||'Headline feed unavailable');}
-    renderGoldEvents();renderGoldHeadlines();
+    renderGoldEvents();renderGoldHeadlines();updateGoldAside();
   }finally{goldNewsAt=Date.now();goldNewsBusy=false;}
 }
 function goldQuotePrice(q){
@@ -4018,8 +4098,9 @@ function goldLivePrice(){
 }
 /* Gold monitor score: the analysis' own figure, moved by the price since this BUY/SELL was first read. */
 function updateGoldConfidence(){
-  const el=$('#goldConfidence'),bar=$('#goldConfidenceBar'),note=$('#goldConfidenceNote');if(!el)return;
+  const el=$('#goldConfidence'),bar=$('#goldConfidenceBar'),note=$('#goldConfidenceNote'),measured=$('#goldMeasured');if(!el)return;
   const d=state.goldAnalysis;
+  if(measured)measured.textContent=d?measuredText(goldReading(d)):'';
   if(!d){el.textContent='—';if(bar)bar.style.width='0%';if(note)note.textContent='No current analysis, so no score is shown.';return;}
   const live=goldRuns.read(GOLD_SYMBOL,goldLivePrice()),score=live?live.confidence:(Number(d.confidence)||0),dig=goldDisplayDigits();
   el.textContent=score+'%';if(bar)bar.style.width=score+'%';
@@ -4029,15 +4110,17 @@ function goldDisplayDigits(){const raw=goldMt5Quote&&goldMt5Quote.digits,d=raw==
 function goldFmtLevel(value,digits){return value==null||!Number.isFinite(Number(value))?'—':fmtPx(Number(value),digits);}
 function goldSignalMessage(d){
   const dig=goldDisplayDigits();
-  return '🟡 Gold/USD technical signal · '+d.signal+'\nSource: '+(d.data_source||'verified live candles')+'\nMTF: '+(d.mtf_signal||'—')+' · quality score '+(d.confidence??'—')+' (not probability of profit)\nEntry '+goldFmtLevel(d.entry,dig)+' · SL '+goldFmtLevel(d.stop_loss,dig)+' · TP1 '+goldFmtLevel(d.tp1,dig)+' · TP2 '+goldFmtLevel(d.tp2,dig)+'\n'+(d.signal==='WAIT'?'No 2-of-3 confirmation; stand aside.':'Levels are technical references only; verify spread, news and broker terms.')+'\nAnalysis-only; no order was sent.';
+  return '🟡 Gold/USD technical signal · '+d.signal+'\nSource: '+(d.data_source||'verified live candles')+'\nMTF: '+(d.mtf_signal||'—')+' · quality score '+(d.confidence??'—')+' (not probability of profit)\nEntry '+goldFmtLevel(d.entry,dig)+' · SL '+goldFmtLevel(d.stop_loss,dig)+' · TP1 '+goldFmtLevel(d.tp1,dig)+' · TP2 '+goldFmtLevel(d.tp2,dig)+'\n'+(d.signal==='WAIT'?'No 2-of-3 confirmation; stand aside.':'Levels are technical references only; verify spread, news and broker terms.')+'\nAnalysis-only; no order was sent.'+(measuredLine(goldReading(d))?'\n'+measuredLine(goldReading(d)):'');
 }
+/* The Gold monitor's analysis as a reading of XAU/USD, for the helpers that look a market up by its symbol. */
+function goldReading(d){return Object.assign({},d,{symbol:GOLD_SYMBOL});}
 function renderGoldAnalysis(){
   const d=state.goldAnalysis;if(!d)return;
   const dig=goldDisplayDigits();
   const badge=$('#goldSignalBadge');badge.textContent=d.signal||'WAIT';badge.className='badge '+(d.signal==='BUY'?'buy':d.signal==='SELL'?'sell':'gray');
   $('#goldSignal').textContent=d.signal||'WAIT';$('#goldSignal').className=d.signal==='BUY'?'up':d.signal==='SELL'?'down':'faint';
   $('#goldVotes').textContent='Analysis timeframe: M1 / M5 / H1 · '+(d.mtf_signal||'no confirmation')+' · '+(d.data_source||'');
-  $('#goldSignalUpdated').textContent='Last analysis: '+(d.updatedAt?new Date(d.updatedAt).toLocaleString():'—')+' · review after next M5 candle; no fixed expiry.';
+  $('#goldSignalUpdated').textContent=(closeText(d)?'Reading of the '+closeText(d)+' candle close · checked ':'Last analysis: ')+(d.updatedAt?new Date(d.updatedAt).toLocaleString():'—')+(closeText(d)?' · the next reading comes with the next 5-minute close; no fixed expiry.':' · review after next M5 candle; no fixed expiry.');
   $('#goldEntry').textContent=goldFmtLevel(d.entry,dig);$('#goldSL').textContent=goldFmtLevel(d.stop_loss,dig);$('#goldTP1').textContent=goldFmtLevel(d.tp1,dig);$('#goldTP2').textContent=goldFmtLevel(d.tp2,dig);
   const votes=String(d.votes||'');const buy=(votes.match(/\bBUY\b/g)||[]).length,sell=(votes.match(/\bSELL\b/g)||[]).length,wait=(votes.match(/\bWAIT\b/g)||[]).length;
   $('#goldPressure').textContent='Timeframe vote tally: '+buy+' BUY · '+sell+' SELL · '+wait+' WAIT. '+(d.signal==='BUY'?'Bullish technical confluence is confirmed.':d.signal==='SELL'?'Bearish technical confluence is confirmed.':'No directional majority; the monitor stands aside.');
@@ -4054,7 +4137,7 @@ function renderGoldAnalysis(){
 function goldAnalysisNoticeText(){
   const auto=state.settings.goldAuto!==false;
   const retry=auto&&goldNextAttemptAt?Math.max(0,Math.ceil((goldNextAttemptAt-Date.now())/1000)):null;
-  const cadence=auto?(retry==null?'Automatic retry is scheduled after this check.':'Auto-refresh '+(goldAnalysisError?'retry':'next check')+' in '+retry+'s (once per minute).'):'Auto-refresh is off; use Analyze now to retry.';
+  const cadence=auto?(retry==null?'Automatic retry is scheduled after this check.':'Auto-refresh '+(goldAnalysisError?'retry':'next check')+' in '+retry+'s (a reading changes only when a 5-minute candle closes).'):'Auto-refresh is off; use Analyze now to retry.';
   if(goldAnalysisBusy)return 'Fetching fresh '+(goldDataSource()==='mt5'?'Exness MT5 XAUUSD':'Gold')+' quote and M1 / M5 / H1 candles. '+cadence;
   if(goldAnalysisError){
     const raw=String(goldAnalysisError);
@@ -4096,14 +4179,16 @@ async function goldDerivFallback(reason){
     const res=await api('/api/signals/analyze',{method:'POST',body:{symbol:GOLD_SYMBOL,force:true,technicalOnly:true,withNews:false}});
     const j=await res.json().catch(()=>({}));if(!res.ok)throw new Error(j.detail||j.error||'Live Gold analysis unavailable');
     if(!goldFreshTimestamp(j.latest_candle_time))throw new Error('Deriv Gold M1 candle timestamp is stale or unavailable.');
+    if(j.candle_current===false)throw new Error(RESUMED_NOTE('Deriv Gold'));
     return Object.assign({},j,{data_source:label,fallback:true,fallback_reason:reason});
   }catch(serverError){
     const [m1,m5,h1]=await Promise.all([feed.fetchPublicCandles(GOLD_SYMBOL,60,120),feed.fetchPublicCandles(GOLD_SYMBOL,300,120),feed.fetchPublicCandles(GOLD_SYMBOL,3600,120)]);
-    const sets={m1,m5,h1},det=runDeterministicAnalysis(GOLD_SYMBOL,sets);
+    const closed=closedCandleSets({m1,m5,h1}),det=runDeterministicAnalysis(GOLD_SYMBOL,closed.sets);
     const short=['m1','m5','h1'].find(k=>det.analyses[k].error);
     if(short){const a=det.analyses[short];throw new Error('Deriv '+a.timeframe+' history has '+(a.have||0)+' verified candles; at least '+(a.required||50)+' are needed.');}
     const lastCandle=m1[m1.length-1];if(!lastCandle||!goldFreshTimestamp(lastCandle.time))throw new Error('Deriv Gold M1 candles are stale; no live signal will be shown.');
-    return Object.assign({},localDecision(det),{symbol:GOLD_SYMBOL,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:true,data_source:label,fallback:true,fallback_reason:reason,latest_candle_time:lastCandle.time,meta:{mode:'technical',reason:'labelled_deriv_fallback'}});
+    if(!closed.current)throw new Error(RESUMED_NOTE('Deriv Gold'));
+    return Object.assign({},localDecision(det),{symbol:GOLD_SYMBOL,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:true,data_source:label,fallback:true,fallback_reason:reason,latest_candle_time:lastCandle.time,candle_close:closed.close,meta:{mode:'technical',reason:'labelled_deriv_fallback'}});
   }
 }
 async function runGoldAnalysis(){
@@ -4121,11 +4206,13 @@ async function runGoldAnalysis(){
       ]);
       const sets={m1:m1&&m1.candles,m5:m5&&m5.candles,h1:h1&&h1.candles};
       if(!sets.m1||!sets.m5||!sets.h1)throw new Error('Exness MT5 did not return all required Gold timeframes.');
-      const det=runDeterministicAnalysis(GOLD_SYMBOL,sets),decision=localDecision(det),q=qReply&&qReply.quotes&&qReply.quotes[0],price=goldQuotePrice(q),lastCandle=sets.m1[sets.m1.length-1];
+      const closed=closedCandleSets(sets);
+      const det=runDeterministicAnalysis(GOLD_SYMBOL,closed.sets),decision=localDecision(det),q=qReply&&qReply.quotes&&qReply.quotes[0],price=goldQuotePrice(q),lastCandle=sets.m1[sets.m1.length-1];
       if(!q||!Number(q.time)||!(price>0)||!goldFreshTimestamp(q.time))throw new Error('No fresh Exness Gold tick; live signal is paused rather than reused.');
       if(!lastCandle||!goldFreshTimestamp(lastCandle.time))throw new Error('Exness Gold M1 candles are stale; refresh when current history returns.');
+      if(!closed.current)throw new Error(RESUMED_NOTE('Exness Gold'));
       goldMt5Quote={symbol:String(q.symbol||''),price,time:Number(q.time),digits:q.digits,trade_mode:q.trade_mode};
-      d=Object.assign({},decision,{price:det.analyses.m1&&det.analyses.m1.currentPrice,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:det.ok,data_source:'Exness MT5 local candles',latest_candle_time:lastCandle.time,meta:{mode:'technical',reason:'local_read_only'}});
+      d=Object.assign({},decision,{price:det.analyses.m1&&det.analyses.m1.currentPrice,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:det.ok,data_source:'Exness MT5 local candles',latest_candle_time:lastCandle.time,candle_close:closed.close,meta:{mode:'technical',reason:'local_read_only'}});
       }catch(exnessError){goldMt5Quote=null;d=await goldDerivFallback('Exness MT5 unavailable: '+String(exnessError&&exnessError.message||exnessError).slice(0,100));}
     }else{
       d=await goldDerivFallback(goldFallbackReason());
@@ -4149,6 +4236,8 @@ async function runGoldAnalysis(){
   }finally{
     goldAnalysisBusy=false;if(btn)btn.disabled=false;
     goldNextAttemptAt=state.settings.goldAuto!==false?Date.now()+GOLD_REFRESH_MS:0;
+    /* A reading changes only at a 5-minute close: look again seconds after the next one, so it is shown while its entry is still the price. */
+    if(goldNextAttemptAt)goldNextAttemptAt=nextReadingCheck(Date.now(),GOLD_REFRESH_MS);
     updateGoldAnalysisNotice();
   }
 }
@@ -4180,7 +4269,7 @@ function renderGold(){
   const connectGold=$('#goldConnectBtn');if(connectGold)connectGold.onclick=openGoldExnessConnect;
   const btn=$('#goldAnalyzeBtn');if(btn)btn.onclick=()=>runGoldAnalysis();
   const shareBtn=$('#goldShareBtn');if(shareBtn)shareBtn.onclick=()=>{if(!state.goldAnalysis){toast('No current Gold signal','Wait for a fresh analysis before sharing.','warn');return;}const u=waLink(goldSignalMessage(state.goldAnalysis));if(u)window.open(u,'_blank','noopener');};
-  const newsBtn=$('#goldNewsRefresh');if(newsBtn)newsBtn.onclick=()=>refreshGoldNews();
+  const newsBtn=$('#goldNewsRefresh');if(newsBtn)newsBtn.onclick=()=>refreshGoldNews(true);
   const notifyBtn=$('#goldNotifyBtn');if(notifyBtn)notifyBtn.onclick=async()=>{const p=await enableNotifications();toast('Gold alerts',p==='granted'?'Browser alerts enabled.':'Browser notifications '+p+'; in-app alerts remain available while AURUM is open.','ok');};
   startGoldMonitor();
   if(!goldAnalysisBusy&&(!goldAnalysisAt||Date.now()-goldAnalysisAt>=GOLD_REFRESH_MS))runGoldAnalysis();
@@ -4188,6 +4277,53 @@ function renderGold(){
 }
 let goldQuotePollAt=0;
 
+/* ================= News: which markets, what their prices say, when to stand aside =================
+   A headline names markets; it does not say which way they will go. The Buy / Sell / Wait beside a
+   market is that market's own price reading (the one the Markets view shows), and the period around a
+   high-impact release is one in which no new trade is opened (src/newsimpact.js). */
+const NEWS_READING_NOTE='The Buy, Sell or Wait beside a market is that market’s own price reading at this moment (the 1m/5m/1h rule; for an index, the daily reading). It is not a forecast of what the news will do to the price: a headline does not tell the direction.';
+const NEWS_CHIPS=4;
+const safeHref=(link)=>/^https?:\/\//i.test(String(link||''))?String(link):'#';
+/* What the price reading of one market says now, as a badge. kind: trade (Buy or Sell), wait, none. */
+function readingChip(sym){
+  const r=state.mktScan[sym];
+  if(!r)return {kind:'none',html:'<span class="badge gray" title="No reading of this market has been made yet.">no reading yet</span>'};
+  if(r.error)return {kind:'none',html:'<span class="badge gray" title="'+escHtml(r.detail||'No reading is available for this market right now.')+'">no reading</span>'};
+  const daily=isDailyReading(r);
+  const tip=escHtml((daily?'Daily reading from daily closing prices. ':'Reading of the 1m/5m/1h rule'+(closeText(r)?' at the '+closeText(r)+' candle close. ':'. '))+(r.votes?'Timeframes: '+r.votes+'. ':'')+'The percentage is how strongly the timeframes agree, not a chance of profit.');
+  if(r.signal==='BUY'||r.signal==='SELL')return {kind:'trade',html:'<span class="badge '+(r.signal==='BUY'?'buy':'sell')+'" title="'+tip+'">'+(r.signal==='BUY'?'Buy ':'Sell ')+liveScoreHtml(r,'span')+(daily?' · daily':'')+'</span>'};
+  if(r.bias==='bullish')return {kind:'wait',html:'<span class="badge lean lean-up" title="'+tip+'">Wait · leans up</span>'};
+  if(r.bias==='bearish')return {kind:'wait',html:'<span class="badge lean lean-dn" title="'+tip+'">Wait · leans down</span>'};
+  return {kind:'wait',html:'<span class="badge wait" title="'+tip+'">Wait</span>'};
+}
+/* The markets a headline or a release concerns, each with its reading. First the markets the headline points at
+   by name (`named`) and the market that is on the chart, then the Buy and Sell readings among the rest; what
+   does not fit is counted. */
+function newsMarketsHtml(markets,named){
+  if(!markets.length)return '<span class="faint">no market of this application</span>';
+  const rank={trade:0,wait:1,none:2}, first=(named||[]).concat(state.chart&&state.chart.sym?[state.chart.sym]:[]);
+  const rows=markets.map((sym,i)=>({sym,i,named:first.includes(sym)?0:1,chip:readingChip(sym)})).sort((a,b)=>a.named-b.named||(a.named?rank[a.chip.kind]-rank[b.chip.kind]:0)||a.i-b.i);
+  const shown=rows.slice(0,NEWS_CHIPS), rest=rows.slice(NEWS_CHIPS);
+  const count=(kind)=>rest.filter(x=>x.chip.kind===kind).length;
+  const restText=[count('trade')?count('trade')+' with a Buy or Sell':'',count('wait')?count('wait')+' on Wait':'',count('none')?count('none')+' without a reading':''].filter(Boolean).join(', ');
+  return shown.map(x=>'<span class="news-mkt"><a href="#" data-news-open="'+escHtml(x.sym)+'" title="Open the '+escHtml(x.sym)+' chart">'+escHtml(x.sym)+'</a> '+x.chip.html+'</span>').join(' ')
+    +(rest.length?' <span class="faint" title="'+escHtml(rest.map(x=>x.sym).join(', '))+'">+ '+rest.length+' more ('+restText+')</span>':'');
+}
+function newsMarketsBox(markets,named){ return '<span data-news-markets="'+escHtml(markets.join(','))+'" data-news-named="'+escHtml((named||[]).join(','))+'">'+newsMarketsHtml(markets,named)+'</span>'; }
+/* After a scan the readings beside headlines and releases are redrawn; the feeds are not read again. */
+function paintNewsReadings(){ const list=(text)=>text?text.split(','):[]; $$('#view-news [data-news-markets]').forEach(el=>{ el.innerHTML=newsMarketsHtml(list(el.dataset.newsMarkets),list(el.dataset.newsNamed)); }); }
+function headlineConcernHtml(title){
+  const c=headlineConcerns(title);
+  if(!c.subjects.length)return '<div class="tiny faint news-concern">Names no market of this application.</div>';
+  const why=c.subjects.filter(s=>s.explain).map(s=>s.why);
+  return '<div class="tiny news-concern"><span class="faint">Concerns</span> '+c.subjects.map(s=>'<b title="'+escHtml(s.why)+'">'+escHtml(s.label)+'</b>').join(', ')
+    +(c.markets.length?' <span class="faint">→</span> '+newsMarketsBox(c.markets,c.named):'')+(why.length?'<div class="faint">'+escHtml(why.join('. '))+'.</div>':'')+'</div>';
+}
+function newsSourcesHtml(j){
+  if(!Array.isArray(j.sources)||!j.sources.length)return '';
+  return '<div class="hint tiny" id="newsSources">Sources: '+j.sources.map(s=>escHtml(s.name)+' — '+(s.ok?(Number(s.headlines)===1?'1 headline':escHtml(String(s.headlines))+' headlines'):'not available ('+escHtml(String(s.error||'no answer'))+')')).join(' · ')
+    +(j.fetched_at?' · read at '+escHtml(eatStamp(Number(j.fetched_at),Date.now())):'')+'</div>';
+}
 /* News signal validity: a headline is a SNIPER entry — its edge decays fast.
    Transparent rule (no fake precision): a directional news signal is actionable
    for 25 minutes from publish; after that it is STALE and the Execute button
@@ -4217,6 +4353,15 @@ function updateNewsValidity(){
 }
 function newsSignalText(it){
   const b=it.bias||{};
+  if(!b.dir){ /* a headline without a direction is a headline, not a trading signal */
+    const c=headlineConcerns(it.title);
+    return '📰 '+brandName()+' — headline\n'
+      +'Headline: '+it.title+'\n'
+      +(it.source?'Source: '+it.source+'\n':'')
+      +'Concerns: '+(c.markets.length?c.markets.join(', '):'no market of this application')+'\n'
+      +'Link: '+it.link+'\n'
+      +'A headline does not tell the direction. Not advice.';
+  }
   return '🚨 '+brandName()+' trading signal\n'
     +(b.pair||b.ccy||'?')+' — '+(b.dir?b.dir+' (heuristic news read)':'no direction (no confident tone)')+'\n'
     +'Headline: '+it.title+'\n'
@@ -4252,11 +4397,16 @@ async function shareCalBrief(){
     const j=await r.json().catch(()=>({}));
     if(!r.ok||!Array.isArray(j.events))throw new Error('calendar unavailable'); /* never share "no events" for a calendar that did not load */
     const ev=(j.events||[]).filter(e2=>e2.impact==='High'||e2.impact==='Medium').slice(0,8);
-    let txt='📅 '+brandName()+' — today (UTC)\n';
-    txt+=ev.length?ev.map(e2=>(e2.time_utc||'all day')+' '+e2.impact.toUpperCase()+' · '+e2.country+' '+e2.event).join('\n'):'No high/medium events listed today.';
+    const line=(e2)=>{
+      const t=eventTime(e2,j.day);
+      const aside=e2.impact==='High'&&t!=null?' — no new trade '+eatClock(t-STAND_ASIDE.beforeMin*60000)+'–'+eatClock(t+STAND_ASIDE.afterMin*60000):'';
+      return (t!=null?eatClock(t)+' EAT':'all day')+' '+e2.impact.toUpperCase()+' · '+e2.country+' '+e2.event+aside;
+    };
+    let txt='📅 '+brandName()+' — today, Nairobi time (EAT)\n';
+    txt+=ev.length?ev.map(line).join('\n'):'No high/medium events listed today.';
     const sig=(state.newsItems||[]).filter(it=>it.bias&&it.bias.dir).slice(0,5);
     if(sig.length)txt+='\n\nNews signals (heuristic):\n'+sig.map(it=>'• '+(it.bias.pair||it.bias.ccy)+' '+it.bias.dir+' — '+it.title).join('\n');
-    txt+='\n\nHeuristic — not AI, not advice.';
+    txt+='\n\nA release can move a market either way: the calendar gives no direction. Not advice.';
     const u=waLink(txt); if(u)window.open(u,'_blank','noopener');
   }catch(e){ toast('Calendar unavailable','Nothing to share yet — refresh the calendar first.','warn'); }
 }
@@ -4272,19 +4422,26 @@ async function renderNewsFeed(){
     const j=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error(j.detail||j.error||('HTTP '+r.status));
     state.newsItems=j.items||[];
-    el.innerHTML='<div class="tbl-wrap"><table class="tbl"><tbody>'
-      +j.items.map((it,idx)=>{
+    const now=Date.now();
+    /* The PC server adds a keyword chip to a headline; the cloud sends headlines only. The chip column and the
+       order button exist only where the server supplied them. */
+    const anyBias=state.newsItems.some(it=>it.bias);
+    const anyOrderable=state.newsItems.some(it=>it.bias&&it.bias.pair&&it.bias.dir&&!!INSTRUMENT_MAP[it.bias.pair]);
+    el.innerHTML=newsSourcesHtml(j)+'<div class="tbl-wrap"><table class="tbl news-tbl"><tbody>'
+      +state.newsItems.map((it,idx)=>{
         const b=it.bias||{};
         const orderable=b.pair&&b.dir&&!!INSTRUMENT_MAP[b.pair];
-        return '<tr><td>'+biasChip(it.bias)+'</td>'
-          +'<td><a href="'+escHtml(it.link)+'" target="_blank" rel="noopener">'+escHtml(it.title)+'</a><div class="hint tiny">'+escHtml(it.source||'')+(it.published?' · '+escHtml(it.published):'')+'</div></td>'
-          +'<td class="num">'
+        const when=it.t?eatStamp(Number(it.t),now):(it.published||'');
+        return '<tr>'+(anyBias?'<td>'+biasChip(it.bias)+'</td>':'')
+          +'<td><a href="'+escHtml(safeHref(it.link))+'" target="_blank" rel="noopener">'+escHtml(it.title)+'</a><div class="hint tiny">'+escHtml(it.source||'')+(when?' · '+escHtml(when):'')+'</div>'+headlineConcernHtml(it.title)+'</td>'
+          +'<td class="num nowrap">'
           +(orderable?'<span class="badge tiny gray" data-nv="'+idx+'" style="margin-right:6px">⏱ …</span>':'')
           +(orderable?'<button class="btn sm primary news-exec" data-i="'+idx+'" title="One click opens the confirm sheet — deduction happens on your linked account after you confirm">⚡ Execute</button> ':'')
-          +'<button class="btn sm ghost news-wa" data-i="'+idx+'" title="Share this signal to WhatsApp">↗ WA</button> '
-          +'<a class="btn sm ghost" href="'+escHtml(it.link)+'" target="_blank" rel="noopener">Open ↗</a></td></tr>';
+          +'<button class="btn sm ghost news-wa" data-i="'+idx+'" title="Share this headline to WhatsApp">↗ WA</button> '
+          +'<a class="btn sm ghost" href="'+escHtml(safeHref(it.link))+'" target="_blank" rel="noopener">Open ↗</a></td></tr>';
       }).join('')
-      +'</tbody></table></div><div class="hint tiny">'+escHtml(j.note||'')+' ⚡ opens the confirm sheet on the linked account — nothing executes without your confirm. Each directional signal shows its validity window: news is a sniper entry — it counts for ~'+NEWS_VALIDITY_MIN+' minutes from publish, then goes STALE and Execute stands down. Pair news entries with short contracts (≤15m).</div>';
+      +'</tbody></table></div><div class="hint tiny">'+escHtml(j.note||'')+' '+escHtml(NEWS_READING_NOTE)
+      +(anyOrderable?' ⚡ opens the confirm sheet on the linked account — nothing executes without your confirm. Each directional signal shows its validity window: news is a sniper entry — it counts for ~'+NEWS_VALIDITY_MIN+' minutes from publish, then goes STALE and Execute stands down. Pair news entries with short contracts (≤15m).':'')+'</div>';
     updateNewsValidity();
     $$('#newsFeed .news-exec').forEach(btn=>btn.onclick=()=>executeNewsSignal(state.newsItems[Number(btn.dataset.i)]||{}));
     /* AUTO: push new directional signals (skipped when the server timer already auto-shares) */
@@ -4307,29 +4464,56 @@ async function renderNewsFeed(){
     el.innerHTML='<div class="empty"><b>Headline feed unavailable</b>'+escHtml(String(e.message||e))+' The TradingView timeline below is independent and may still work — no substitute headlines are invented.</div>';
   }
 }
+/* The calendar is read once for the whole page (News view, the line above the chart): at most every ten
+   minutes unless asked. A failure is remembered, so that nothing reads "no releases" from a calendar
+   that did not load. */
+let calendarPending=null;
+/* The cloud reads its calendar source every half hour and this page asks the cloud every ten minutes: a copy
+   older than 45 minutes means the source has stopped answering, and the calendar card says so. */
+const CALENDAR_COPY_NOTE_MS=45*60000;
+/* A calendar that was read is kept ten minutes; after a read that failed, the next try comes after one. */
+function calendarDue(){ return !calendarPending&&(!state.calAt||Date.now()-state.calAt>=(state.calError?60000:10*60000)); }
+function loadCalendar(force){
+  if(calendarPending)return calendarPending;
+  if(!force&&!calendarDue())return Promise.resolve();
+  calendarPending=(async()=>{
+    try{
+      const r=await api('/api/news/calendar');
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error(j.detail||j.error||('HTTP '+r.status));
+      state.calDay=j.day||new Date().toISOString().slice(0,10);
+      state.calSource=j.source||'ForexFactory public weekly calendar';
+      state.calEvents=j.events||[];
+      state.calWeek=Array.isArray(j.week)?j.week:null;
+      state.calFetched=Number(j.fetched_at)>0?Number(j.fetched_at):null; /* when the source was read: the cloud passes on an earlier copy while the source does not answer */
+      state.calError='';
+    }catch(e){ state.calError=String((e&&e.message)||e)||'Calendar unavailable'; }
+    finally{ state.calAt=Date.now(); calendarPending=null; }
+  })();
+  return calendarPending;
+}
+/* Every calendar entry with its moment as `t` (null: all day). null while the calendar has not loaded: unknown, not empty. */
+function calendarEntries(){
+  if(!state.calAt||state.calError)return null;
+  return (state.calWeek||state.calEvents||[]).map((e)=>Object.assign({},e,{t:eventTime(e,state.calDay)}));
+}
 async function renderNewsCal(){
+  if(!$('#newsCal'))return;
+  await loadCalendar(true);
+  paintNewsCal();
+}
+/* The calendar card from what was read last: the timeline, or the reason there is none. */
+function paintNewsCal(){
   const el=$('#newsCal'); if(!el)return;
-  try{
-    const r=await api('/api/news/calendar');
-    const j=await r.json().catch(()=>({}));
-    if(!r.ok)throw new Error(j.detail||j.error||('HTTP '+r.status));
-    state.calDay=j.day||new Date().toISOString().slice(0,10);
-    state.calSource=j.source||'ForexFactory public weekly calendar';
-    state.calEvents=j.events||[];
-    renderNewsTimeline();
-  }catch(e){
-    el.innerHTML='<div class="empty"><b>Calendar unavailable</b>'+escHtml(String(e.message||e))+' The TradingView calendar below is independent and may still work.</div>';
+  if(state.calError){
+    el.innerHTML='<div class="empty"><b>Calendar unavailable</b>'+escHtml(state.calError)+' The TradingView calendar below is independent and may still work. Scheduled releases are unknown until the calendar loads: nothing here says there are none.</div>';
+    return;
   }
+  renderNewsTimeline();
 }
 /* timeline buckets: UPCOMING / JUST RELEASED (last 15 min = current news) /
    PAST 2 HOURS. Exact epoch from the calendar's date + HH:MM UTC. */
-function newsEvT(e){
-  const d=state.calDay;
-  if(!d||!e.time_utc||!/^[0-9]{1,2}:[0-9]{2}$/.test(e.time_utc))return null;
-  const base=Date.parse(d+'T00:00:00Z'); if(!Number.isFinite(base))return null;
-  const parts=e.time_utc.split(':');
-  return base+(Number(parts[0]))*3600000+(Number(parts[1]))*60000;
-}
+function newsEvT(e){ return eventTime(e,state.calDay); }
 function newsBucket(t){
   const now=Date.now();
   if(t>now)return 'up';
@@ -4344,30 +4528,70 @@ function newsTLabel(t){
   return (age>=3600?(Math.floor(age/3600)+'h '+(Math.round((age%3600)/60)||0)+'m'):Math.max(1,Math.floor(age/60))+'m')+' ago';
 }
 function newsChip(v){ return v==='High'?'<span class="badge sell">High</span>':v==='Medium'?'<span class="badge" style="background:#e5b56722;color:#e5b567">Medium</span>':'<span class="badge gray">Low</span>'; }
+/* "No new trade 16:00–17:00 EAT" for a high-impact release, and where the clock stands in that period. */
+function standAsideLine(t,now){
+  const s=standAside(t,now);
+  const span=eatClock(s.from)+'–'+eatClock(s.until)+' EAT';
+  if(s.phase==='ahead')return {on:false,text:'No new trade '+span+' (30 min before to 30 min after)'};
+  if(s.phase==='before')return {on:true,text:'STAND ASIDE NOW · release in '+s.minutes+' min · no new trade until '+eatClock(s.until)+' EAT'};
+  if(s.phase==='after')return {on:true,text:'STAND ASIDE · released · no new trade for another '+s.minutes+' min, until '+eatClock(s.until)+' EAT'};
+  return {on:false,text:'Stand-aside period over since '+eatClock(s.until)+' EAT'};
+}
+/* The box above the calendar: per currency, the period that is running now or the next one within three hours. */
+function newsAsideHtml(entries,now){
+  const lines=[];
+  for(const ccy of ['USD','EUR','GBP','JPY','AUD','CAD','CHF','NZD']){
+    const x=exposureForCurrency(ccy,entries,now,{aheadMin:180});
+    if(!x)continue;
+    const names=x.events.slice(0,3).map(e=>e.event).join(', ')+(x.events.length>3?' and '+(x.events.length-3)+' more':'');
+    lines.push({on:x.phase==='aside',from:x.from,html:'<div class="news-aside-line'+(x.phase==='aside'?' on':'')+'"><b>'+(x.phase==='aside'?'Stand aside now':'Next')+' · '+ccy+'</b> — '+escHtml(names)+' at '+escHtml(eatStamp(x.t,now))
+      +'. No new trade in '+ccy+' markets '+(x.phase==='aside'?'until '+eatClock(x.until)+' EAT':'from '+eatClock(x.from)+' to '+eatClock(x.until)+' EAT')+' <span class="faint">('+escHtml(marketsForCurrency(ccy).join(', '))+')</span></div>'});
+  }
+  lines.sort((a,b)=>(Number(b.on)-Number(a.on))||(a.from-b.from));
+  return lines.length?lines.map(l=>l.html).join(''):'<div class="news-aside-line">No high-impact release is listed for the next 3 hours. Unscheduled news is in no calendar.</div>';
+}
 function renderNewsTimeline(){
   const el=$('#newsCal'); if(!el)return;
-  const all=(state.calEvents||[]).map((e)=>Object.assign({},e,{t:newsEvT(e)}));
-  const timed=all.filter((e)=>e.t!=null), allday=all.filter((e)=>e.t==null);
+  const all=calendarEntries()||[];
   const now=Date.now();
+  const dayEnd=eatDayBounds(now)[1];
+  const timed=all.filter((e)=>e.t!=null);
+  const allday=all.filter((e)=>e.t==null&&(!e.day||e.day===eatDay(now)));
   const cur=timed.filter((e)=>newsBucket(e.t)==='now').sort((a,b)=>b.t-a.t);
-  const up=timed.filter((e)=>newsBucket(e.t)==='up').sort((a,b)=>a.t-b.t);
+  const up=timed.filter((e)=>newsBucket(e.t)==='up'&&e.t<dayEnd).sort((a,b)=>a.t-b.t);
   const past=timed.filter((e)=>newsBucket(e.t)==='past'&&now-e.t<=2*3600000).sort((a,b)=>b.t-a.t);
-  const row=(e)=>'<tr><td class="mono tiny">'+(e.time_utc?escHtml(e.time_utc)+' UTC':'all day')+'</td>'
-    +'<td class="tiny">'+escHtml(e.country||'')+'</td>'
+  const tomorrow=timed.filter((e)=>e.t>=dayEnd&&e.t<dayEnd+86400000&&e.impact==='High').sort((a,b)=>a.t-b.t);
+  const row=(e)=>{
+    const major=e.impact==='High'||e.impact==='Medium';
+    const c=major?eventConcerns(e):null;
+    const aside=e.impact==='High'&&e.t!=null?standAsideLine(e.t,now):null;
+    /* The markets and the stand-aside period go on a line of their own under the release, across the whole
+       width, so that they wrap on a phone instead of running out of sight. */
+    const detail=(c?'<div class="tiny news-concern">'+(c.markets.length?'<span class="faint">'+escHtml(c.currency)+' markets</span> '+newsMarketsBox(c.markets):'<span class="faint">no market of this application is priced in '+escHtml(e.country||'this currency')+'</span>')+'</div>':'')
+      +(aside&&c&&c.markets.length?'<div class="tiny news-aside'+(aside.on?' on':'')+'" data-sa="'+e.t+'">'+escHtml(aside.text)+'</div>':'');
+    return '<tr'+(detail?' class="news-main"':'')+'><td class="mono tiny nowrap"'+(e.t!=null?' title="'+escHtml(new Date(e.t).toISOString().slice(0,16).replace('T',' ')+' UTC')+'"':'')+'>'+(e.t!=null?escHtml(eatStamp(e.t,now)):'all day')+'</td>'
+    +'<td class="tiny nowrap">'+escHtml(e.country||'')+'</td>'
     +'<td class="tiny">'+escHtml(e.event||'')+(e.forecast?' <span class="tiny faint">f: '+escHtml(e.forecast)+(e.previous?' · p: '+escHtml(e.previous):'')+'</span>':'')+'</td>'
-    +'<td>'+newsChip(e.impact)+'</td>'
-    +'<td>'+(e.t!=null?'<span class="badge tiny gray" data-nt="'+e.t+'" data-b="'+newsBucket(e.t)+'">'+escHtml(newsTLabel(e.t))+'</span>':'<span class="badge tiny gray">all day</span>')+'</td></tr>';
+    +'<td class="nowrap">'+newsChip(e.impact)+'</td>'
+    +'<td class="nowrap">'+(e.t!=null?'<span class="badge tiny gray" data-nt="'+e.t+'" data-b="'+newsBucket(e.t)+'">'+escHtml(newsTLabel(e.t))+'</span>':'<span class="badge tiny gray">all day</span>')+'</td></tr>'
+    +(detail?'<tr class="news-sub"><td colspan="5">'+detail+'</td></tr>':'');
+  };
   const sec=(title,arr)=>'<div class="tiny faint" style="margin:12px 0 4px"><b>'+title+'</b></div>'
-    +(arr.length?'<div class="tbl-wrap"><table class="tbl"><tbody>'+arr.map(row).join('')+'</tbody></table></div>':'<div class="hint tiny">— none —</div>');
-  el.innerHTML=sec('🔴 JUST RELEASED — current news (last 15 min)',cur)
+    +(arr.length?'<div class="tbl-wrap"><table class="tbl news-tbl"><tbody>'+arr.map(row).join('')+'</tbody></table></div>':'<div class="hint tiny">— none —</div>');
+  el.innerHTML='<div class="news-aside-box" id="newsAside">'+newsAsideHtml(all,now)+'</div>'
+    +sec('🔴 JUST RELEASED — current news (last 15 min)',cur)
     +sec('⏭ UPCOMING TODAY — exact times, live countdown',up)
     +sec('🕘 PAST 2 HOURS',past)
+    +(state.calWeek?sec('🗓 TOMORROW — high impact only',tomorrow):'')
     +(allday.length?sec('📅 ALL-DAY / UNSCHEDULED',allday):'')
-    +'<div class="hint tiny">Source: '+escHtml(state.calSource||'')+' · all times UTC · countdowns update live. High-impact releases = sniper moments: trade them inside the 25-minute news window and prefer short contracts.</div>';
+    +'<div class="hint tiny">Source: '+escHtml(state.calSource||'')+(state.calFetched?' · read at '+escHtml(eatStamp(state.calFetched,Date.now()))+(Date.now()-state.calFetched>CALENDAR_COPY_NOTE_MS?' (the source has not answered since: this is the schedule as it stood then)':''):'')+' · times are Nairobi time (EAT, UTC+3); point at a time for UTC · countdowns update live. Around a high-impact release no new trade is opened from '
+    +STAND_ASIDE.beforeMin+' minutes before until '+STAND_ASIDE.afterMin+' minutes after, in the markets priced in its currency. '+escHtml(releaseMeasuredText())
+    +' The calendar gives the forecast and the previous figure, not the result: which way a release moves a market is not shown, because it is not known.</div>';
   updateNewsTimeline();
 }
 function updateNewsTimeline(){
   let need=false;
+  const now=Date.now();
   $$('#newsCal [data-nt]').forEach((el)=>{
     const t=Number(el.dataset.nt); const b=newsBucket(t);
     if(b!==el.dataset.b){ need=true; return; } /* crossed a boundary -> re-section */
@@ -4375,7 +4599,14 @@ function updateNewsTimeline(){
     if(el.textContent!==txt)el.textContent=txt;
     el.className='badge tiny '+(b==='now'?'sell':b==='up'?'buy':'gray');
   });
-  if(need)renderNewsTimeline();
+  if(need){ renderNewsTimeline(); return; }
+  $$('#newsCal [data-sa]').forEach((el)=>{
+    const s=standAsideLine(Number(el.dataset.sa),now);
+    if(el.textContent!==s.text)el.textContent=s.text;
+    el.classList.toggle('on',s.on);
+  });
+  const box=$('#newsAside');
+  if(box){ const html=newsAsideHtml(calendarEntries()||[],now); if(box.dataset.h!==html){ box.innerHTML=html; box.dataset.h=html; } }
 }
 
 /* ================= Watchlist page =================
@@ -4567,7 +4798,7 @@ function renderSniperSelectedDetail(){
   if(!symbol||!r){el.innerHTML='<div class="empty"><b>No current scan result</b>Refresh signals to load this market.</div>';return;}
   if(r.error){el.innerHTML='<div class="empty"><b>Signal unavailable for '+escHtml(symbol)+'</b>'+escHtml(r.detail||'No verified source data.')+' No levels are shown as current.</div>';return;}
   const I=bySym[symbol],digits=I&&I.d||2,fmt=k=>{const n=Number(r[k]);return Number.isFinite(n)&&n>0?fmtPx(n,digits):'—';},source=r.data_source||r.source||'unavailable';
-  el.innerHTML='<div class="row between wrap"><div><b style="font-size:18px">'+escHtml(symbol)+'</b> <span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span></div><label class="row tiny" style="gap:6px"><input type="checkbox" data-sniper-detail-watch="'+escHtml(symbol)+'" '+(sniperWatchSymbols.has(symbol)?'checked':'')+'> Notify on entry &amp; exit</label></div><div class="az-tiles" style="margin-top:12px"><div class="az-tile"><div class="k">ENTRY REFERENCE</div><div class="v">'+fmt('entry')+'</div></div><div class="az-tile"><div class="k">STOP LOSS</div><div class="v down">'+fmt('stop_loss')+'</div></div><div class="az-tile"><div class="k">TP1</div><div class="v up">'+fmt('tp1')+'</div></div><div class="az-tile"><div class="k">TP2 / EXIT</div><div class="v up">'+fmt('tp2')+'</div></div></div><div class="hint">Price: '+(Number(r.price)>0?fmtPx(Number(r.price),digits):'—')+' · Confidence: '+liveScoreHtml(r,'span')+' · Source: '+escHtml(source)+' · '+escHtml(r.tf||'')+'. Analysis only — no order sent.</div>'+liveNoteHtml(r,false);
+  el.innerHTML='<div class="row between wrap"><div><b style="font-size:18px">'+escHtml(symbol)+'</b> <span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span></div><label class="row tiny" style="gap:6px"><input type="checkbox" data-sniper-detail-watch="'+escHtml(symbol)+'" '+(sniperWatchSymbols.has(symbol)?'checked':'')+'> Notify on entry &amp; exit</label></div><div class="az-tiles" style="margin-top:12px"><div class="az-tile"><div class="k">ENTRY REFERENCE</div><div class="v">'+fmt('entry')+'</div></div><div class="az-tile"><div class="k">STOP LOSS</div><div class="v down">'+fmt('stop_loss')+'</div></div><div class="az-tile"><div class="k">TP1</div><div class="v up">'+fmt('tp1')+'</div></div><div class="az-tile"><div class="k">TP2 / EXIT</div><div class="v up">'+fmt('tp2')+'</div></div></div><div class="hint">Price: '+(Number(r.price)>0?fmtPx(Number(r.price),digits):'—')+' · Confidence: '+liveScoreHtml(r,'span')+' · Source: '+escHtml(source)+' · '+escHtml(r.tf||'')+(closeText(r)?' · read at the '+closeText(r)+' candle close':'')+'. Analysis only — no order sent.</div>'+liveNoteHtml(r,false)+(measuredText(r)?'<div class="tiny faint" data-measured="'+escHtml(symbol)+'">'+escHtml(measuredText(r))+'</div>':'');
   const watch=el.querySelector('[data-sniper-detail-watch]');if(watch)watch.onchange=()=>setSniperWatch(symbol,watch.checked);
 }
 function renderSniperSignalAlerts(results,qualifiedSymbols=new Set()){
@@ -4591,7 +4822,7 @@ function emitSniperSignalAlerts(qualified,allResults){
     const source=String(r.data_source||r.source||'source unavailable'),old=active[r.symbol];
     if(old&&old.signal===r.signal&&old.source===source)continue;
     const fingerprint=[r.signal,source,'levels-v1'].join('|');
-    const details='Market: '+r.symbol+' · '+r.signal+' '+(Number(r.confidence)||0)+'%\nTimeframe: '+String(r.tf||'—')+'\nEntry: '+level(r.symbol,r.entry)+' · SL: '+level(r.symbol,r.stop_loss)+' · TP1: '+level(r.symbol,r.tp1)+' · TP2 / exit: '+level(r.symbol,r.tp2)+'\nSource: '+source+'\nSignal alert only — no order was placed.';
+    const details='Market: '+r.symbol+' · '+r.signal+' '+(Number(r.confidence)||0)+'%\nTimeframe: '+String(r.tf||'—')+'\nEntry: '+level(r.symbol,r.entry)+' · SL: '+level(r.symbol,r.stop_loss)+' · TP1: '+level(r.symbol,r.tp1)+' · TP2 / exit: '+level(r.symbol,r.tp2)+'\nSource: '+source+'\nSignal alert only — no order was placed.'+(measuredLine(r)?'\n'+measuredLine(r):'');
     notify('Sniper entry setup · '+r.symbol,details,{tag:'sniper-'+r.symbol+'-entry',kind:r.signal==='BUY'?'ok':'warn'});
     active[r.symbol]={signal:r.signal,source,entry:r.entry,stop_loss:r.stop_loss,tp1:r.tp1,tp2:r.tp2,tf:r.tf||'',stage:0,startedAt:Date.now(),fingerprint};
     started.add(r.symbol);

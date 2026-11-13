@@ -356,6 +356,34 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 .mini-signal:last-child{margin-bottom:0}
 .mini-signal .top{display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:5px}
 .mini-signal .meta{font-size:11.5px; color:var(--text-3); font-family:var(--mono)}
+.news-concern{margin-top:4px; line-height:1.9}
+.news-mkt{display:inline-flex; align-items:center; gap:4px; margin-right:8px; white-space:nowrap}
+.news-mkt a{font-weight:600}
+.news-aside{margin-top:3px; color:var(--text-3)}
+.news-aside.on{color:var(--red); font-weight:700}
+.news-aside-box{border:1px solid var(--border); border-radius:10px; padding:8px 12px; margin-bottom:6px; background:rgba(224,180,92,.05)}
+.news-aside-line{font-size:12.5px; line-height:1.6}
+.news-aside-line.on{color:var(--red)}
+/* News tables: headlines, markets and stand-aside lines wrap; times, currency, impact and buttons stay on one line */
+.news-tbl td{white-space:normal; vertical-align:top}
+.news-tbl td.nowrap{white-space:nowrap}
+.news-tbl tr.news-main td{border-bottom:0; padding-bottom:2px}
+.news-tbl tr.news-sub td{padding-top:0}
+.news-tbl tr.news-sub:hover, .news-tbl tr.news-main:hover{background:transparent}
+.chart-event{font-weight:700; color:var(--amber)}
+.chart-event.on{color:var(--red)}
+/* On a phone a row of the news tables is a wrapping line, not five fixed columns: nothing runs out of sight */
+@media (max-width:700px){
+  .news-tbl, .news-tbl tbody{display:block; width:100%}
+  .news-tbl thead{display:none}
+  .news-tbl tr{display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; padding:9px 2px; border-bottom:1px solid var(--border-soft)}
+  .news-tbl tr:last-child{border-bottom:0}
+  .news-tbl tr.news-main{border-bottom:0; padding-bottom:0}
+  .news-tbl tr.news-sub{padding-top:2px}
+  .tbl.news-tbl td, .tbl.news-tbl tr.news-main td, .tbl.news-tbl tr.news-sub td{display:block; padding:0; border:0}
+  .tbl.news-tbl td:not(.nowrap){flex:1 1 150px; min-width:0}
+  .tbl.news-tbl tr.news-sub td{flex:1 1 100%}
+}
 .news-row{display:flex; gap:12px; padding:11px 0; border-bottom:1px solid var(--border-soft); cursor:pointer}
 .news-row:last-child{border-bottom:0}
 .news-row:hover .headline{color:var(--brand)}
@@ -980,7 +1008,9 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <div><h1>Signal Analyzer</h1><p class="sub">Multi-timeframe confluence (1m / 5m / 1h) into one validated decision with risk levels.</p>
             <details class="tiny faint" style="margin-top:6px"><summary style="cursor:pointer">How the confidence score is computed (quality score — NOT a probability of profit)</summary>
             <div style="margin-top:6px;max-width:640px">Technical confluence score, 0–100: <b>15</b> base + <b>7</b> per confirming timeframe (up to 5) + up to <b>25</b> for bias strength (5×|avg bias|, capped) + <b>20</b> when the multi-timeframe signal is confirmed; overall cap 93 (WAIT signals capped at 45). Index CFD reads use <b>50 + 8×|signal score|</b>, capped 90. Formula is fixed and shown here so the number is explainable and stable — it is a setup-quality/confluence score, not a calibrated chance of profit.
-            <div style="margin-top:6px"><b>It then moves with the market.</b> A BUY or SELL is followed from the price it was first read at: up to <b>30</b> points come off as the live price moves from that entry toward the stop, and up to <b>15</b> are added as it moves toward target 1 (a move in the signal's direction uses up part of the target distance, so the score rises half as fast as it falls). The sentence under the score gives the distance in pips (dollars for gold) and when the signal was first read. At the stop or at target 1 that reading is over and the next analysis starts a new one. Daily index readings have no entry, stop or target, so their score moves only when a daily vote changes. Alerts and Sniper filters use the score as read. In the PC app with Exness connected, a reading made from Exness candles is measured at the Exness price of its latest analysis, never at a Deriv price, so it moves at each analysis instead of at each tick.</div></div>
+            <div style="margin-top:6px"><b>It then moves with the market.</b> A BUY or SELL is followed from the price it was first read at: up to <b>30</b> points come off as the live price moves from that entry toward the stop, and up to <b>15</b> are added as it moves toward target 1 (a move in the signal's direction uses up part of the target distance, so the score rises half as fast as it falls). The sentence under the score gives the distance in pips (dollars for gold) and when the signal was first read. At the stop or at target 1 that reading is over and the next analysis starts a new one. Daily index readings have no entry, stop or target, so their score moves only when a daily vote changes. Alerts and Sniper filters use the score as read. In the PC app with Exness connected, a reading made from Exness candles is measured at the Exness price of its latest analysis, never at a Deriv price, so it moves at each analysis instead of at each tick.</div>
+            <div style="margin-top:6px"><b>One reading per finished 5-minute candle.</b> A reading is made from finished candles only, as they stood at the last 5-minute close. A market can therefore change its reading at most once per 5-minute candle, and looking again in between changes nothing. Each card says which close it was read at.</div>
+            <div style="margin-top:6px"><b>What the score has been worth, measured.</b> In replays of this rule on historical 1-minute prices, a new BUY or SELL reached target 1 before its stop <span data-measured-range>37–41%</span> of the time, depending on the market (gold, January 2020 to November 2026: <span data-measured-gold>39.6% of 82,069</span>). 40% is needed to break even before the spread, and signals with a higher score did no better. The line under each score gives the figure for that market. It is a measurement of the past, not a forecast.</div></div>
             </details>
           </div>
           <span class="pill hidden" id="azBudget">AI today —</span>
@@ -1228,7 +1258,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <div id="sniperSelectedDetail" class="empty"><b>No market selected</b>Choose the eye icon beside a market to view its current signal details.</div>
         </div>
         <div class="card">
-          <div class="card-head"><div><h3>Live Sniper setups</h3><div class="sub">The same source-labelled setups shown in alerts and the Automation panel. Confidence moves with the price since each setup was first read; it is a score, not a chance of profit.</div></div></div>
+          <div class="card-head"><div><h3>Live Sniper setups</h3><div class="sub">The same source-labelled setups shown in alerts and the Automation panel. Confidence moves with the price since each setup was first read; it is a score, not a chance of profit. The line under it is what a replay of the rule measured on that market.</div></div></div>
           <div id="sniperSignalList"><div class="tiny faint">Start monitoring to populate Sniper setups.</div></div>
         </div>
       </section>
@@ -1241,7 +1271,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
         <div class="card" style="margin-bottom:14px">
           <div class="card-head wrap">
-            <div><h3>Gold signal monitor</h3><div class="sub">M1 / M5 / H1 confirmation · cost-free refresh every minute. Analysis source is separate from the order broker; no silent source switching.</div></div>
+            <div><h3>Gold signal monitor</h3><div class="sub">M1 / M5 / H1 confirmation · one reading per finished 5-minute candle, checked every minute at no cost. Analysis source is separate from the order broker; no silent source switching.</div></div>
             <div class="row wrap" style="gap:10px">
               <label class="row tiny" style="gap:6px">Analysis source <select class="input sm" id="goldSourceSelect" style="width:auto;min-width:190px"><option value="auto">Follow connected broker</option><option value="deriv">Deriv public candles</option><option value="mt5">Exness MT5 local bridge</option></select></label>
               <label class="row tiny" style="gap:6px"><input type="checkbox" id="goldAuto" checked> Auto-refresh</label>
@@ -1260,7 +1290,9 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <h2 id="goldSignal" style="font-size:32px;margin-top:10px">—</h2>
               <div class="row between" style="margin-top:8px"><span class="faint tiny">CONFIDENCE</span><b class="mono" id="goldConfidence" style="font-size:20px">—</b></div>
               <div class="conf-bar" style="margin-top:6px"><i id="goldConfidenceBar" style="width:0%"></i></div>
-              <div class="tiny faint" id="goldConfidenceNote" style="margin:6px 0 8px;line-height:1.45">The score appears with the first analysis.</div>
+              <div class="tiny faint" id="goldConfidenceNote" style="margin:6px 0 4px;line-height:1.45">The score appears with the first analysis.</div>
+              <div class="tiny faint" id="goldMeasured" style="margin:0 0 8px;line-height:1.45"></div>
+              <div class="tiny" id="goldAside" style="margin:0 0 8px;line-height:1.45"></div>
               <div class="tiny faint" id="goldVotes">No verified timeframe votes yet.</div>
               <div class="tiny faint" id="goldSignalUpdated" style="margin-top:6px">Last analysis: —</div>
             </div>
@@ -1302,14 +1334,14 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
         <div class="card" style="margin-bottom:14px">
           <div class="card-head">
-            <div><h3>Market-moving news</h3><div class="sub">Public keyless feeds &middot; direction chip is a labelled keyword heuristic — not AI, not advice</div></div>
+            <div><h3>Market-moving news</h3><div class="sub">Public feeds, each headline with its source &middot; the markets it names and what their own prices say now &middot; a headline does not tell the direction</div></div>
             <button class="btn sm" id="newsFeedBtn">Refresh</button>
           </div>
           <div id="newsFeed"><p class="hint">Loading market-moving headlines…</p></div>
         </div>
         <div class="card" style="margin-bottom:14px">
           <div class="card-head">
-            <div><h3>Economic calendar — Today (UTC)</h3><div class="sub">Guest sample access &middot; may be rate-limited &middot; TradingView widget below as fallback</div></div>
+            <div><h3>Economic calendar — Nairobi time (EAT)</h3><div class="sub">ForexFactory public weekly calendar &middot; may be rate-limited &middot; each high-impact release comes with a stand-aside period &middot; TradingView calendar below as a second source</div></div>
             <button class="btn sm" id="newsCalBtn">Refresh</button>
             <button class="btn sm primary" id="newsCalShare">↗ Share today's brief</button>
           </div>
@@ -1331,7 +1363,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div id="newsAiBody"><p class="hint">Uses Perplexity when a key is set in Settings. Covers current drivers, expected event outcomes and risk warnings for the selected symbol.</p></div>
             </div>
             <div class="card">
-              <div class="card-head"><div><h3>Economic calendar</h3><div class="sub">TradingView &middot; live</div></div></div>
+              <div class="card-head"><div><h3>Economic calendar</h3><div class="sub">TradingView &middot; times in this device's time zone</div></div></div>
               <div id="tvCalendar" class="tv-widget-box" style="min-height:340px"></div>
             </div>
           </div>
