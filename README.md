@@ -240,8 +240,9 @@ off.
 
 What would let an order pass again is the server reading the calendar and the
 market hours itself (step 3 of the plan in `docs/ANALYSIS_ENGINE_AUDIT.md`),
-with an unreadable calendar still counting as unknown. That is not built.
-Until it is, the PC app analyses and alerts, and an Exness order is placed in
+with an unreadable calendar still counting as unknown. That is not built, and
+pull request #17 (the same day) keeps the refusal on purpose until it is.
+Until then the PC app analyses and alerts, and an Exness order is placed in
 MetaTrader by hand. `server/tests/risklimits.test.mjs` states the refusal as a
 test, and keeps the former reservation test beside it, skipped.
 

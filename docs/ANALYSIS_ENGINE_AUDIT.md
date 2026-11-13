@@ -275,8 +275,8 @@ Each step is its own pull request. "Ships if" is the evidence required.
    sends "no news restriction" with every order, the server no longer accepts
    that, and nothing else supplies it: `/api/risk/gate` refuses every order
    from the PC app, with `news_event` UNKNOWN as the only failed check
-   (`server/tests/risklimits.test.mjs`). Whether that stays so until the
-   server-side half is built is the owner's decision.)
+   (`server/tests/risklimits.test.mjs`). Pull request #17, the same day,
+   keeps it so on purpose until the server-side half is built.)
 4. **Exposure and limits** (`server/lib/riskgate.js`, `src/sizer.js`): one
    position per correlated group, loss limit over a week, spread against the
    stop distance at entry; every limit configurable; tick value and contract
