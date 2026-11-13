@@ -8,8 +8,9 @@
  *   2. the app waits 8 seconds for the answer to a login;
  *   3. the app repeats a failed login once over HTTP straight away.
  *
- * The page the PC serves (bridge/app.html) is an older build than src/, so
- * the same facts are checked in that file as well.
+ * The page the PC serves (bridge/app.html) is a copy of the built page
+ * (tests/platform/pc-page.test.mjs), so the same facts are checked in their
+ * built, minified form as well.
  *
  * The bridge's behaviour itself is tested in Python
  * (tests/test_mt5_bridge_attach.py, against a stand-in for the Windows-only
@@ -71,7 +72,7 @@ test('an attach asked for by a login is over before the app stops waiting for th
   assert.ok(loginWait >= 1000 && loginWait <= appWaits - 2000, `login attach ${loginWait} ms, the app waits ${appWaits} ms`);
   assert.equal(startWait, 60000);
 
-  /* the PC page: same 8 seconds, in the minified form */
+  /* the page the PC serves: same 8 seconds, in the minified form */
   assert.match(pcPage, /new Error\("bridge timeout"\)\)\},8e3\)/);
   assert.match(pcPage, /AbortSignal\.timeout\(8e3\)/);
 
@@ -123,6 +124,7 @@ test('the Python tests of the PC bridge pass', (t) => {
   assert.equal(run.status, 0, output.slice(-3000));
   assert.match(output, /\nOK\b/);
   const ran = output.match(/Ran (\d+) tests? in/);
-  assert.ok(ran && Number(ran[1]) >= 44, `Python tests run: ${ran ? ran[1] : 'none'}`);
+  assert.ok(ran && Number(ran[1]) >= 49, `Python tests run: ${ran ? ran[1] : 'none'}`);
   assert.match(output, /test_a_failed_attach_reports_the_reason_and_not_code_1_success .*ok/);
+  assert.match(output, /test_the_pc_serves_the_built_page_and_its_files_byte_for_byte .*ok/);
 });

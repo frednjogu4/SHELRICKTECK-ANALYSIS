@@ -22,7 +22,8 @@
  */
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -34,6 +35,8 @@ import { runDeterministicAnalysis } from '../../server/lib/analyzer.js';
 import { localDecision } from '../../server/lib/localdecision.js';
 import { closedCandleSets } from '../../src/closedcandles.js';
 import { CALENDAR_URL, HEADLINE_SOURCES } from '../../cloudflare/news.js';
+import { createApp, configFromEnv } from '../../server/app.js';
+import { createStore } from '../../server/lib/store.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
@@ -86,8 +89,13 @@ before(async () => {
  *   news          { feeds: { address: RSS text }, calendar: rows } written by the test; offline without it
  * `pcApi`, when given, replaces the Worker: the page then runs as the PC app
  * and `pcApi(path, body)` answers its API requests with { status, body }.
+ * `pcServer: true` puts the PC's own server behind the page instead: the real
+ * server/app.js, whose candle feed is the one of `world` (cloudDeriv 'down'
+ * makes it fail). What that server fetches itself is answered here as well:
+ * Yahoo's daily series with the fixture the Worker gets, every other address
+ * (the news sources) as offline.
  */
-async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, bridgeApi = null } = {}) {
+async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcServer = false, bridgeApi = null } = {}) {
   const state = { browserDeriv: 'ok', cloudDeriv: 'ok', yahoo: 'ok', candleAgeSec: 0, ticks: false, yahooBars: {}, rewriteScan: null, scanTakesMs: 0, scanGate: null, candleRows: null, ...world };
   const problems = [];
   const warnings = [];
@@ -131,6 +139,47 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, bridg
   });
   const allow = { limit: async () => ({ success: true }) };
   const env = { AURUM_SIGNAL_LIMITER: allow, AURUM_MARKET_LIMITER: allow, ASSETS: { fetch: async () => new Response('shell') } };
+
+  /* The PC's own server, listening on this machine for the length of the test. Its feed hands on
+     Deriv's rows in the shape server/lib/derivfeed.js does. */
+  let pcServerBase = '';
+  let stopPcServer = async () => {};
+  if (pcServer) {
+    const folder = mkdtempSync(join(tmpdir(), 'aurum-pc-app-'));
+    const config = Object.assign(configFromEnv({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', PERPLEXITY_API_KEY: '' }), { apiKey: '', backtestRatePerMin: 100000 });
+    const notInThisTest = async () => { throw new Error('not part of this test'); };
+    const feed = {
+      symbols: Object.fromEntries(DERIV_INSTRUMENTS.map((instrument) => [instrument.s, instrument.deriv])),
+      fetchCandles: async (symbol, granularity, count) => {
+        if (state.cloudDeriv !== 'ok') throw new Error('deriv timeout');
+        return rows(DERIV_INSTRUMENTS.find((instrument) => instrument.s === symbol).deriv, granularity, count)
+          .map((c) => ({ time: c.epoch, open: +c.open, high: +c.high, low: +c.low, close: +c.close, volume: 0 }));
+      },
+      fetchCandlesByCode: notInThisTest, fetchActiveSymbols: notInThisTest, fetchTickByCode: notInThisTest
+    };
+    const listening = createApp({ store: createStore(join(folder, 'store.json')), config, feed }).listen(0, '127.0.0.1');
+    await new Promise((resolveListening) => listening.once('listening', resolveListening));
+    pcServerBase = 'http://127.0.0.1:' + listening.address().port;
+    /* The server reaches Yahoo and the news sources with the fetch of this process. While this app is open,
+       that fetch answers them from `world`; requests to a server on this machine pass through. */
+    const outerFetch = globalThis.fetch;
+    const ownFetch = async (input, init) => {
+      const url = String((input && input.url) || input);
+      if (/^http:\/\/127\.0\.0\.1:\d+\//.test(url)) return outerFetch(input, init);
+      if (url.startsWith('https://query1.finance.yahoo.com/')) {
+        if (state.yahoo !== 'ok') throw new Error('Yahoo Finance HTTP 503');
+        return Response.json(yahooChartFixture(state.yahooBars));
+      }
+      throw new Error('this source is offline in this test');
+    };
+    globalThis.fetch = ownFetch;
+    stopPcServer = async () => {
+      if (globalThis.fetch === ownFetch) globalThis.fetch = outerFetch;
+      listening.close();
+      if (listening.closeAllConnections) listening.closeAllConnections();
+      rmSync(folder, { recursive: true, force: true });
+    };
+  }
 
   const consoleLines = new VirtualConsole();
   consoleLines.on('jsdomError', (error) => problems.push('jsdomError: ' + ((error.detail && error.detail.stack) || error.message)));
@@ -208,7 +257,10 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, bridg
           if (state.scanGate) await state.scanGate();
         }
         let response;
-        if (pcApi) {
+        if (pcServerBase) {
+          const answer = await fetch(pcServerBase + url.pathname + url.search, { method: record.method, headers: { 'content-type': 'application/json' }, body: init.body });
+          response = new Response(await answer.text(), { status: answer.status, headers: { 'content-type': 'application/json' } });
+        } else if (pcApi) {
           const answer = pcApi(url.pathname, body) || { status: 404, body: { error: 'not_part_of_this_test' } };
           response = new Response(JSON.stringify(answer.body), { status: answer.status || 200, headers: { 'content-type': 'application/json' } });
         } else {
@@ -305,6 +357,7 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, bridg
       closing = true;
       await new Promise((r) => setTimeout(r, 50));
       window.close();
+      await stopPcServer();
     }
   };
 }
@@ -1181,8 +1234,9 @@ const pushTick = (app, code, quote) => {
   stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: code, quote, epoch: nowSec() } }) });
 };
 const NO_LEVELS = 'Daily index reading from daily closing prices: it has no entry, stop or target, so nothing here moves with the price and there is no measured result. Levels need minute-by-minute prices, which for indices come only from Exness MT5 in the PC app.';
-/* What the replay measured (src/measured.js). A reading written by these tests comes from the PC's server, which looks every minute: "minute".
-   A reading made in the page from finished candles belongs to a 5-minute close: "close". */
+/* What the replay measured (src/measured.js). A reading written by these tests names no 5-minute close, the way a PC server
+   from before 13 Nov 2026 answers, which looked every minute: "minute". A reading that names its close, made in the page or
+   by the PC's server as it is now, has the figure of the 5-minute rule: "close". */
 const EUR_MEASURED_CLOSE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 40.2% of 6,453 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const GOLD_MEASURED_MINUTE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.8% of 177,715 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const GOLD_MEASURED_CLOSE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 82,069 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
@@ -1376,11 +1430,14 @@ test('live confidence, Gold monitor: the score is shown, moves with the gold pri
     await app.open('gold');
     await app.waitFor(() => text('goldSignal') === 'SELL', 'the first gold analysis');
 
-    /* Under the score: what the replay measured on gold. This analysis comes from the PC's server: the every-minute figure. */
+    /* Under the score: what the replay measured on gold. This answer names no close, as an older PC server's: the every-minute figure. */
     assert.equal(text('goldMeasured'), GOLD_MEASURED_MINUTE);
     const goldAlert = [...doc.querySelectorAll('#toasts .toast')].find((toast) => /^Gold\/USD signal (ready|changed)$/.test(toast.querySelector('b').textContent));
     assert.match(goldAlert.querySelector('span').textContent, /\nMeasured in a replay on gold: 39\.8% of such signals reached TP1 before the SL \(break-even 40% before the spread\)\. Not a forecast\.$/);
-    assert.match(text('goldSignalUpdated'), /^Last analysis: /, 'the PC server does not say which close its reading belongs to');
+    assert.match(text('goldSignalUpdated'), /^Last analysis: /, 'this answer does not say which close its reading belongs to');
+    /* ...and the page does not promise the 5-minute rule for it: it says where such a reading comes from and what to do. */
+    assert.ok(text('goldAnalysisNoticeText').endsWith(' (this reading can change every minute: it comes from an older version of the AURUM server, which does not read at the 5-minute close yet. If that server runs on this PC, close the "Fredrick AURUM Local API" window and run START_ALL_LOCAL.bat again).'), text('goldAnalysisNoticeText'));
+    assert.doesNotMatch(text('goldAnalysisNoticeText'), /a reading changes only when/);
 
     /* 3 dollars with the SELL, 13% of the way to the target: 71 + 2. */
     assert.equal(text('goldConfidence'), '73%');
@@ -1608,8 +1665,10 @@ const exnessBridge = (markets) => (frame) => {
   if (frame.type === 'positions') return { type: 'positions', list: [] };
   if (frame.type === 'history') {
     const m = market(frame.symbol);
-    return m ? { type: 'history', symbol: m.name, timeframe: frame.timeframe, candles: bridgeCandles(frame.timeframe, m.shape, m.level, m.pauseSec || 0) }
-      : { type: 'error', message: 'Symbol is not available in the connected MT5 terminal.' };
+    if (!m) return { type: 'error', message: 'Symbol is not available in the connected MT5 terminal.' };
+    /* `only: { M5: 1 }`: the terminal has loaded just the newest candle of that timeframe. */
+    const candles = bridgeCandles(frame.timeframe, m.shape, m.level, m.pauseSec || 0), keep = m.only && m.only[frame.timeframe];
+    return { type: 'history', symbol: m.name, timeframe: frame.timeframe, candles: keep ? candles.slice(-keep) : candles };
   }
   if (frame.type === 'quote') {
     const half = (m) => 10 ** -m.digits;
@@ -1915,6 +1974,9 @@ test('Gold monitor on the cloud: one reading per finished 5-minute candle, and a
     await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
     await new Promise((r) => setTimeout(r, 60));
     const close = clock.settle();
+    /* settle() may have moved the clock by up to 140 seconds, and the monitor analyses only with a gold price under
+       two minutes old: without a new tick this test failed when it began 180 to 200 seconds after a 5-minute close. */
+    tickNow();
     await app.open('gold');
     await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the first gold analysis');
     assert.match(text('goldFeedStatus'), /^LIVE ANALYSIS \u00b7 Deriv public candles \u00b7 labelled fallback/);
@@ -2067,6 +2129,23 @@ test('Exness connected: a terminal whose market has just resumed gives no Exness
     await app.open('gold');
     await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the gold analysis');
     assert.match(text('goldFeedStatus'), /^LIVE ANALYSIS \u00b7 Deriv public candles \u00b7 labelled fallback \(reason: Exness MT5 unavailable: Exness Gold has just resumed after a pause/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Exness connected: a terminal without a finished 5-minute Gold candle is not called a pause; the labelled fallback says what is missing', async () => {
+  /* The terminal has the whole 1-minute and 1-hour history of gold and, of the 5-minute one, only the candle that is forming. */
+  const gold = { ...bridgeMarket('XAU/USD', { name: 'XAUUSDm', level: 4000, digits: 2 }), only: { M5: 1 } };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, bridgeApi: exnessBridge({ XAUUSD: gold }), world: { ticks: true } });
+  try {
+    await app.enter();
+    const text = (id) => app.doc.getElementById(id).textContent;
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the Deriv gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await connectExness(app);
+    await app.open('gold');
+    await app.waitFor(() => /^LIVE ANALYSIS .*Exness MT5 unavailable/.test(text('goldFeedStatus')), 'the gold analysis');
+    assert.equal(text('goldFeedStatus'), 'LIVE ANALYSIS \u00b7 Deriv public candles \u00b7 labelled fallback (reason: Exness MT5 unavailable: Exness Gold history gives no finished 5-minute candle to read at yet.)');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -2456,4 +2535,443 @@ test('Gold page: a calendar that cannot be read is said under the signal and in 
     assert.equal([...doc.querySelectorAll('#toasts .toast b')].filter((el) => el.textContent === 'Gold news alert').length, 0);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
+});
+
+/* ---------------------------------------------------------------- the PC app and the website show the same reading */
+
+/* Reported on 13 Nov 2026 with two screenshots of the same minute: the PC app (Exness not connected) and the
+   website showed different scores and levels for the same markets, and the PC's Gold page said "Last analysis",
+   "once per minute", where the website said "Reading of the 14:35 candle close". Two causes: the PC served an
+   older build of the page (tests/platform/pc-page.test.mjs), and the PC's own server made its reading from the
+   forming candles. In these tests the page talks to the real server/app.js, which reads the same candles as the
+   rest of `world`. */
+
+test('PC app, its own server: the Gold monitor shows one reading per finished 5-minute candle, the one the rule gives at that close', async () => {
+  const market = directionalMarket();
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { ticks: true, candleRows: market } });
+  try {
+    const clock = pageClock(app);
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    const levelsShown = () => ({ signal: text('goldSignal'), entry: text('goldEntry'), stop: text('goldSL'), target: text('goldTP1'), measured: text('goldMeasured') });
+    const closeShown = () => (/^Reading of the (\d\d:\d\d) candle close /.exec(text('goldSignalUpdated')) || [])[1];
+    const tickNow = () => {
+      const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+      stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: 'frxXAUUSD', quote: GOLD_TICK, epoch: Math.floor(clock.now()) } }) });
+    };
+    const look = async () => {
+      const before = text('goldSignalUpdated');
+      tickNow();
+      app.click(doc.getElementById('goldAnalyzeBtn'));
+      await app.waitFor(() => text('goldSignalUpdated') !== before && text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the gold analysis');
+      return levelsShown();
+    };
+    /* What the rule reads from the finished candles of this market at the page's time: the reading the website shows. */
+    const ruleNow = () => {
+      const sets = Object.fromEntries([['m1', 60], ['m5', 300], ['h1', 3600]].map(([key, granularity]) => [key,
+        market('frxXAUUSD', granularity, 120, Math.floor(clock.now())).map((row) => ({ time: row.epoch, open: row.open, high: row.high, low: row.low, close: row.close }))]));
+      return localDecision(runDeterministicAnalysis('XAU/USD', closedCandleSets(sets).sets));
+    };
+    const shown = (value) => Number(String(value).replace(/,/g, ''));
+
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    const close = clock.settle();
+    /* settle() may have moved the clock by up to 140 seconds, and the monitor analyses only with a gold price under
+       two minutes old: without a new tick this test failed when it began 180 to 200 seconds after a 5-minute close. */
+    tickNow();
+    await app.open('gold');
+    await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the first gold analysis');
+
+    /* The PC's own wording for where the reading comes from; the reading itself is made by the PC's server. */
+    assert.equal(text('goldFeedStatus'), 'LIVE ANALYSIS \u00b7 Deriv public candles \u00b7 labelled fallback (reason: Exness MT5 bridge is not connected)');
+    assert.ok(app.requests.some((r) => r.path === '/api/signals/analyze' && r.status === 200), 'answered by the PC server');
+    assert.ok(app.sockets.every((entry) => entry.sent.every((message) => message.style === 'ticks')), 'the browser opened no candle connection of its own');
+
+    const first = levelsShown();
+    assert.ok(first.signal === 'BUY' || first.signal === 'SELL', 'the page reads the chosen market as a direction, as the rule did when asked');
+    /* The lines the website shows, word for word. */
+    assert.equal(closeShown(), hhmm(close));
+    assert.match(text('goldSignalUpdated'), /^Reading of the \d\d:\d\d candle close \u00b7 checked .* \u00b7 the next reading comes with the next 5-minute close; no fixed expiry\.$/);
+    assert.match(text('goldAnalysisNoticeText'), /^Verified source: Deriv public candles \u00b7 labelled fallback \(reason: Exness MT5 bridge is not connected\)\. Last successful check \d+s ago\. Auto-refresh next check in \d+s \(a reading changes only when a 5-minute candle closes\)\.$/);
+    assert.equal(first.measured, GOLD_MEASURED_CLOSE);
+    /* ...and the figures of the rule at that close. */
+    const rule = ruleNow();
+    assert.equal(first.signal, rule.signal);
+    assert.ok(Math.abs(shown(first.entry) - rule.entry) < 0.006, `entry ${first.entry} against ${rule.entry}`);
+    assert.ok(Math.abs(shown(first.stop) - rule.stop_loss) < 0.006, `stop ${first.stop} against ${rule.stop_loss}`);
+    assert.ok(Math.abs(shown(first.target) - rule.tp1) < 0.006, `target ${first.target} against ${rule.tp1}`);
+
+    /* A minute later, inside the same 5-minute candle: the same reading in every figure. */
+    clock.advance(61);
+    assert.deepEqual(await look(), first);
+    assert.equal(closeShown(), hhmm(close));
+
+    /* After the next close: the next reading, at another price. */
+    clock.advance(close + 320 - clock.now());
+    const next = await look();
+    assert.equal(closeShown(), hhmm(close + 300));
+    assert.notEqual(next.entry, first.entry);
+    assert.ok(Math.abs(shown(next.entry) - ruleNow().entry) < 0.006);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('PC app, its own server: every signal card and every row of the Markets table says which 5-minute close it was read at', async () => {
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { ticks: true, candleRows: directionalMarket() } });
+  try {
+    await app.openMarkets();
+    const PC_SOURCE = 'Deriv public candles \u00b7 fallback (Exness unavailable: Exness bridge is not connected in this tab.)';
+    for (const symbol of DERIV_SYMBOLS) {
+      const row = app.row(symbol);
+      assert.match(row.badge, /^(Buy|Sell)/, `${symbol}: the chosen market reads as a direction`);
+      assert.equal(row.source, 'source: ' + PC_SOURCE, symbol);
+    }
+    await app.open('signals');
+    const grid = app.doc.getElementById('sigGrid');
+    await app.waitFor(() => grid.querySelectorAll('.sig-card').length > 0, 'signal cards');
+    const cards = [...grid.querySelectorAll('.sig-card')].map((card) => ({ symbol: card.querySelector('.sym-name').textContent, why: card.querySelector('.sig-why').textContent, measured: (card.querySelector('.sig-measured') || {}).textContent || '' }));
+    const fromDeriv = cards.filter((card) => DERIV_SYMBOLS.includes(card.symbol));
+    assert.ok(fromDeriv.length >= 3, 'cards of Deriv markets');
+    for (const card of fromDeriv) {
+      assert.ok(card.why.endsWith(' \u00b7 source: ' + PC_SOURCE + ' \u00b7 read at the ' + (/(\d\d:\d\d) candle close$/.exec(card.why) || [])[1] + ' candle close'), card.symbol + ': ' + card.why);
+    }
+    /* The replay figure under a card is the one of the 5-minute rule, as on the website. */
+    const eur = fromDeriv.find((card) => card.symbol === 'EUR/USD');
+    if (eur) assert.equal(eur.measured, EUR_MEASURED_CLOSE);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('PC app: a reading the PC server made from before a pause is not shown; the row says the market has just resumed', async () => {
+  const candleTime = nowSec();
+  const pcApi = (path, body) => {
+    if (path === '/api/health') return { status: 200, body: { ok: true } };
+    if (path === '/api/signals/scan') {
+      return { status: 200, body: { results: body.symbols.map((symbol) => ({ ...LIVE_BUY, symbol, latest_candle_time: candleTime, candle_close: Math.floor(candleTime / 300) * 300 - 2400, candle_current: symbol !== 'EUR/USD' })) } };
+    }
+    return null;
+  };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi });
+  try {
+    await app.openMarkets();
+    /* The row the website shows for the same state (src/hostedscan.js, resumedReading). */
+    const eur = app.row('EUR/USD');
+    assert.equal(eur.badge, 'Stale data');
+    assert.equal(eur.title, 'EUR/USD has just resumed after a pause: no 5-minute candle has closed since, so a reading would describe the market before the pause. The first reading comes with the next 5-minute close.');
+    assert.equal(eur.source, 'source: Deriv public candles \u00b7 resumed, waiting for a finished candle');
+    assert.equal(eur.levels, false, 'no entry, stop or target from before the pause');
+    assert.equal(eur.hasRetry, false, 'a retry cannot help before the next close');
+    assert.match(app.row('GBP/USD').badge, /^Buy/, 'a market that ran through keeps its reading');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* The order ticket of the PC app fills its stop and targets from a reading. What it must never take them from is
+   a reading made before a pause: the entry of such a reading is not the price now. */
+const RESUMED_DETAIL = (symbol) => symbol + ' has just resumed after a pause: no 5-minute candle has closed since, so a reading would describe the market before the pause. The first reading comes with the next 5-minute close.';
+const ticketOf = (app) => {
+  const doc = app.doc, select = doc.getElementById('chartSymbol');
+  return {
+    note: doc.getElementById('levelsNote'),
+    /* the line above the chart, without the calendar note that follows the reading */
+    strip: () => doc.getElementById('chartLevels').firstElementChild.textContent,
+    /* choosing the symbol that is already on the chart asks for its reading again */
+    choose: (symbol) => { select.value = symbol; select.dispatchEvent(new app.window.Event('change', { bubbles: true })); },
+    levels: () => ['orderSL', 'orderTP', 'orderTP2'].map((id) => doc.getElementById(id).value),
+    type: (id, value) => { const field = doc.getElementById(id); field.value = value; field.dispatchEvent(new app.window.Event('input', { bubbles: true })); }
+  };
+};
+
+test('PC app, order ticket: a reading from before a pause fills nothing, also when the server only marks it; levels filled in earlier are withdrawn, typed ones stay', async () => {
+  const candleTime = nowSec();
+  const resumed = new Set(['EUR/USD']);
+  /* A server that still hands out the reading from before the pause, marked candle_current:false (as the read-only Worker does). */
+  const pcApi = (path, body) => {
+    if (path === '/api/health') return { status: 200, body: { ok: true } };
+    if (path === '/api/signals/scan') {
+      return { status: 200, body: { results: body.symbols.map((symbol) => ({ ...LIVE_BUY, symbol, latest_candle_time: candleTime, candle_close: Math.floor(candleTime / 300) * 300 - (resumed.has(symbol) ? 2400 : 0), candle_current: !resumed.has(symbol) })) } };
+    }
+    return null;
+  };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi });
+  try {
+    await app.enter();
+    await app.open('trade');
+    const ticket = ticketOf(app);
+    const filled = [LIVE_BUY.stop_loss, LIVE_BUY.tp1, LIVE_BUY.tp2].map((level) => level.toFixed(5));
+
+    /* A market that runs: its stop and targets go onto the ticket. */
+    ticket.choose('GBP/USD');
+    await app.waitFor(() => /^Levels from live analysis/.test(ticket.note.textContent), 'levels for a market that runs');
+    assert.deepEqual(ticket.levels(), filled);
+
+    /* A market that has just resumed: the answer holds a BUY with levels; none of it reaches the ticket or the chart. */
+    ticket.choose('EUR/USD');
+    await app.waitFor(() => ticket.note.textContent === RESUMED_DETAIL('EUR/USD'), 'the ticket note for a market that has just resumed');
+    assert.deepEqual(ticket.levels(), ['', '', '']);
+    assert.equal(ticket.strip(), RESUMED_DETAIL('EUR/USD'));
+
+    /* A market pauses and resumes while its levels are on the ticket: asked again, they are withdrawn. */
+    ticket.choose('GBP/USD');
+    await app.waitFor(() => /^Levels from live analysis/.test(ticket.note.textContent), 'levels for GBP/USD again');
+    assert.deepEqual(ticket.levels(), filled);
+    resumed.add('GBP/USD');
+    ticket.choose('GBP/USD');
+    await app.waitFor(() => ticket.note.textContent === RESUMED_DETAIL('GBP/USD'), 'the ticket note once GBP/USD has resumed');
+    assert.deepEqual(ticket.levels(), ['', '', ''], 'the levels of the reading before the pause are gone');
+    assert.equal(ticket.strip(), RESUMED_DETAIL('GBP/USD'));
+
+    /* A stop the trader typed is his own: it stays. */
+    ticket.type('orderSL', '1.23456');
+    ticket.choose('GBP/USD');
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(ticket.note.textContent, RESUMED_DETAIL('GBP/USD'));
+    assert.deepEqual(ticket.levels(), ['1.23456', '', '']);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('PC app, its own server: a chart chosen right after a pause gets no reading and no levels; the first 5-minute close of the new session brings both', async () => {
+  const market = directionalMarket();
+  /* Set once the page clock is settled: no GBP/USD price between `from` and `to`. A feed has a candle only for a period with a price in it. */
+  let pause = null;
+  const candleRows = (code, granularity, count, now) => market(code, granularity, count, now).filter((row) => !pause || code !== 'frxGBPUSD' || row.epoch < pause.from || row.epoch + granularity > pause.to);
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { ticks: true, candleRows } });
+  try {
+    const clock = pageClock(app);
+    await app.enter();
+    await app.open('trade');
+    const ticket = ticketOf(app);
+    const close = clock.settle();
+    /* GBP/USD gave its first price two seconds ago, after half an hour without one. */
+    pause = { from: clock.now() - 1800, to: clock.now() - 2 };
+
+    ticket.choose('GBP/USD');
+    await app.waitFor(() => ticket.note.textContent === RESUMED_DETAIL('GBP/USD'), 'the ticket note for a market that has just resumed');
+    assert.deepEqual(ticket.levels(), ['', '', ''], 'no stop and no target from before the pause');
+    assert.equal(ticket.strip(), RESUMED_DETAIL('GBP/USD'));
+    /* The Markets table shows the website's row for it; a market without a pause keeps its reading. */
+    await app.openMarkets();
+    const row = app.row('GBP/USD');
+    assert.equal(row.badge, 'Stale data');
+    assert.equal(row.title, RESUMED_DETAIL('GBP/USD'));
+    assert.equal(row.source, 'source: Deriv public candles \u00b7 resumed, waiting for a finished candle');
+    assert.equal(row.levels, false);
+    assert.match(app.row('EUR/USD').badge, /^(Buy|Sell)/);
+
+    /* Twenty seconds after the next 5-minute close: the candle that began with the new session has finished. */
+    clock.advance(close + 320 - clock.now());
+    await app.open('trade');
+    ticket.choose('EUR/USD');
+    ticket.choose('GBP/USD');
+    await app.waitFor(() => /^Levels from live analysis/.test(ticket.note.textContent), 'levels from the first reading of the new session');
+    for (const level of ticket.levels()) assert.ok(Number(level) > 0, 'a stop and two targets: ' + ticket.levels().join(' / '));
+    assert.equal(ticket.strip(), 'LIVE SIGNAL LEVELS');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* `candle_current: false` alone does not say why. With a close the market has just resumed after a pause; without
+   one (candle_close 0) the history holds no finished 5-minute candle, which is missing history and not a pause. */
+const NO_CANDLES_NOTE = (symbol) => 'No confirmed setup for ' + symbol + ' yet (feed error) \u2014 SL/TP fill when the timeframes align.';
+
+test('PC app, its own server: a history without a finished 5-minute candle is not called a pause; the row and the ticket show the WAIT with its own reason', async () => {
+  /* USD/JPY: one candle per timeframe, the one that is forming. Every other market has its whole history. */
+  const market = directionalMarket();
+  const candleRows = (code, granularity, count, now) => { const rows = market(code, granularity, count, now); return code === 'frxUSDJPY' ? rows.slice(-1) : rows; };
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { ticks: true, candleRows } });
+  try {
+    await app.openMarkets();
+    const row = app.row('USD/JPY');
+    assert.equal(row.badge, 'Wait \u00b7 feed error');
+    assert.equal(row.title, 'Wait [FEED_ERROR] (some timeframes lack data \u2014 not confirmable) \u2014 No timeframe returned usable candles just now.');
+    assert.equal(row.source, 'source: Deriv public candles \u00b7 fallback (Exness unavailable: Exness bridge is not connected in this tab.)');
+    assert.equal(row.levels, false);
+    assert.match(app.row('EUR/USD').badge, /^(Buy|Sell)/, 'a market with its history keeps its reading');
+
+    await app.open('trade');
+    const ticket = ticketOf(app);
+    ticket.choose('USD/JPY');
+    await app.waitFor(() => ticket.note.textContent === NO_CANDLES_NOTE('USD/JPY'), 'the ticket note for a market without candles');
+    assert.deepEqual(ticket.levels(), ['', '', '']);
+    assert.doesNotMatch(app.doc.getElementById('chartLevels').textContent, /resumed/);
+
+    /* The analysis panel and the six roles under it: the server's WAIT with its reason, and the roles' report of it. Neither speaks of a pause. */
+    await app.open('signals');
+    app.doc.getElementById('azSymbol').value = 'USD/JPY';
+    app.click(app.doc.getElementById('azRun'));
+    await app.waitFor(() => !app.doc.getElementById('azResult').classList.contains('hidden'), 'the analysis result');
+    assert.match(app.doc.getElementById('azWhy').textContent, /^Why WAIT: No timeframe returned usable candles just now\.reason: FEED_ERROR /);
+    assert.ok(app.doc.getElementById('azRationale').textContent.length > 20, 'the server\'s own analysis is shown, with its write-up');
+    await app.waitFor(() => { const flow = app.doc.getElementById('pipelineFlow'); return flow && !/running/.test(flow.textContent); }, 'the six-role panel');
+    const flow = app.doc.getElementById('pipelineFlow').textContent;
+    assert.match(flow, /^Six-role pipeline \u2014 Boss verdict: /);
+    assert.doesNotMatch(flow, /resumed|Pipeline unavailable/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('PC app: an answer marked as not current that names no close is never called a pause: a WAIT is shown as it is, a direction is withheld', async () => {
+  const candleTime = nowSec();
+  const UNCONFIRMED = 'The reading for AUD/USD is marked as not current and names no 5-minute close, so it cannot be confirmed. No reading is shown.';
+  const pcApi = (path, body) => {
+    if (path === '/api/health') return { status: 200, body: { ok: true } };
+    if (path === '/api/signals/scan') {
+      return { status: 200, body: { results: body.symbols.map((symbol) => {
+        /* What the PC's server answers for a history without a finished 5-minute candle. */
+        if (symbol === 'USD/JPY') return { ...liveWait(symbol), confidence: 15, wait_reason: 'FEED_ERROR', wait_detail: 'No timeframe returned usable candles just now.', data_ok: false, latest_candle_time: candleTime, candle_close: 0, candle_current: false };
+        /* What no server of this project sends: a direction with levels, marked as not current, without a close. */
+        if (symbol === 'AUD/USD') return { ...LIVE_BUY, symbol, latest_candle_time: candleTime, candle_close: 0, candle_current: false };
+        return { ...LIVE_BUY, symbol, latest_candle_time: candleTime, candle_close: Math.floor(candleTime / 300) * 300, candle_current: true };
+      }) } };
+    }
+    return null;
+  };
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi });
+  try {
+    await app.openMarkets();
+    const jpy = app.row('USD/JPY');
+    assert.equal(jpy.badge, 'Wait \u00b7 feed error');
+    assert.match(jpy.title, / \u2014 No timeframe returned usable candles just now\.$/);
+    const aud = app.row('AUD/USD');
+    assert.equal(aud.badge, 'Stale data');
+    assert.equal(aud.title, UNCONFIRMED);
+    assert.equal(aud.source, 'source: Deriv public candles \u00b7 not confirmed as current');
+    assert.equal(aud.levels, false);
+
+    await app.open('trade');
+    const ticket = ticketOf(app);
+    ticket.choose('USD/JPY');
+    await app.waitFor(() => ticket.note.textContent === NO_CANDLES_NOTE('USD/JPY'), 'the ticket note for a WAIT without candles');
+    assert.deepEqual(ticket.levels(), ['', '', '']);
+    ticket.choose('AUD/USD');
+    await app.waitFor(() => ticket.note.textContent === UNCONFIRMED, 'the ticket note for a direction that cannot be confirmed');
+    assert.deepEqual(ticket.levels(), ['', '', ''], 'its levels are not on the ticket');
+    assert.equal(ticket.strip(), UNCONFIRMED);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('PC app, its own server: right after a pause the Gold monitor shows no signal; the first one comes when a 5-minute candle of the new session has closed', async () => {
+  const market = directionalMarket();
+  /* Set once the page clock is settled: no gold price between `from` and `to`. */
+  let pause = null;
+  const candleRows = (code, granularity, count, now) => market(code, granularity, count, now).filter((row) => !pause || code !== 'frxXAUUSD' || row.epoch < pause.from || row.epoch + granularity > pause.to);
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { ticks: true, candleRows } });
+  try {
+    const clock = pageClock(app);
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    const tickNow = () => {
+      const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+      stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: 'frxXAUUSD', quote: GOLD_TICK, epoch: Math.floor(clock.now()) } }) });
+    };
+    const analyses = () => app.requests.filter((r) => r.path === '/api/signals/analyze');
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    const close = clock.settle();
+    /* Gold gave its first price two seconds ago, after half an hour without one (its daily break lasts an hour). */
+    pause = { from: clock.now() - 1800, to: clock.now() - 2 };
+    tickNow();
+    const asked = analyses().length;
+    await app.open('gold');
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => analyses().length > asked && analyses().at(-1).status != null && text('goldSignalBadge') === 'UNAVAILABLE', 'the monitor to withhold the signal');
+    /* The PC's server had no reading to give, and said so. */
+    assert.equal(analyses().at(-1).status, 409);
+    assert.equal(text('goldRationale'), 'Deriv Gold has just resumed after a pause: no 5-minute candle has closed since. The first reading comes with the next 5-minute close. No old signal is being presented as current.');
+    assert.equal(text('goldSignal'), '\u2014');
+    assert.deepEqual(['goldEntry', 'goldSL', 'goldTP1', 'goldTP2'].map(text), ['\u2014', '\u2014', '\u2014', '\u2014']);
+    assert.equal(text('goldMeasured'), '');
+    assert.equal([...doc.querySelectorAll('#toasts .toast b')].filter((el) => /^Gold\/USD signal/.test(el.textContent)).length, 0, 'no alert from before the pause');
+
+    /* Twenty seconds after the next 5-minute close: the candle that began with the new session has finished. */
+    clock.advance(close + 320 - clock.now());
+    tickNow();
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => /^(LIVE ANALYSIS|CHECK DATA) /.test(text('goldFeedStatus')), 'the first reading of the new session');
+    assert.equal(analyses().at(-1).status, 200, 'this one is the server\'s reading');
+    assert.match(text('goldSignalUpdated'), new RegExp('^Reading of the ' + hhmm(close + 300) + ' candle close '));
+    assert.ok(text('goldSignal') === 'BUY' || text('goldSignal') === 'SELL');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('the same candles at the same moment: the PC app (Exness not connected) and the website show the same Gold reading and the same signal cards', async () => {
+  const market = directionalMarket();
+  /* The website as it runs live: the AURUM cloud cannot reach Deriv, so this browser reads the candles itself. */
+  const website = await bootApp({ world: { cloudDeriv: 'down', ticks: true, candleRows: market } });
+  /* The PC app: the page from the bridge, its readings from the PC's own server. */
+  const pc = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { ticks: true, candleRows: market } });
+  try {
+    /* Both pages at one moment, at least 20 seconds after a 5-minute close and 150 before the next. */
+    const clocks = new Map([[website, pageClock(website)], [pc, pageClock(pc)]]);
+    const into = clocks.get(website).now() % 300;
+    const shift = into > 150 ? 320 - into : into < 20 ? 20 - into : 0;
+    if (shift) for (const clock of clocks.values()) clock.advance(shift);
+    const close = Math.floor(clocks.get(website).now() / 300) * 300;
+
+    const goldOf = async (app) => {
+      const text = (id) => app.doc.getElementById(id).textContent;
+      await app.enter();
+      await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+      await new Promise((r) => setTimeout(r, 60));
+      /* The clock may have been moved by more than two minutes; the monitor analyses only with a gold price younger than that. */
+      const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+      stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: 'frxXAUUSD', quote: GOLD_TICK, epoch: Math.floor(clocks.get(app).now()) } }) });
+      await app.open('gold');
+      /* "LIVE ANALYSIS", or "CHECK DATA" for a reading without confirmation: whichever it is, it has to be the same on both. */
+      await app.waitFor(() => /^(LIVE ANALYSIS|CHECK DATA) /.test(text('goldFeedStatus')), 'the gold analysis');
+      const asRead = /score as read (\d+)%/.exec(text('goldConfidenceNote'));
+      return {
+        status: text('goldFeedStatus').split(' \u00b7 ')[0],
+        signal: text('goldSignal'), badge: text('goldSignalBadge'), entry: text('goldEntry'), stop: text('goldSL'), target1: text('goldTP1'), target2: text('goldTP2'),
+        score: asRead ? asRead[1] + '%' : text('goldConfidence'), votes: text('goldVotes'), measured: text('goldMeasured'),
+        close: (/^Reading of the (\d\d:\d\d) candle close /.exec(text('goldSignalUpdated')) || [])[1],
+        rule: (/\(([^()]*)\)\.$/.exec(text('goldAnalysisNoticeText')) || [])[1]
+      };
+    };
+    const cardsOf = async (app) => {
+      await app.open('signals');
+      const grid = app.doc.getElementById('sigGrid');
+      await app.waitFor(() => grid.querySelectorAll('.sig-card').length > 0, 'signal cards');
+      const cards = {};
+      for (const card of grid.querySelectorAll('.sig-card')) {
+        const symbol = card.querySelector('.sym-name').textContent;
+        const why = card.querySelector('.sig-why').textContent;
+        const asRead = /score as read (\d+)%/.exec(card.querySelector('.sig-live').textContent);
+        cards[symbol] = {
+          signal: card.querySelector('.badge').textContent,
+          score: asRead ? asRead[1] + '%' : card.querySelector('.row.between b').textContent,
+          entry: card.querySelector('[data-l="e"]').textContent, stop: card.querySelector('[data-l="s"]').textContent, target: card.querySelector('[data-l="t"]').textContent,
+          measured: card.querySelector('.sig-measured').textContent,
+          /* "buy confirmed · MTF 1m/5m/1h" and "read at the 14:35 candle close": the source label between them differs on purpose. */
+          reading: why.split(' \u00b7 source: ')[0], close: (/ \u00b7 read at the (\d\d:\d\d) candle close$/.exec(why) || [])[1]
+        };
+      }
+      return cards;
+    };
+
+    const goldOnWebsite = await goldOf(website), goldOnPc = await goldOf(pc);
+    assert.ok(goldOnWebsite.signal === 'BUY' || goldOnWebsite.signal === 'SELL', 'the chosen market reads as a direction');
+    assert.equal(goldOnWebsite.close, hhmm(close));
+    assert.equal(goldOnWebsite.rule, 'a reading changes only when a 5-minute candle closes');
+    assert.deepEqual(goldOnPc, goldOnWebsite);
+
+    const cardsOnWebsite = await cardsOf(website), cardsOnPc = await cardsOf(pc);
+    const shown = Object.keys(cardsOnWebsite);
+    assert.equal(shown.filter((symbol) => DERIV_SYMBOLS.includes(symbol)).length, 6, 'six Deriv markets on the website');
+    assert.deepEqual(shown.filter((symbol) => !DERIV_SYMBOLS.includes(symbol)).sort(), ['NAS100', 'SPX500', 'US30'], 'and the three daily index readings');
+    assert.deepEqual(Object.keys(cardsOnPc).sort(), shown.sort(), 'the same markets on the PC');
+    for (const symbol of shown) {
+      /* A Deriv market names its 5-minute close; a daily index reading has none. */
+      assert.equal(cardsOnWebsite[symbol].close, DERIV_SYMBOLS.includes(symbol) ? hhmm(close) : undefined, symbol);
+      assert.deepEqual(cardsOnPc[symbol], cardsOnWebsite[symbol], symbol);
+    }
+    assert.deepEqual(website.problems, []);
+    assert.deepEqual(pc.problems, []);
+  } finally { await website.close(); await pc.close(); }
 });

@@ -16,7 +16,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createHostedScanner, buildDerivReading, isDerivBacked, signalState, summarizeReadings, candleAgeSec, ageText,
+  createHostedScanner, buildDerivReading, withheldReading, isDerivBacked, signalState, summarizeReadings, candleAgeSec, ageText,
   BROWSER_LABEL, CLOUD_SUFFIX, DERIV_SOURCE, YAHOO_SOURCE, LIVE_MAX_AGE_SEC, SCAN_TIMEFRAMES, SCAN_CANDLES, BROWSER_RETRY_MS
 } from '../../src/hostedscan.js';
 import { CandleError, normalizeCandles } from '../../src/derivhistory.js';
@@ -488,6 +488,79 @@ test('the same from the AURUM cloud: a reading it made from before a pause is no
   assert.equal(eur.signal, undefined);
   assert.equal(signalState(gbp), 'live');
   assert.equal(gbp.signal, 'BUY');
+});
+
+/* `candle_current: false` alone does not say why a reading is not current. With the close it belongs to, the market
+   has just resumed after a pause. Without one (candle_close 0) the history holds no finished 5-minute candle: that
+   is missing history, and the reading is a WAIT that says so itself. */
+test('a history without a finished 5-minute candle is not a pause: its WAIT is shown with its own reason, by this browser and from the cloud', async () => {
+  /* EUR/USD: one candle per timeframe, the one that is forming. USD/JPY has its whole history. */
+  const fetchCandles = async (symbol, granularity) => {
+    const candles = normalizeCandles(rowsFor(symbol, granularity));
+    return symbol === 'EUR/USD' ? candles.slice(-1) : candles;
+  };
+  const made = buildDerivReading('EUR/USD', Object.fromEntries(await Promise.all(SCAN_TIMEFRAMES.map(async ([key, granularity]) => [key, await fetchCandles('EUR/USD', granularity)]))), Date.now());
+  assert.equal(made.candle_close, 0);
+  assert.equal(made.candle_current, false);
+  assert.equal(made.signal, 'WAIT');
+  assert.equal(made.data_ok, false);
+  assert.ok(made.wait_reason, 'the WAIT names its reason');
+  assert.equal(withheldReading(made), null, 'shown as it is');
+
+  const inBrowser = createHostedScanner({ fetchCandles, cloudScan: cloud({ deriv: 'down' }).cloudScan });
+  const [eur, jpy] = await inBrowser.scan(['EUR/USD', 'USD/JPY']);
+  assert.equal(signalState(eur), 'live');
+  assert.equal(eur.error, undefined);
+  assert.equal(eur.signal, 'WAIT');
+  assert.equal(eur.wait_reason, made.wait_reason);
+  assert.equal(eur.wait_detail, made.wait_detail);
+  assert.equal(eur.data_ok, false);
+  assert.equal(eur.data_source, BROWSER_LABEL);
+  assert.equal(signalState(jpy), 'live');
+
+  /* The same answer coming from the AURUM cloud. */
+  const cloudScan = async (symbols) => new Map(symbols.map((symbol) => [symbol, { ...made, symbol }]));
+  const fromCloud = createHostedScanner({ fetchCandles: async () => { throw feedDown(); }, cloudScan });
+  const [viaCloud] = await fromCloud.scan(['EUR/USD']);
+  assert.equal(signalState(viaCloud), 'live');
+  assert.equal(viaCloud.signal, 'WAIT');
+  assert.equal(viaCloud.wait_reason, made.wait_reason);
+  assert.doesNotMatch(String(viaCloud.detail || '') + String(viaCloud.data_source || ''), /resumed/);
+});
+
+test('a reading marked as not current: what is shown in its place', () => {
+  const at = nowSec();
+  const buy = { symbol: 'EUR/USD', signal: 'BUY', confidence: 70, entry: 1, stop_loss: 0.9, tp1: 1.15, tp2: 1.3, source: DERIV_SOURCE, latest_candle_time: at, computed: 'cloud' };
+
+  /* Nothing to withhold. */
+  assert.equal(withheldReading(null), null);
+  assert.equal(withheldReading({ ...buy, candle_close: at - 120, candle_current: true }), null);
+  assert.equal(withheldReading(buy), null, 'an answer without the two candle fields (a server from before the 5-minute rule)');
+
+  /* It names its close: from before a pause. */
+  const resumed = withheldReading({ ...buy, candle_close: at - 2400, candle_current: false });
+  assert.equal(resumed.error, 'STALE_DATA');
+  assert.equal(signalState(resumed), 'stale');
+  assert.match(resumed.detail, /^EUR\/USD has just resumed after a pause: /);
+  assert.equal(resumed.data_source, DERIV_SOURCE + ' \u00b7 resumed, waiting for a finished candle');
+  assert.equal(resumed.computed, 'cloud');
+  /* The row the PC's own server sends for that state is shown as the same row. */
+  const fromPcServer = { symbol: 'EUR/USD', error: 'STALE_DATA', data_state: 'stale', detail: resumed.detail, source: DERIV_SOURCE, data_source: resumed.data_source, latest_candle_time: at, candle_close: at - 2400, candle_current: false };
+  assert.deepEqual(withheldReading(fromPcServer), { ...resumed, computed: undefined });
+
+  /* It names no close and is a WAIT, or an error: shown as it is. */
+  assert.equal(withheldReading({ symbol: 'EUR/USD', signal: 'WAIT', wait_reason: 'FEED_ERROR', data_ok: false, candle_close: 0, candle_current: false }), null);
+  assert.equal(withheldReading({ symbol: 'EUR/USD', error: 'FEED_ERROR', detail: 'written by the test', candle_current: false }), null);
+
+  /* It names no close and gives a direction: no server of this project sends that. It is withheld, and not called a pause. */
+  for (const close of [0, undefined, null, 'not a time']) {
+    const unconfirmed = withheldReading({ ...buy, candle_close: close, candle_current: false });
+    assert.equal(unconfirmed.error, 'STALE_DATA');
+    assert.equal(signalState(unconfirmed), 'stale');
+    assert.equal(unconfirmed.detail, 'The reading for EUR/USD is marked as not current and names no 5-minute close, so it cannot be confirmed. No reading is shown.');
+    assert.equal(unconfirmed.data_source, DERIV_SOURCE + ' \u00b7 not confirmed as current');
+    for (const field of SIGNAL_FIELDS) assert.equal(unconfirmed[field], undefined, 'no ' + field);
+  }
 });
 
 test('no data: Deriv answered but has no usable history — reported as such, and the cloud is not asked', async () => {

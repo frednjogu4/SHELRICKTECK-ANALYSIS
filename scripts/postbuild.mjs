@@ -7,11 +7,15 @@
  *    shell `cp`, which does not exist in the default Windows npm shell.
  * 2. Verifies that dist/ is complete, so an incomplete build fails here
  *    instead of being deployed.
+ * 3. Copies the built page and its static files into bridge/, where the PC
+ *    app serves them from (scripts/pc-page.mjs), so the PC app and the website
+ *    are the same build.
  */
 import { copyFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyDist } from './verify-dist.mjs';
+import { PC_PAGE_COPIES, refreshPcPage } from './pc-page.mjs';
 
 const dist = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'dist');
 
@@ -24,3 +28,8 @@ if (!result.ok) {
   process.exit(1);
 }
 console.log(`postbuild: AURUM_Workspace.html written; dist verified (${result.files.length} files)`);
+
+const refreshed = refreshPcPage();
+console.log(refreshed.length
+  ? `postbuild: PC page refreshed (${refreshed.join(', ')})`
+  : `postbuild: PC page already equal to dist/ (${PC_PAGE_COPIES.length} files under bridge/)`);
