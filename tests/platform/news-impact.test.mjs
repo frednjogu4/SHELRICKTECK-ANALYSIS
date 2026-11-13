@@ -122,6 +122,7 @@ test('the moment of a calendar entry: its own, or its day and UTC clock; none fo
   assert.equal(eventTime({ t: 1700000000000, time_utc: '01:00', day: '2020-01-01' }), 1700000000000);
   assert.equal(eventTime({ time_utc: '13:30', day: '2026-11-10' }), at('2026-11-10T13:30:00Z'));
   assert.equal(eventTime({ time_utc: '7:05' }, '2026-11-10'), at('2026-11-10T07:05:00Z'));
+  assert.equal(eventTime({ t: 0, time_utc: '13:30', day: '2026-11-10' }), at('2026-11-10T13:30:00Z'), 'a zero is not a moment');
   for (const odd of [null, {}, { time_utc: '' }, { time_utc: '13:30' }, { time_utc: 'soon', day: '2026-11-10' }, { time_utc: '13:30', day: '10/11/2026' }, { t: null, time_utc: '' }]) assert.equal(eventTime(odd), null);
 });
 
@@ -174,6 +175,7 @@ test('what concerns a market: only high-impact releases of its own currencies, w
   assert.equal(exposureFor('XAU/USD', EVENTS, T - 30 * MIN).phase, 'aside');
   const between = exposureFor('XAU/USD', EVENTS, T + 20 * MIN);
   assert.deepEqual({ phase: between.phase, until: between.until, t: between.t }, { phase: 'aside', until: T + 75 * MIN, t: T + 45 * MIN }, 'the next release still to come');
+  assert.equal(exposureFor('XAU/USD', EVENTS, T).t, T + 45 * MIN, 'at the instant of a release the next one is the one still to come');
   const last = exposureFor('XAU/USD', EVENTS, T + 70 * MIN);
   assert.deepEqual({ phase: last.phase, until: last.until, t: last.t, names: names(last) }, { phase: 'aside', until: T + 75 * MIN, t: T + 45 * MIN, names: ['release two'] });
   assert.equal(exposureFor('XAU/USD', EVENTS, T + 75 * MIN), null, 'over, and the pound release does not concern gold');
@@ -186,6 +188,18 @@ test('what concerns a market: only high-impact releases of its own currencies, w
   assert.equal(exposureFor('XAU/USD', null, T), null);
   assert.equal(exposureFor('XAU/USD', [], T), null);
   assert.equal(exposureFor('XAU/USD', [{ country: 'USD', impact: 'Medium', t: T }, { country: 'USD', impact: 'Low', t: T }], T), null, 'medium and low impact start no period');
+
+  /* Two releases exactly an hour apart: the first period ends where the second begins, and they are one. */
+  const touching = [{ country: 'USD', impact: 'High', event: 'first', t: T }, { country: 'USD', impact: 'High', event: 'second', t: T + 60 * MIN }];
+  assert.equal(exposureFor('XAU/USD', touching, T).until, T + 90 * MIN);
+  const apart = [touching[0], { ...touching[1], t: T + 60 * MIN + 1 }];
+  assert.equal(exposureFor('XAU/USD', apart, T).until, T + 30 * MIN, 'a millisecond apart, they are two');
+  /* A period ends at its last millisecond: at `until` itself the market is free again. */
+  assert.equal(exposureFor('XAU/USD', [touching[0]], T + 30 * MIN - 1).phase, 'aside');
+  assert.equal(exposureFor('XAU/USD', [touching[0]], T + 30 * MIN), null);
+  /* Announced from exactly three hours before the period begins. */
+  assert.equal(exposureFor('XAU/USD', [touching[0]], T - 30 * MIN - 180 * MIN).phase, 'ahead');
+  assert.equal(exposureFor('XAU/USD', [touching[0]], T - 30 * MIN - 180 * MIN - 1), null);
 });
 
 test('the same per currency, and how far ahead a period is announced', () => {

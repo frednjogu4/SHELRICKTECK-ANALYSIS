@@ -2126,6 +2126,7 @@ test('News on the Cloudflare site: a headline names its markets and shows their 
     const feed = app.doc.getElementById('newsFeed');
     assert.equal(feed.querySelectorAll('.news-exec, [data-nv]').length, 0);
     assert.doesNotMatch(flat(feed), /heuristic|sniper|Execute/i);
+    for (const row of feed.querySelectorAll('tbody tr')) assert.equal(row.cells.length, 2, 'a headline and its buttons: no chip column on the cloud');
     assert.match(flat(app.doc.getElementById('newsSources')), /^Sources: FXStreet — 2 headlines · Investing\.com — not available \(unreachable\) · CNBC — 1 headline · read at (\w{3} )?\d\d:\d\d EAT$/);
     assert.match(flat(feed), /No direction is derived from a headline.*It is not a forecast of what the news will do to the price: a headline does not tell the direction\.$/);
     assert.equal(feedRow(app, 'Nvidia').querySelector('a[target="_blank"]').getAttribute('href'), 'https://cnbc.example/nvidia');
@@ -2170,7 +2171,7 @@ test('News calendar: Nairobi time, the markets of each release, and a stand-asid
     assert.match(box(), new RegExp('^Stand aside now · USD — Fixture rate decision at (\\w{3} )?' + eat(release) + ' EAT\\. No new trade in USD markets until ' + eat(release + 30 * 60000) + ' EAT \\(EUR/USD, '));
     assert.match(box(), new RegExp('Next · GBP — Fixture output figure at (\\w{3} )?' + eat(start + 120 * 60000) + ' EAT\\. No new trade in GBP markets from ' + eat(start + 90 * 60000) + ' to ' + eat(start + 150 * 60000) + ' EAT'));
     const note = flat(app.doc.getElementById('newsCal'));
-    assert.match(note, /times are Nairobi time \(EAT, UTC\+3\)/);
+    assert.match(note, /Source: ForexFactory public weekly calendar · read at \d\d:\d\d EAT · times are Nairobi time \(EAT, UTC\+3\)/);
     assert.match(note, /Measured on gold around 379 high-impact US releases/);
     assert.match(note, /not the result: which way a release moves a market is not shown, because it is not known\.$/);
     assert.doesNotMatch(note, /sniper|all times UTC|trade them inside/i);
@@ -2221,11 +2222,21 @@ test('the line above the chart: direction with its score, what each timeframe sh
     assert.doesNotMatch(euro, /\bSL\b|TP1|unconfirmed|1\.0992|measured/, 'the placeholder levels of a Wait are not shown');
     assert.match(euro, /Stand aside · USD Fixture rate decision/, 'EUR/USD is a dollar market as well');
 
+    assert.equal(app.requests.filter((r) => r.path === '/api/news/calendar').length, 1, 'the calendar is read once for the line above the chart, not at every change of market');
+
     /* Once the period is over the note is gone, without a price tick. */
     app.advanceClock(51 * 60000);
     app.runIntervals(1000);
     await app.waitFor(() => !/Stand aside/.test(flat(strip)), 'the strip after the period');
     assert.doesNotMatch(flat(strip), /Fixture rate decision/);
+    /* A chart that stays open reads the calendar again by itself: a release added since then appears without a change of market. */
+    await app.waitFor(() => app.requests.filter((r) => r.path === '/api/news/calendar' && r.status === 200).length === 2, 'the calendar read again while the chart stays open');
+    await new Promise((r) => setTimeout(r, 30)); /* the page takes the answer in */
+    app.state.news = { feeds: newsFeeds(), calendar: [{ title: 'Fixture added release', country: 'USD', impact: 'High', date: new Date(start + 150 * 60000).toISOString() }] };
+    app.advanceClock(31 * 60000);
+    /* The page's one-second round, again and again as in a browser: it reads the calendar when that is due and redraws the line. */
+    await app.waitFor(() => { app.runIntervals(1000); return /Fixture added release/.test(flat(strip)); }, 'the release that was added to the calendar');
+    assert.match(flat(strip), new RegExp('High-impact release (\\w{3} )?' + eat(start + 150 * 60000) + ' EAT · USD Fixture added release · no new trade from ' + eat(start + 120 * 60000) + ' EAT$'));
 
     /* In the Markets view a Wait shows no levels either. */
     await app.open('markets');
@@ -2251,6 +2262,18 @@ test('the line above the chart says when the calendar could not be read, instead
     await app.waitFor(() => /Calendar unavailable/.test(flat(app.doc.getElementById('newsCal'))) && /Headline feed unavailable/.test(flat(app.doc.getElementById('newsFeed'))), 'both cards say what failed');
     assert.match(flat(app.doc.getElementById('newsCal')), /No events are assumed\..*Scheduled releases are unknown until the calendar loads: nothing here says there are none\.$/);
     assert.match(flat(app.doc.getElementById('newsFeed')), /No headline source could be read from the cloud right now \(FXStreet: unreachable; Investing\.com: unreachable; CNBC: unreachable\)\. No substitute headlines are shown\./);
+
+    /* The source answers again. Nothing is pressed: the open view tries again, here two minutes later, and shows the calendar. */
+    const back = Date.now() + 121000;
+    app.state.news = { calendar: [{ title: 'Fixture rate decision', country: 'USD', impact: 'High', date: new Date(back + 20 * 60000).toISOString() }] };
+    app.advanceClock(121000);
+    app.runIntervals(1000);
+    await app.waitFor(() => calendarRow(app, 'Fixture rate decision'), 'the calendar after the source came back');
+    assert.doesNotMatch(flat(app.doc.getElementById('newsCal')), /Calendar unavailable/);
+    await app.open('trade');
+    app.runIntervals(1000);
+    await app.waitFor(() => /Stand aside · USD Fixture rate decision/.test(flat(strip)), 'the release on the strip after the source came back');
+    assert.doesNotMatch(flat(strip), /calendar not available/);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -2278,6 +2301,122 @@ test('the PC app keeps its keyword chip and its order button where its server se
     for (const link of plain.querySelectorAll('a[target="_blank"]')) assert.equal(link.getAttribute('href'), '#', 'an address that is not a web address is not made a link');
     assert.match(flat(app.doc.getElementById('newsFeed')), /then goes STALE and Execute stands down/);
     assert.equal(app.doc.getElementById('newsSources'), null, 'the PC server names its source on each headline only');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Gold page on the cloud: the dollar releases with their stand-aside period, the note under the signal, and an alert before a release that says to stand aside', async () => {
+  const start = Date.now();
+  /* On a whole minute, as a calendar lists its releases: 50 to 51 minutes ahead. */
+  const release = Math.floor(start / 60000) * 60000 + 51 * 60000;
+  const app = await bootApp({ world: { cloudDeriv: 'down', ticks: true, candleRows: directionalMarket(), news: { feeds: newsFeeds(), calendar: [
+    { title: 'Fixture output figure', country: 'GBP', impact: 'High', date: new Date(start + 10 * 60000).toISOString() },
+    { title: 'Fixture rate decision', country: 'USD', impact: 'High', date: new Date(release).toISOString() },
+    { title: 'Fixture stock report', country: 'USD', impact: 'Medium', date: new Date(release + 150 * 60000).toISOString() },
+    /* Within the next 24 hours, and (unless the test starts in the first minutes of a UTC day) on the next UTC day. */
+    { title: 'Fixture later figure', country: 'USD', impact: 'High', date: new Date(release + 23 * 3600000).toISOString() },
+    { title: 'Fixture far figure', country: 'USD', impact: 'High', date: new Date(release + 26 * 3600000).toISOString() }
+  ] } } });
+  try {
+    const clock = pageClock(app);
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    const eventRow = (name) => [...doc.querySelectorAll('#goldEvents tbody tr')].find((tr) => tr.textContent.includes(name));
+    const aside = () => flat(doc.getElementById('goldAside'));
+    const alerts = () => [...doc.querySelectorAll('#toasts .toast')].filter((toast) => toast.querySelector('b').textContent === 'Gold news alert').map((toast) => toast.querySelector('span').textContent);
+    const tickNow = () => {
+      const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+      stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: 'frxXAUUSD', quote: GOLD_TICK, epoch: Math.floor(clock.now()) } }) });
+    };
+    const utc = (ms) => new Date(ms).toISOString().slice(11, 16);
+    const period = eat(release - 30 * 60000) + '–' + eat(release + 30 * 60000) + ' EAT';
+    /* A moment as the page writes it: the Nairobi clock, with the weekday when that is not today's Nairobi day. */
+    const nairobiDay = (ms) => new Date(ms + 3 * 3600000).toISOString().slice(0, 10);
+    const stamp = (ms) => (nairobiDay(ms) === nairobiDay(start) ? '' : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(ms + 3 * 3600000).getUTCDay()] + ' ') + eat(ms) + ' EAT';
+
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await app.open('gold');
+    await app.waitFor(() => eventRow('Fixture rate decision') && text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the dollar releases and the first gold analysis');
+
+    /* The table: dollar releases only, both clocks, and the stand-aside period of a high-impact one. */
+    const row = eventRow('Fixture rate decision');
+    assert.equal(flat(row.cells[0]), utc(release) + ' UTC · ' + stamp(release));
+    assert.equal(flat(row.cells[1]), 'High');
+    assert.equal(flat(row.cells[2].querySelector('[data-gold-aside-span]')), 'no new trade ' + period);
+    assert.equal(row.cells[2].firstChild.textContent, 'Fixture rate decision');
+    assert.equal(flat(eventRow('Fixture stock report').cells[2]), 'Fixture stock report', 'a medium-impact release has no stand-aside period');
+    assert.equal(eventRow('Fixture output figure'), undefined, 'a release of another currency is not a gold release');
+    const later = eventRow('Fixture later figure');
+    assert.ok(later, 'a release within the next 24 hours is listed, whichever UTC day it is on');
+    assert.equal(flat(later.cells[0]), utc(release + 23 * 3600000) + ' UTC · ' + stamp(release + 23 * 3600000), 'with its weekday when it is not today in Nairobi');
+    assert.equal(eventRow('Fixture far figure'), undefined, 'more than 24 hours ahead is not listed');
+    assert.equal(doc.querySelectorAll('#goldEvents tbody tr').length, 3);
+    assert.equal(app.requests.filter((r) => r.path === '/api/news/calendar').length, 1, 'one calendar for the page');
+
+    /* Under the signal: the release that is coming, while the reading itself stays shown. */
+    assert.ok(['BUY', 'SELL'].includes(text('goldSignal')));
+    assert.equal(aside(), 'High-impact release ' + stamp(release) + ' · USD Fixture rate decision · no new trade from ' + eat(release - 30 * 60000) + ' EAT');
+    assert.equal(doc.querySelector('#goldAside [data-chart-event]').dataset.chartEvent, 'ahead');
+    assert.deepEqual(alerts(), [], 'no alert 50 minutes before');
+
+    /* The Refresh button reads the calendar again; the monitor's own round every five minutes uses the copy the page has, for ten minutes. */
+    const answered = (path) => app.requests.filter((r) => r.path === path && r.status !== null).length;
+    app.click(doc.getElementById('goldNewsRefresh'));
+    await app.waitFor(() => answered('/api/news/calendar') === 2 && answered('/api/news/feed') === 2, 'the calendar read again on request');
+    await new Promise((r) => setTimeout(r, 30));
+    clock.advance(6 * 60);
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => answered('/api/news/feed') === 3, 'the regular round of the monitor');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(answered('/api/news/calendar'), 2, 'the copy read six minutes ago is used');
+    assert.ok(eventRow('Fixture rate decision'), 'and the table is drawn from it');
+
+    /* A quarter of an hour before the release: the period is running, and the alert says so before anything else. */
+    clock.advance((release - 14.5 * 60000) / 1000 - clock.now());
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => alerts().length === 1, 'the alert 15 minutes before');
+    assert.match(aside(), new RegExp('^Stand aside · USD Fixture rate decision at (\\w{3} )?' + eat(release) + ' EAT · no new trade until ' + eat(release + 30 * 60000) + ' EAT$'));
+    assert.equal(doc.querySelector('#goldAside [data-chart-event]').dataset.chartEvent, 'aside');
+    const head = (minutes) => 'USD high-impact event in about ' + minutes + ' minutes: Fixture rate decision (' + utc(release) + ' UTC / ' + eat(release) + ' EAT). Stand aside: no new Gold trade ' + period + ' (30 min before to 30 min after). Expect possible volatility; check the live quote and spread.';
+    const first = alerts()[0];
+    assert.ok(first.startsWith(head(15) + '\nGold reading now, for information only (the stand-aside period applies to it):\n🟡 Gold/USD technical signal · '), first);
+    assert.doesNotMatch(first, /Current Gold signal/);
+
+    /* The same check a few seconds later does not repeat the alert; five minutes before there is the second one. */
+    app.runIntervals(10000);
+    assert.equal(alerts().length, 1);
+    clock.advance((release - 4.5 * 60000) / 1000 - clock.now());
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => alerts().length === 2, 'the alert 5 minutes before');
+    assert.ok(alerts().some((body) => body.startsWith(head(5))), alerts().join('\n---\n'));
+
+    /* Half an hour after the release the note is gone. */
+    clock.advance((release + 30.5 * 60000) / 1000 - clock.now());
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => aside() === '', 'the note after the period');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Gold page: a calendar that cannot be read is said under the signal and in the table, and no alert is made from it', async () => {
+  const app = await bootApp({ world: { cloudDeriv: 'down', ticks: true, candleRows: directionalMarket() } });
+  try {
+    const doc = app.doc;
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    await app.open('gold');
+    await app.waitFor(() => /USD calendar unavailable/.test(flat(doc.getElementById('goldEvents'))) && flat(doc.getElementById('goldAside')) !== '', 'the missing calendar on the Gold page');
+    assert.match(flat(doc.getElementById('goldEvents')), /No upcoming-event claim is being made\.$/);
+    assert.equal(flat(doc.getElementById('goldAside')), 'calendar not available: scheduled releases unknown');
+    assert.match(flat(doc.getElementById('goldHeadlines')), /^Headline feed unavailable/);
+    assert.equal([...doc.querySelectorAll('#toasts .toast b')].filter((el) => el.textContent === 'Gold news alert').length, 0);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });

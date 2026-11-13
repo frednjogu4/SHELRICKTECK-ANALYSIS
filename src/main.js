@@ -430,7 +430,12 @@ document.addEventListener('click',e=>{
 });
 /* The countdowns and stand-aside states of the News view, and the release note in the line above the chart,
    follow the clock and not the price feed: they keep running when no price tick arrives. */
-setInterval(()=>{ try{ if(state.view==='news')updateNewsTimeline(); else if(state.view==='trade')updateChartLevels(); }catch(e){} },1000);
+setInterval(()=>{ try{
+  /* The calendar is read again while the News view or the chart stays open: a page left open over a
+     week-end must not go on showing last week's releases, and a read that failed is tried again. */
+  if((state.view==='news'||state.view==='trade')&&calendarDue())loadCalendar().then(()=>{ if(state.view==='news')paintNewsCal(); }).catch(()=>{}); /* the chart's line is redrawn by the next round, a second later */
+  if(state.view==='news')updateNewsTimeline(); else if(state.view==='trade')updateChartLevels();
+}catch(e){} },1000);
 /* News view: a market named beside a headline or a release opens its chart. */
 document.addEventListener('click',e=>{
   const m=e.target.closest('[data-news-open]'); if(!m)return;
@@ -3958,9 +3963,8 @@ const GOLD_NEWS_MATCH=/(gold|xau|bullion|dollar|\bUSD\b|federal reserve|\bfed\b|
 let goldMonitorTimer=null, goldAnalysisBusy=false, goldNewsBusy=false, goldAnalysisAt=0, goldNextAttemptAt=0, goldAnalysisError='', goldNewsAt=0;
 let goldCalendarDay='', goldCalendarEvents=[], goldCalendarError='', goldHeadlineItems=[], goldHeadlineError='', goldMt5Quote=null, goldLastNotifiedKey=(()=>{try{return localStorage.getItem('aurum_gold_signal_last')||'';}catch(_e){return '';}})();
 function goldCalendarTime(e){
-  if(!goldCalendarDay||!e||!e.time_utc||!/^[0-9]{1,2}:[0-9]{2}$/.test(e.time_utc))return null;
-  const [h,m]=e.time_utc.split(':').map(Number), t=Date.parse(goldCalendarDay+'T00:00:00Z');
-  return Number.isFinite(t)?t+h*3600000+m*60000:null;
+  /* The moment of an entry: its own `t` and day where the calendar gives them (the cloud's whole week), else its UTC clock on the calendar's day. */
+  return goldCalendarDay&&e?eventTime(e,goldCalendarDay):null;
 }
 function goldEATTime(t){try{return new Intl.DateTimeFormat('en-GB',{timeZone:'Africa/Nairobi',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(t));}catch(_e){return '—';}}
 function goldUsdEvent(e){ return /^(USD|US|UNITED STATES)$/i.test(String(e&&e.country||'').trim()); }
@@ -3978,11 +3982,19 @@ function renderGoldEvents(){
     .map(e=>Object.assign({},e,{_time:goldCalendarTime(e)}))
     .filter(e=>e._time==null||(e._time>=now-2*3600000&&e._time<=now+24*3600000));
   if(!rows.length){el.innerHTML='<div class="hint">No scheduled USD medium/high-impact entries are listed in the current public calendar. This does not mean there will be no unscheduled news.</div>';return;}
-  el.innerHTML='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Time UTC / EAT</th><th>Impact</th><th>Event</th><th>Countdown</th></tr></thead><tbody>'+rows.map(e=>'<tr><td class="mono tiny">'+(e._time!=null?escHtml(e.time_utc)+' UTC · '+escHtml(goldEATTime(e._time))+' EAT':'All day')+'</td><td><span class="badge '+(e.impact==='High'?'sell':'gray')+'">'+escHtml(e.impact)+'</span></td><td class="tiny">'+escHtml(e.event||'')+'</td><td>'+(e._time==null?'<span class="badge gray">time unavailable</span>':'<span class="badge tiny gray" data-gold-event="'+e._time+'">—</span>')+'</td></tr>').join('')+'</tbody></table></div><div class="hint tiny">Calendar: ForexFactory public weekly schedule via AURUM API · times UTC · refreshes periodically. Scheduled events only; breaking headlines may arrive without warning.</div>';
+  el.innerHTML='<div class="tbl-wrap"><table class="tbl news-tbl"><thead><tr><th>Time UTC / EAT</th><th>Impact</th><th>Event</th><th>Countdown</th></tr></thead><tbody>'+rows.map(e=>'<tr><td class="mono tiny nowrap">'+(e._time!=null?escHtml(e.time_utc)+' UTC · '+escHtml(eatStamp(e._time,now)):'All day')+'</td><td class="nowrap"><span class="badge '+(e.impact==='High'?'sell':'gray')+'">'+escHtml(e.impact)+'</span></td><td class="tiny">'+escHtml(e.event||'')+(e.impact==='High'&&e._time!=null?'<div class="faint" data-gold-aside-span style="white-space:nowrap">no new trade '+eatClock(e._time-STAND_ASIDE.beforeMin*60000)+'–'+eatClock(e._time+STAND_ASIDE.afterMin*60000)+' EAT</div>':'')+'</td><td class="nowrap">'+(e._time==null?'<span class="badge gray">time unavailable</span>':'<span class="badge tiny gray" data-gold-event="'+e._time+'">—</span>')+'</td></tr>').join('')+'</tbody></table></div><div class="hint tiny">Calendar: ForexFactory public weekly schedule via AURUM API · times UTC · refreshes periodically. Scheduled events only; breaking headlines may arrive without warning.</div>';
   updateGoldEventCountdowns();
+}
+/* Under the Gold signal: the same note as above the chart. A reading stays shown during a stand-aside
+   period; the note says that no new trade belongs in it. */
+function updateGoldAside(){
+  const el=$('#goldAside');if(!el)return;
+  const out=chartEventHtml(GOLD_SYMBOL).trim();
+  if(el.dataset.h!==out){el.innerHTML=out;el.dataset.h=out;}
 }
 function updateGoldEventCountdowns(){
   const now=Date.now();
+  updateGoldAside();
   $$('#goldEvents [data-gold-event]').forEach(el=>{
     const t=Number(el.dataset.goldEvent), d=t-now, mins=d/60000;
     el.textContent=d>0?newsTLabel(t):(d>=-15*60000?'released '+Math.max(0,Math.floor(-d/60000))+'m ago':'passed');
@@ -3995,11 +4007,12 @@ function updateGoldEventCountdowns(){
     const mins=(t-now)/60000;
     for(const milestone of [15,5]){
       if(mins<=milestone&&mins>milestone-1.2){
-        const key=[goldCalendarDay,e.time_utc,e.country,e.event,milestone].join('|');
+        const key=[e.day||goldCalendarDay,e.time_utc,e.country,e.event,milestone].join('|');
         if(goldEventAlertSeen(key))continue;
         markGoldEventAlert(key);
-        const current=state.goldAnalysis?'\nCurrent Gold signal:\n'+goldSignalMessage(state.goldAnalysis):'\nGold signal unavailable right now; no direction is invented.';
-        const message='USD high-impact event in about '+milestone+' minutes: '+e.event+' ('+e.time_utc+' UTC / '+goldEATTime(t)+' EAT). Expect possible volatility; check the live quote and spread.'+current;
+        const aside='Stand aside: no new Gold trade '+eatClock(t-STAND_ASIDE.beforeMin*60000)+'–'+eatClock(t+STAND_ASIDE.afterMin*60000)+' EAT ('+STAND_ASIDE.beforeMin+' min before to '+STAND_ASIDE.afterMin+' min after).';
+        const current=state.goldAnalysis?'\nGold reading now, for information only (the stand-aside period applies to it):\n'+goldSignalMessage(state.goldAnalysis):'\nGold signal unavailable right now; no direction is invented.';
+        const message='USD high-impact event in about '+milestone+' minutes: '+e.event+' ('+e.time_utc+' UTC / '+goldEATTime(t)+' EAT). '+aside+' Expect possible volatility; check the live quote and spread.'+current;
         notify('Gold news alert',message,{tag:'gold-news-'+key,kind:'warn'});
         pushWA('🟡 Gold/USD scheduled-news alert\n'+message+'\nAURUM analysis only — no order sent.');
       }
@@ -4013,21 +4026,20 @@ function renderGoldHeadlines(){
   if(!list.length){el.innerHTML='<div class="hint">No Gold/USD-related headlines found in the available feed. This is not confirmation that no news exists.</div>';return;}
   el.innerHTML=list.map(it=>'<div class="news-row"><div class="grow"><a class="headline" href="'+escHtml(it.link||'#')+'" target="_blank" rel="noopener">'+escHtml(it.title)+'</a><div class="src">'+escHtml(it.source||'')+(it.published?' · '+escHtml(it.published):'')+'</div></div><span class="badge gray">HEADLINE</span></div>').join('');
 }
-async function refreshGoldNews(){
+async function refreshGoldNews(force){
   if(goldNewsBusy)return;goldNewsBusy=true;
   try{
-    const [calResult,headResult]=await Promise.allSettled([api('/api/news/calendar'),api('/api/news/feed')]);
-    if(calResult.status==='fulfilled'){
-      const cr=calResult.value,cj=await cr.json().catch(()=>({}));
-      if(cr.ok){goldCalendarDay=cj.day||new Date().toISOString().slice(0,10);goldCalendarEvents=Array.isArray(cj.events)?cj.events:[];goldCalendarError='';}
-      else goldCalendarError=cj.detail||cj.error||'Calendar unavailable';
-    }else goldCalendarError=String(calResult.reason&&calResult.reason.message||'Calendar unavailable');
+    /* The calendar is the page's one calendar (News view, the line above the chart, this page): the
+       stand-aside period shown here is then the same one as everywhere else. */
+    const [,headResult]=await Promise.allSettled([loadCalendar(force===true),api('/api/news/feed')]);
+    if(state.calError)goldCalendarError=state.calError;
+    else{goldCalendarDay=state.calDay;goldCalendarEvents=calendarEntries()||[];goldCalendarError='';}
     if(headResult.status==='fulfilled'){
       const nr=headResult.value,nj=await nr.json().catch(()=>({}));
       if(nr.ok){goldHeadlineItems=Array.isArray(nj.items)?nj.items:[];goldHeadlineError='';}
       else{goldHeadlineItems=[];goldHeadlineError=nj.detail||nj.error||'Headline feed unavailable';}
     }else{goldHeadlineItems=[];goldHeadlineError=String(headResult.reason&&headResult.reason.message||'Headline feed unavailable');}
-    renderGoldEvents();renderGoldHeadlines();
+    renderGoldEvents();renderGoldHeadlines();updateGoldAside();
   }finally{goldNewsAt=Date.now();goldNewsBusy=false;}
 }
 function goldQuotePrice(q){
@@ -4257,7 +4269,7 @@ function renderGold(){
   const connectGold=$('#goldConnectBtn');if(connectGold)connectGold.onclick=openGoldExnessConnect;
   const btn=$('#goldAnalyzeBtn');if(btn)btn.onclick=()=>runGoldAnalysis();
   const shareBtn=$('#goldShareBtn');if(shareBtn)shareBtn.onclick=()=>{if(!state.goldAnalysis){toast('No current Gold signal','Wait for a fresh analysis before sharing.','warn');return;}const u=waLink(goldSignalMessage(state.goldAnalysis));if(u)window.open(u,'_blank','noopener');};
-  const newsBtn=$('#goldNewsRefresh');if(newsBtn)newsBtn.onclick=()=>refreshGoldNews();
+  const newsBtn=$('#goldNewsRefresh');if(newsBtn)newsBtn.onclick=()=>refreshGoldNews(true);
   const notifyBtn=$('#goldNotifyBtn');if(notifyBtn)notifyBtn.onclick=async()=>{const p=await enableNotifications();toast('Gold alerts',p==='granted'?'Browser alerts enabled.':'Browser notifications '+p+'; in-app alerts remain available while AURUM is open.','ok');};
   startGoldMonitor();
   if(!goldAnalysisBusy&&(!goldAnalysisAt||Date.now()-goldAnalysisAt>=GOLD_REFRESH_MS))runGoldAnalysis();
@@ -4456,9 +4468,11 @@ async function renderNewsFeed(){
    minutes unless asked. A failure is remembered, so that nothing reads "no releases" from a calendar
    that did not load. */
 let calendarPending=null;
+/* A calendar that was read is kept ten minutes; after a read that failed, the next try comes after one. */
+function calendarDue(){ return !calendarPending&&(!state.calAt||Date.now()-state.calAt>=(state.calError?60000:10*60000)); }
 function loadCalendar(force){
   if(calendarPending)return calendarPending;
-  if(!force&&state.calAt&&Date.now()-state.calAt<10*60000)return Promise.resolve();
+  if(!force&&!calendarDue())return Promise.resolve();
   calendarPending=(async()=>{
     try{
       const r=await api('/api/news/calendar');
@@ -4468,6 +4482,7 @@ function loadCalendar(force){
       state.calSource=j.source||'ForexFactory public weekly calendar';
       state.calEvents=j.events||[];
       state.calWeek=Array.isArray(j.week)?j.week:null;
+      state.calFetched=Number(j.fetched_at)>0?Number(j.fetched_at):null; /* when the source was read: the cloud passes on an earlier copy while the source does not answer */
       state.calError='';
     }catch(e){ state.calError=String((e&&e.message)||e)||'Calendar unavailable'; }
     finally{ state.calAt=Date.now(); calendarPending=null; }
@@ -4480,8 +4495,13 @@ function calendarEntries(){
   return (state.calWeek||state.calEvents||[]).map((e)=>Object.assign({},e,{t:eventTime(e,state.calDay)}));
 }
 async function renderNewsCal(){
-  const el=$('#newsCal'); if(!el)return;
+  if(!$('#newsCal'))return;
   await loadCalendar(true);
+  paintNewsCal();
+}
+/* The calendar card from what was read last: the timeline, or the reason there is none. */
+function paintNewsCal(){
+  const el=$('#newsCal'); if(!el)return;
   if(state.calError){
     el.innerHTML='<div class="empty"><b>Calendar unavailable</b>'+escHtml(state.calError)+' The TradingView calendar below is independent and may still work. Scheduled releases are unknown until the calendar loads: nothing here says there are none.</div>';
     return;
@@ -4561,7 +4581,7 @@ function renderNewsTimeline(){
     +sec('🕘 PAST 2 HOURS',past)
     +(state.calWeek?sec('🗓 TOMORROW — high impact only',tomorrow):'')
     +(allday.length?sec('📅 ALL-DAY / UNSCHEDULED',allday):'')
-    +'<div class="hint tiny">Source: '+escHtml(state.calSource||'')+' · times are Nairobi time (EAT, UTC+3); point at a time for UTC · countdowns update live. Around a high-impact release no new trade is opened from '
+    +'<div class="hint tiny">Source: '+escHtml(state.calSource||'')+(state.calFetched?' · read at '+escHtml(eatStamp(state.calFetched,Date.now())):'')+' · times are Nairobi time (EAT, UTC+3); point at a time for UTC · countdowns update live. Around a high-impact release no new trade is opened from '
     +STAND_ASIDE.beforeMin+' minutes before until '+STAND_ASIDE.afterMin+' minutes after, in the markets priced in its currency. '+escHtml(releaseMeasuredText())
     +' The calendar gives the forecast and the previous figure, not the result: which way a release moves a market is not shown, because it is not known.</div>';
   updateNewsTimeline();

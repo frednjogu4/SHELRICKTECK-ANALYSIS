@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { createReadOnlyWorker } from '../../cloudflare/worker.js';
 import { WORKER_SECURITY_HEADERS } from '../../cloudflare/platform.js';
 import {
-  CALENDAR_KEEP_MS, CALENDAR_RETRY_MS, CALENDAR_SOURCE, CALENDAR_URL, HEADLINE_SOURCES, HEADLINES_KEEP_MS, HEADLINES_MAX,
+  CALENDAR_KEEP_MS, CALENDAR_LAST_GOOD_MS, CALENDAR_RETRY_MS, CALENDAR_SOURCE, CALENDAR_URL, HEADLINE_SOURCES, HEADLINES_KEEP_MS, HEADLINES_MAX,
   HEADLINES_PER_SOURCE, HEADLINES_RETRY_MS, calendarWeek, headlinesFrom, mergeHeadlines, readProviderText, safeLink, sourceFailure
 } from '../../cloudflare/news.js';
 
@@ -58,7 +58,7 @@ function setup({ answers = {}, limiter } = {}) {
   const env = { ASSETS: { fetch: async () => new Response('shell') }, AURUM_SIGNAL_LIMITER: allow, AURUM_MARKET_LIMITER: limiter === undefined ? allow : limiter };
   const send = (path, init = {}) => worker.fetch(new Request(ORIGIN + path, init), env);
   const asked = (address) => calls.upstream.filter((call) => call.address === address).length;
-  return { clock, calls, logs, send, asked };
+  return { clock, calls, logs, send, asked, table };
 }
 
 function assertSecurityHeaders(response, label) {
@@ -269,6 +269,52 @@ for (const [name, answer, reason] of [
     assert.equal(asked(CALENDAR_URL), 2);
   });
 }
+
+test('calendar: while the source does not answer, the copy read last is passed on with the time it was read, for six hours and no longer', async () => {
+  const { send, asked, clock, table, logs } = setup();
+  const calendar = async () => { const res = await send('/api/news/calendar'); return { status: res.status, data: await res.json() }; };
+  assert.equal((await calendar()).status, 200);
+
+  /* Half an hour later the source refuses: the schedule that was read is still the answer, dated when it was read. */
+  table[CALENDAR_URL] = 503;
+  clock.ms = START + CALENDAR_KEEP_MS;
+  const kept = await calendar();
+  assert.equal(kept.status, 200);
+  assert.equal(kept.data.fetched_at, START, 'the time the copy was read, not the time of the request');
+  assert.equal(kept.data.week.length, 4);
+  assert.deepEqual(kept.data.events.map((entry) => entry.event), ['Fixture release B', 'Fixture release A']);
+  assert.equal(asked(CALENDAR_URL), 2);
+  assert.equal(logs.filter((entry) => entry.event === 'provider_feed_failed').length, 1, 'the failure is logged although an answer was given');
+
+  /* The source is asked again after the retry time, not after the half hour of a fresh copy. */
+  clock.ms += CALENDAR_RETRY_MS - 1;
+  await calendar();
+  assert.equal(asked(CALENDAR_URL), 2);
+  clock.ms += 1;
+  assert.equal((await calendar()).data.fetched_at, START);
+  assert.equal(asked(CALENDAR_URL), 3);
+
+  /* When it answers again, the new copy replaces the old one. */
+  table[CALENDAR_URL] = JSON.stringify(CALENDAR_ROWS.slice(0, 1));
+  clock.ms += CALENDAR_RETRY_MS;
+  const fresh = await calendar();
+  const readAgain = clock.ms;
+  assert.equal(fresh.data.fetched_at, readAgain);
+  assert.equal(fresh.data.week.length, 1);
+
+  /* Six hours without an answer: one millisecond before, the copy is still passed on; after that the route says it has none. */
+  table[CALENDAR_URL] = new Error('fixture: connection refused');
+  clock.ms = readAgain + CALENDAR_LAST_GOOD_MS - 1;
+  const last = await calendar();
+  assert.equal(last.status, 200);
+  assert.equal(last.data.fetched_at, readAgain);
+  clock.ms += CALENDAR_RETRY_MS;
+  const gone = await calendar();
+  assert.equal(gone.status, 502);
+  assert.equal(gone.data.error, 'calendar_unavailable');
+  assert.equal(gone.data.week, undefined);
+  assert.equal(gone.data.detail, `The calendar source could not be read from the cloud right now (${CALENDAR_SOURCE}: unreachable). No events are assumed.`);
+});
 
 test('calendarWeek ignores rows without a date or a title and never throws on odd input', () => {
   assert.deepEqual(calendarWeek(null), []);

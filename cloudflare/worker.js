@@ -17,7 +17,7 @@ import { indexDailySignal, parseYahooChart } from '../server/lib/indices.js';
 import { rsi, sma } from '../server/lib/indicators.js';
 import { parseFfCalendar } from '../server/lib/news.js';
 import {
-  CALENDAR_KEEP_MS, CALENDAR_RETRY_MS, CALENDAR_SOURCE, CALENDAR_URL, HEADLINE_SOURCES, HEADLINES_KEEP_MS,
+  CALENDAR_KEEP_MS, CALENDAR_LAST_GOOD_MS, CALENDAR_RETRY_MS, CALENDAR_SOURCE, CALENDAR_URL, HEADLINE_SOURCES, HEADLINES_KEEP_MS,
   HEADLINES_RETRY_MS, MAX_FEED_BYTES, NEWS_NOTE, calendarWeek, headlinesFrom, mergeHeadlines, readProviderText, sourceFailure
 } from './news.js';
 import {
@@ -258,6 +258,7 @@ function createReadOnlyWorker({
      ask once: a pending answer is not shared between requests in a Worker.) ---- */
   let headlinesKept = null;
   let calendarKept = null;
+  let calendarRead = null;
 
   async function providerText(address, accept) {
     const res = await fetchImpl(address, { headers: { accept, 'user-agent': 'Mozilla/5.0 (compatible; aurum-news)' }, signal: AbortSignal.timeout(8000) });
@@ -290,17 +291,21 @@ function createReadOnlyWorker({
 
   /* The rows of the calendar feed, or the reason they could not be read. The day asked for is applied per request. */
   async function loadCalendar(route) {
-    if (calendarKept && now() - calendarKept.at < (calendarKept.ok ? CALENDAR_KEEP_MS : CALENDAR_RETRY_MS)) return calendarKept;
+    if (calendarKept && now() - calendarKept.at < (calendarKept.ok && !calendarKept.retry ? CALENDAR_KEEP_MS : CALENDAR_RETRY_MS)) return calendarKept;
     const startedAt = now();
     try {
       const text = await providerText(CALENDAR_URL, 'application/json');
       let rows;
       try { rows = JSON.parse(text); } catch (_) { throw feedError('shape', 'calendar answer is not JSON'); }
       if (!Array.isArray(rows)) throw feedError('shape', 'calendar answer is not a list');
-      calendarKept = { at: now(), ok: true, rows, week: calendarWeek(rows) };
+      calendarKept = calendarRead = { at: now(), readAt: now(), ok: true, rows, week: calendarWeek(rows) };
     } catch (e) {
       log('warn', 'provider_feed_failed', { route, requested: 1, failed: 1, duration_ms: Math.max(0, now() - startedAt), target: 'calendar', first: { provider: 'news', ...describeFeedFailure(e) } });
-      calendarKept = { at: now(), ok: false, detail: 'The calendar source could not be read from the cloud right now (' + CALENDAR_SOURCE + ': ' + sourceFailure(e) + '). No events are assumed.' };
+      /* The source did not answer. The copy read last is still the schedule for some hours: it is passed on with the
+         time it was read, and the source is asked again after the retry time. Without such a copy the route says so. */
+      calendarKept = calendarRead && now() - calendarRead.readAt < CALENDAR_LAST_GOOD_MS
+        ? { ...calendarRead, at: now(), retry: true }
+        : { at: now(), ok: false, detail: 'The calendar source could not be read from the cloud right now (' + CALENDAR_SOURCE + ': ' + sourceFailure(e) + '). No events are assumed.' };
     }
     return calendarKept;
   }
@@ -592,7 +597,7 @@ function createReadOnlyWorker({
       if (!kept.ok) return responseJson({ error: 'calendar_unavailable', detail: kept.detail }, 502);
       const today = new Date(now());
       /* `day` and `events` are the UTC day of the request, as the PC server sends them; `week` is every entry of the feed with its moment. */
-      return responseJson({ ts: today.toISOString(), fetched_at: kept.at, day: today.toISOString().slice(0, 10), source: CALENDAR_SOURCE, events: parseFfCalendar(kept.rows, today), week: kept.week });
+      return responseJson({ ts: today.toISOString(), fetched_at: kept.readAt, day: today.toISOString().slice(0, 10), source: CALENDAR_SOURCE, events: parseFfCalendar(kept.rows, today), week: kept.week });
     }
 
     if ((url.pathname === '/api/markets/deriv/candles' || url.pathname === '/api/markets/deriv/tick' || url.pathname === '/api/history/candles') && method === 'POST') {

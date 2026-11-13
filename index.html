@@ -375,6 +375,7 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 /* On a phone a row of the news tables is a wrapping line, not five fixed columns: nothing runs out of sight */
 @media (max-width:700px){
   .news-tbl, .news-tbl tbody{display:block; width:100%}
+  .news-tbl thead{display:none}
   .news-tbl tr{display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; padding:9px 2px; border-bottom:1px solid var(--border-soft)}
   .news-tbl tr:last-child{border-bottom:0}
   .news-tbl tr.news-main{border-bottom:0; padding-bottom:0}
@@ -1291,6 +1292,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div class="conf-bar" style="margin-top:6px"><i id="goldConfidenceBar" style="width:0%"></i></div>
               <div class="tiny faint" id="goldConfidenceNote" style="margin:6px 0 4px;line-height:1.45">The score appears with the first analysis.</div>
               <div class="tiny faint" id="goldMeasured" style="margin:0 0 8px;line-height:1.45"></div>
+              <div class="tiny" id="goldAside" style="margin:0 0 8px;line-height:1.45"></div>
               <div class="tiny faint" id="goldVotes">No verified timeframe votes yet.</div>
               <div class="tiny faint" id="goldSignalUpdated" style="margin-top:6px">Last analysis: —</div>
             </div>

@@ -505,7 +505,10 @@ purpose.
    high-impact entry of the calendar: no new trade from 30 minutes before the
    release until 30 minutes after it, in the markets priced in its currency.
    Times are Nairobi time (EAT). The same note appears in the line above the
-   chart for the market selected there.
+   chart for the market selected there, and on the Gold page: under the gold
+   signal, in its table of dollar releases, and at the start of the alert it
+   sends 15 and 5 minutes before a high-impact dollar release. A reading stays
+   shown during the period; the note says that no new trade belongs in it.
 4. **Which way will the news move the price?** Not answered, because it is not
    known. The calendar source gives the forecast and the previous figure, not
    the result, and the wording of a headline does not decide a price. On the
@@ -522,7 +525,15 @@ FXStreet, Investing.com and CNBC, and the ForexFactory weekly calendar.
 `GET /api/news/feed` and `GET /api/news/calendar` pass on what those sources
 publish, name each source, say which one did not answer, and keep an answer
 for 5 and 30 minutes so that a source is not asked for every request. When no
-source answers, the page says so and shows nothing in its place.
+source answers, the page says so and shows nothing in its place. One
+exception, for the calendar only: while its source does not answer, the copy
+that was read last is passed on for up to six hours, and the calendar card
+says when it was read ("read at 14:05 EAT"). A week's schedule is published
+days ahead; a copy a few hours old is still the schedule, and the page would
+otherwise lose its stand-aside periods whenever the source refuses one
+request. The page reads the calendar again every ten minutes while the News
+view, the chart or the Gold page is open, and one minute after a read that
+failed.
 
 **Why 30 minutes either side.** Measured on gold with `scripts/news-window.mjs`
 (6 January 2020 to 1 April 2023): 386 high-impact US data releases and rate

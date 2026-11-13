@@ -22,6 +22,9 @@ export const HEADLINES_KEEP_MS = 5 * 60000;
 export const HEADLINES_RETRY_MS = 60000;
 export const CALENDAR_KEEP_MS = 30 * 60000;
 export const CALENDAR_RETRY_MS = 2 * 60000;
+/** While the calendar source does not answer, the copy that was last read is passed on for this long, with the
+ *  time it was read: the schedule of a week is published days ahead and does not change with the minute. */
+export const CALENDAR_LAST_GOOD_MS = 6 * 3600000;
 export const NEWS_NOTE = 'Headlines as published by the sources named. No direction is derived from a headline: the reading beside a market comes from its prices.';
 
 /** An http(s) address a headline may link to, or '' for anything else (javascript:, data:, a relative path). */

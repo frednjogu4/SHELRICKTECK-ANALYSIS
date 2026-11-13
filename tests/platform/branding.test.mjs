@@ -295,7 +295,7 @@ async function bootApp({ origin = PC_ORIGIN, storage = {}, api = {} } = {}) {
   };
 }
 
-const CALENDAR = { status: 200, body: { day: '2026-01-05', source: 'test calendar', events: [{ time_utc: '12:30', impact: 'High', country: 'USD', event: 'Test release' }] } };
+const CALENDAR = { status: 200, body: { day: '2026-01-05', source: 'test calendar', events: [{ time_utc: '12:30', impact: 'High', country: 'USD', event: 'Test release' }, { time_utc: '14:00', impact: 'Medium', country: 'EUR', event: 'Test survey' }] } };
 const HEADLINES = { status: 200, body: { note: '', items: [{ title: 'Test headline', link: 'https://example.test/story', source: 'Test wire' }] } };
 
 for (const [place, origin] of [['the PC app', PC_ORIGIN], ['the Cloudflare site', HOSTED_ORIGIN]]) {
@@ -402,7 +402,7 @@ test('sharing a signal from a device with no saved number opens WhatsApp for the
     assert.equal(share.number, WHATSAPP_NUMBER);
     /* 12:30 UTC is 15:30 in Nairobi; a high-impact release comes with its stand-aside period. */
     assert.ok(share.text.startsWith(`📅 ${BRAND_NAME} — today, Nairobi time (EAT)\n`), share.text);
-    assert.ok(share.text.includes('15:30 EAT HIGH · USD Test release — no new trade 15:00–16:00'), share.text);
+    assert.ok(share.text.includes('15:30 EAT HIGH · USD Test release — no new trade 15:00–16:00\n17:00 EAT MEDIUM · EUR Test survey\n'), share.text);
     assert.ok(share.text.endsWith('A release can move a market either way: the calendar gives no direction. Not advice.'), share.text);
     assert.ok(!/FREDRICK/i.test(app.opened.join(' ')), 'the previous brand name is gone from shared messages');
   } finally {
