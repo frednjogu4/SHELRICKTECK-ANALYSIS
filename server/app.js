@@ -20,6 +20,7 @@ import WebSocket from 'ws';
 import { log } from './lib/log.js';
 import { runDeterministicAnalysis, votesSummary, waitReason } from './lib/analyzer.js';
 import { localDecision } from './lib/localdecision.js';
+import { closedCandleSets } from './lib/closedcandles.js';
 import { makeDecision, availableEngines, newsBriefViaPerplexity, newsBriefAny } from './lib/decision.js';
 import { waSend, waStatus, waRateOk } from './lib/wa.js';
 import { evaluateRisk, bossVerdict } from './lib/riskgate.js';
@@ -300,7 +301,14 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         }
       }
 
-      const det = runDeterministicAnalysis(symbol, candleSets);
+      /* One reading per finished 5-minute candle, the same one the Cloudflare site and the
+         browser make from these candles (lib/closedcandles.js). `latest_candle_time` stays the
+         newest 1-minute candle the feed returned, finished or not: it says whether the feed is
+         current. `candle_close` is the 5-minute close the reading belongs to; `candle_current`
+         is false while the market has only just resumed after a pause. */
+      const latestCandleTime = Number(candleSets.m1[candleSets.m1.length - 1]?.time || 0);
+      const closed = closedCandleSets(candleSets);
+      const det = runDeterministicAnalysis(symbol, closed.sets);
       const price = det.analyses.m1?.currentPrice ?? null;
       const sentiment = det.sentiment || { score: 50, bias: 'neutral', source: 'derived' };
 
@@ -335,7 +343,9 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         sentiment_source: sentiment.source,
         news: newsBrief ? { available: true, brief: newsBrief } : { available: false, reason: technicalOnly ? 'technical_only' : 'no_perplexity_key' },
         data_source: dataSource,
-        latest_candle_time: Number(det.analyses.m1?.candles?.slice(-1)[0]?.time || 0)
+        latest_candle_time: latestCandleTime,
+        candle_close: closed.close,
+        candle_current: closed.current
       });
       const fullMeta = Object.assign({}, meta, { cached: false, at: new Date().toISOString() });
 
@@ -389,7 +399,10 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
           dataFeed.fetchCandles(symbol, GRAN['5m'], 120),
           dataFeed.fetchCandles(symbol, GRAN['1h'], 120)
         ]);
-        const det = runDeterministicAnalysis(symbol, { m1, m5, h1 });
+        /* Finished candles only, as of the last 5-minute close: the same reading the Cloudflare
+           site makes (lib/closedcandles.js; see /api/signals/analyze above for the three fields). */
+        const closed = closedCandleSets({ m1, m5, h1 });
+        const det = runDeterministicAnalysis(symbol, closed.sets);
         const dec = localDecision(det);
         const price = det.analyses.m1?.currentPrice ?? null;
         const wr = dec.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
@@ -399,7 +412,9 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
           wait_reason: wr ? wr.code : null, wait_detail: wr ? wr.detail : null,
           confidence: dec.confidence,
           entry: dec.entry, stop_loss: dec.stop_loss, tp1: dec.tp1, tp2: dec.tp2,
-          tf: 'MTF 1m/5m/1h', model: 'technical', ts: Date.now()
+          rrr: dec.rrr, tf: 'MTF 1m/5m/1h', model: 'technical',
+          latest_candle_time: Number(m1?.[m1.length - 1]?.time || 0), candle_close: closed.close, candle_current: closed.current,
+          ts: Date.now()
         };
       } catch (e) {
         return { symbol, error: 'FEED_ERROR', detail: String(e.message || e).slice(0, 120) };
@@ -474,7 +489,11 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         ]);
         candleSets = { m1, m5, h1 };
       }
-      const det = runDeterministicAnalysis(symbol, candleSets);
+      /* The finished candles of the last 5-minute close: the ones the reading shown above this
+         panel was made from (/api/signals/analyze, lib/closedcandles.js), so the six roles and
+         that reading speak of the same candles. */
+      const closed = closedCandleSets(candleSets);
+      const det = runDeterministicAnalysis(symbol, closed.sets);
       const dec = localDecision(det);
       const pipeline = runPipeline({
         symbol, det, dec,
@@ -483,7 +502,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         riskInput: Object.assign({ killSwitch: isTradingKilled() }, req.body?.riskInput || {}),
       });
       pipeline.charts.dataSource = dataSource;
-      res.json({ ok: true, pipeline, data_source: dataSource });
+      res.json({ ok: true, pipeline, data_source: dataSource, candle_close: closed.close, candle_current: closed.current });
     } catch (e) {
       res.status(502).json({ error: 'pipeline_failed', detail: String(e.message || e).slice(0, 160) });
     }
