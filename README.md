@@ -123,6 +123,47 @@ feed-status labels and the Settings → About rows described above), and it
 still carries the previous name, logo and icons. Refreshing it changes what
 runs on the trading PC, so it is a separate, deliberate step.
 
+### When Connect cannot attach to MetaTrader 5
+
+On the PC, **Connect Exness (read-only)** needs the bridge
+(`bridge/mt5_bridge.py`) to attach to the MetaTrader 5 desktop program before
+it can check an account. When the attach fails, the form shows the bridge's
+message:
+
+```text
+Cannot attach to MetaTrader 5: <what is wrong> (step terminal, code <n>: <MetaTrader's own text>). <what to do> Terminal tried: "<folder>\<file>".
+```
+
+The message distinguishes: the saved location is gone, the program found is
+MetaTrader 4, MetaTrader 5 is not logged in (code -6), no MetaTrader 5 was
+found, it could not be started, it has no connection for Python, it did not
+answer in time (code -10005), and a version mismatch. The same text is printed
+in the bridge window when the bridge starts without MetaTrader 5.
+
+- **`(step terminal, code 1: Success)` is the old fault.** Until 13 November
+  2026 the bridge read MetaTrader's error after `mt5.shutdown()`, which sets it
+  back to `(1, 'Success')`, so every failed attach read the same. A PC shows
+  that text for as long as its own `bridge\mt5_bridge.py` is the older file:
+  replace the file and restart the bridge window.
+- **Wording.** The sign-in form replaces a bridge message that contains
+  `unreachable`, `timeout`, `refused`, `closed` or `blocked` with its own
+  "Bridge not reachable" help. The bridge rewords these five words, or
+  MetaTrader's `IPC timeout` would hide the message.
+- **Times.** The app waits 8 seconds for the answer to a login and repeats a
+  failed login once over HTTP straight away. An attach asked for by a login is
+  therefore limited to 5 seconds, the repeat gets the same answer without a
+  second attempt, and a login that arrives during an attach is answered at once
+  with "still contacting MetaTrader 5". The attach at bridge start keeps
+  MetaTrader's 60 seconds, because a terminal the launcher has just started
+  needs them.
+- **Tests.** `tests/test_mt5_bridge_attach.py` runs the bridge against a
+  stand-in for the Windows-only `MetaTrader5` package, and
+  `tests/platform/pc-bridge-attach.test.mjs` checks the three facts about the
+  app named above and runs the Python tests where Python 3 is installed
+  (`npm test` includes it). The wording for each case follows MetaQuotes' list
+  of error codes and users' reports. Nothing has been run on Windows or against
+  a real terminal.
+
 ### Signals on the cloud viewer
 
 **Who computes a reading.** On the cloud viewer the 20 Deriv-backed markets
@@ -660,18 +701,24 @@ To bring such a package in:
 3. Run `npm run build` and `npm test`, commit the rebuilt `dist/`, and open a
    pull request.
 
-**Open item.** The package of 12 November also changed files in `bridge/`:
-a new `START_MT5_IF_CLOSED.ps1`, and `SETUP_AND_RUN.bat`, `AUTO_START.bat` and
-`mt5_bridge.py`. That folder was not uploaded. The launcher texts and
-`tests/localHosting.test.mjs` already describe it, so two tests in that file
-are reported as `# TODO` until `bridge/START_MT5_IF_CLOSED.ps1` is in the
-repository, and count as failures again from then on. Until then
-`START_ALL_LOCAL.bat` from this repository runs the bridge scripts of
-10 November. They do not contain the steps its banner now names (starting MT5
-when it is closed, opening the app in Chrome), and that bridge has no
-`/local-config` route, so the page does not receive the bridge token. Nothing
-in `bridge/` has changed here since 10 November, so uploading that one folder
-from the package replaces nothing newer.
+**The `bridge/` files of that package.** The package of 12 November had also
+changed four files in `bridge/`: a new `START_MT5_IF_CLOSED.ps1`, and
+`SETUP_AND_RUN.bat`, `AUTO_START.bat` and `mt5_bridge.py`. They were uploaded
+on 13 November 2026. The upload put them in the top folder of the repository
+and once more replaced `package.json` and `package-lock.json` with the
+package's older copies, so the four files were moved into `bridge/` and the two
+package files restored. `tests/localHosting.test.mjs`, which describes these
+scripts, now passes without a `# TODO`.
+
+`bridge/mt5_bridge.py` in the repository is now newer than the copy in that
+package (see
+[When Connect cannot attach to MetaTrader 5](#when-connect-cannot-attach-to-metatrader-5)).
+Uploading the package's `bridge` folder again would put the older file back.
+
+When uploading through GitHub's web page, open the folder the files belong to
+first and upload there: files dropped on the repository's front page land in
+the top folder. Leave `package.json` and `package-lock.json` out of an upload
+that comes from the PC package.
 
 ### What the configuration does
 
