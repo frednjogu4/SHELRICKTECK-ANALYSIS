@@ -725,12 +725,16 @@ succeeded.
 **What is live.** Cloudflare dashboard → Workers & Pages → `cloudflare-staging`
 → **Deployments**. "Active deployment" is the version that serves the site.
 Its row in the list below carries the commit message of the merge it was built
-from. GitHub shows it on the list of commits of `main` too: a commit that
-Cloudflare has built carries a mark, a green tick after a successful build. A
-merge commit that carries no mark at all two minutes after the merge was not
-built. (Two commits there, `1534184` and `d3fdf22`, show a red cross although
-they were published: a branch was created at each of them later, and the
-preview build of that branch failed.)
+from. GitHub shows it too: on the list of commits of `main`, select the mark
+next to a commit. Cloudflare's line in the list that opens is **Workers
+Builds: cloudflare-staging**, green after a successful build. A merge commit
+without that line two minutes after the merge was not built. The mark itself
+is not enough: it also turns green when only the repository's own tests have
+passed (the lines **Build, test, dry-run** and **PC bridge tests**, see
+[Continuous integration](#continuous-integration)). (On two commits,
+`1534184` and `d3fdf22`, Cloudflare's line is red although they were
+published: a branch was created at each of them later, and the preview build
+of that branch failed.)
 
 **The merge is not in that list.** The list shows successful builds only.
 
@@ -744,28 +748,50 @@ preview build of that branch failed.)
 4. If no build exists for the merge at all, the next commit on `main` starts
    one, and it publishes everything merged up to then.
 
-**Pushes that were never built.** Of the 26 pushes to `main` between the first
-build (9 November) and 13 November, three got no build at all: no check on the
-commit, and nothing to retry.
+**Pushes that were never built.** Of the 28 pushes to `main` between the first
+build (9 November) and 13 November, 19:20 UTC, five got no build at all: no
+check on the commit, and nothing to retry. GitHub received nothing from
+Cloudflare for them, neither the check Cloudflare posts when a build starts
+nor a failed one. Whether GitHub delivered these pushes to Cloudflare's app
+cannot be seen from the repository.
 
 | Push to `main` (UTC) | What | Published by |
 | --- | --- | --- |
 | 11 Nov, 20:00:44 | merge of #4 | the build of #5, an hour and a half later |
 | 13 Nov, 08:00:43 | files uploaded on GitHub | the build of #11, three and a half hours later |
-| 13 Nov, 18:00:09 | merge of #12 | the next push to `main` |
+| 13 Nov, 18:00:09 | merge of #12 | see below |
+| 13 Nov, 19:12:21 | merge of #14 | see below |
+| 13 Nov, 19:20:17 | merge of #13 | see below |
 
-All three were pushed in the first minute after a full hour. None of the 23
-pushes that were built was: the nearest ones came 4 and 18 seconds before an
-hour, and 3 and 5 minutes after one. The cause has not been established.
-GitHub received no check from Cloudflare for these pushes, neither the one
-Cloudflare posts when a build starts nor a failed one, and whether GitHub
-delivered the pushes to Cloudflare's app cannot be seen from the repository.
-The first of the three is from two days before the repository was renamed, so
-the rename is not needed to explain them. Until the cause is known:
+*The first two* were single pushes, each published by the next build. Both
+were pushed in the first minute after a full hour, as was the third, and none
+of the 23 pushes that were built was (the nearest ones came 4 and 18 seconds
+before an hour, and 3 and 5 minutes after one). The first is from two days
+before the repository was renamed. Whether the hour is the cause has not been
+established.
 
-- merge at five minutes past the hour or later;
-- after a merge, look for the check on the merge commit. Without one, the
-  merge is published by the next push to `main` (point 4 above).
+*The last three* are one stretch, and the hour does not explain it. On
+13 November no push started a build from 18:00 UTC on: not these three merges,
+two of them well after the hour, and not two pushes to other branches at
+19:11, which got no preview build either. The last build that a push had
+started was that of a branch at 14:03 UTC. Builds asked for with **Re-run** on
+GitHub at 18:44 UTC still ran, so Cloudflare could still reach and build the
+repository; it was pushes that no longer started anything. What had changed
+on Cloudflare's side cannot be seen from GitHub, and was not known when this
+was written.
+
+What follows from both:
+
+- After a merge, look for the check on the merge commit. Without one, the
+  merge is published by the next push to `main` that is built (point 4 above).
+- When several pushes in a row carry no check, a further merge does not help.
+  Look in the Cloudflare dashboard: **Settings** → **Builds** shows whether
+  the repository is still connected, and **Deployments** → **View Build
+  History** whether Cloudflare saw the pushes at all. Connecting the
+  repository again is described under "The repository's name" below, and
+  "Deploying staging" above publishes without the Git integration.
+- Merging at five minutes past the hour or later costs nothing, and avoids
+  the one pattern seen so far.
 
 **Pull requests get a separate preview build.** It runs Cloudflare's Preview
 command (`npx wrangler preview` by default, an open-beta Wrangler command)
@@ -926,9 +952,10 @@ npm run build                         # then commit the changed files, including
 
 ## Continuous integration
 
-`.github/ci.yml` is the GitHub Actions workflow for this repository. It runs
-on pull requests and on pushes to `main`, and it only verifies — it never
-deploys and needs no secrets:
+`.github/workflows/ci.yml` is the GitHub Actions workflow for this repository
+(active since 13 November; until then the file lay one folder higher, where
+GitHub does not run it). It runs on pull requests and on pushes to `main`, and
+it only verifies — it never deploys and needs no secrets:
 
 - Node 22 and 24: `npm ci`, `npm audit` (reported as a warning), then
   `npm run verify` (build → smoke and unit tests → the Worker inside workerd →
@@ -937,10 +964,10 @@ deploys and needs no secrets:
   (`python -m unittest discover -s tests -p "test_*.py"`). They use only the
   standard library; no conda environment is involved.
 
-GitHub runs a workflow only from `.github/workflows/`. If the file is still at
-`.github/ci.yml`, open it on github.com, choose **Edit**, change the file name
-to `workflows/ci.yml` (so the path becomes `.github/workflows/ci.yml`) and
-commit.
+Its marks on a commit (**Build, test, dry-run** and **PC bridge tests**) say
+that the code passed its tests. They do not say that the website was
+published: that is the separate check **Workers Builds: cloudflare-staging**
+(see "When a merge does not reach the live site").
 
 ## Environment variables and secrets
 
