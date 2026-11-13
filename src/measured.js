@@ -17,8 +17,9 @@
  *
  *   close   the rule as it runs now: finished candles, one reading per
  *           5-minute close (src/closedcandles.js)
- *   minute  the rule as it ran until November 2026, and as the PC's own
- *           server still runs it: a look every minute, forming candles included
+ *   minute  the rule as it ran until November 2026, and as a PC server from
+ *           before 13 November 2026 still runs it: a look every minute, forming
+ *           candles included. Such a reading names no 5-minute close.
  *
  * No DOM, no network.
  * ================================================================ */

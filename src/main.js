@@ -26,7 +26,7 @@ import { patternAnalyze, patternStudy, renderPatternChart, playbookHTML, perform
 import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudSignIn, cloudSignUp, cloudSignOut, cloudVerifyTables, cloudList, saveAnalysis, savePatternEvent, saveAlert, saveSignal } from './cloud.js';
 import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
 import { candleHistory } from './derivhistory.js';
-import { createHostedScanner, signalState, summarizeReadings } from './hostedscan.js';
+import { createHostedScanner, resumedReading, signalState, summarizeReadings } from './hostedscan.js';
 import { closedCandleSets, nextReadingCheck } from './closedcandles.js';
 import { measuredText, measuredLine, isDailyReading } from './measured.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
@@ -74,7 +74,7 @@ const DAILY_NOTE='Daily index reading from daily closing prices: it has no entry
 const NO_LEVELS_NOTE='This reading has no entry, stop or target, so its score does not move with the price.';
 /* A market that ticks again after a pause, with every finished candle still from before it: no reading yet (closedcandles.js). */
 const RESUMED_NOTE=what=>what+' has just resumed after a pause: no 5-minute candle has closed since. The first reading comes with the next 5-minute close.';
-/* "14:35" for the 5-minute close a reading was made at; '' for a reading that does not say (the PC server's, the daily ones). */
+/* "14:35" for the 5-minute close a reading was made at; '' for a reading that does not say (the daily ones, and those of a PC server from before 13 Nov 2026). */
 const timeHM=t=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 const closeText=r=>Number(r&&r.candle_close)>0?timeHM(Number(r.candle_close)*1000):'';
 function liveReading(symbol){const I=bySym[symbol];return signalRuns.read(symbol,I&&I.p!=null?I.p:null,STREAM_FEED);}
@@ -1534,6 +1534,9 @@ async function fallbackSignalBatch(symbols,reason){
   return symbols.map(symbol=>{
     const r=found.get(symbol);
     if(!r)return {symbol,error:'FEED_ERROR',detail:'No fallback result returned for '+symbol+'.',source:'unavailable',data_source:'unavailable'};
+    /* The PC's server reads at the 5-minute close, as the cloud does (closedcandles.js). A reading it made
+       from before a pause describes the market as it was then; it is not shown, and the row is the cloud's. */
+    if(!r.error&&r.candle_current===false)return resumedReading(r);
     const label=fallbackSourceFor(r)+' · fallback (Exness unavailable: '+reason+')';
     return Object.assign({},r,{source:label,data_source:label,fallback:true,fallback_reason:reason});
   });
@@ -4137,7 +4140,13 @@ function renderGoldAnalysis(){
 function goldAnalysisNoticeText(){
   const auto=state.settings.goldAuto!==false;
   const retry=auto&&goldNextAttemptAt?Math.max(0,Math.ceil((goldNextAttemptAt-Date.now())/1000)):null;
-  const cadence=auto?(retry==null?'Automatic retry is scheduled after this check.':'Auto-refresh '+(goldAnalysisError?'retry':'next check')+' in '+retry+'s (a reading changes only when a 5-minute candle closes).'):'Auto-refresh is off; use Analyze now to retry.';
+  /* A reading that names no close was made by an AURUM server from before 13 Nov 2026 (server/app.js), which looked
+     at the forming candles every minute. The page says so instead of promising the 5-minute rule for it. On the PC
+     that is a server process started before the package folder was brought up to date: START_LOCAL_API.bat leaves
+     a running one alone. */
+  const everyMinute=!!state.goldAnalysis&&!closeText(state.goldAnalysis);
+  const rule=everyMinute?'this reading can change every minute: it comes from an older version of the AURUM server, which does not read at the 5-minute close yet'+(isPrivateBridgePage()?'. If that server runs on this PC, close the "Fredrick AURUM Local API" window and run START_ALL_LOCAL.bat again':''):'a reading changes only when a 5-minute candle closes';
+  const cadence=auto?(retry==null?'Automatic retry is scheduled after this check.':'Auto-refresh '+(goldAnalysisError?'retry':'next check')+' in '+retry+'s ('+rule+').'):'Auto-refresh is off; use Analyze now to retry.';
   if(goldAnalysisBusy)return 'Fetching fresh '+(goldDataSource()==='mt5'?'Exness MT5 XAUUSD':'Gold')+' quote and M1 / M5 / H1 candles. '+cadence;
   if(goldAnalysisError){
     const raw=String(goldAnalysisError);

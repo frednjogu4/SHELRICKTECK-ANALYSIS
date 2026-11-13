@@ -161,8 +161,9 @@ function staleReading(symbol, ageSec, computed, latestCandleTime) {
   };
 }
 
-/* The feed is current again after a pause, but every finished candle is from before it (closedcandles.js). */
-function resumedReading(reading) {
+/* The feed is current again after a pause, but every finished candle is from before it (closedcandles.js).
+   Exported for the PC app, which shows the same row when its own server reports such a reading. */
+export function resumedReading(reading) {
   return {
     symbol: reading.symbol, error: 'STALE_DATA', data_state: 'stale', computed: reading.computed,
     detail: reading.symbol + ' has just resumed after a pause: no 5-minute candle has closed since, so a reading would describe the market before the pause. The first reading comes with the next 5-minute close.',
