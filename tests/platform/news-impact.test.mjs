@@ -57,6 +57,7 @@ test('a company headline concerns the indices the company is a large part of, an
     assert.deepEqual(result.markets, ['NAS100', 'SPX500', 'US100'], title);
     assert.deepEqual(result.subjects, [{ label: 'Nvidia', markets: ['NAS100', 'SPX500', 'US100'], explain: true,
       why: 'Nvidia is one of the largest companies in the Nasdaq-100 and the S&P 500, so news about it concerns those indices' }], title);
+    assert.deepEqual(result.named, ['NAS100', 'SPX500', 'US100'], title);
   }
   assert.deepEqual(labels('Apple and Microsoft lead; Tesla and Meta lag; Amazon, Google and Broadcom flat'), ['Apple', 'Microsoft', 'Amazon', 'Alphabet (Google)', 'Meta', 'Tesla', 'Broadcom']);
   assert.deepEqual(labels('An apple a day and a new meta in gaming'), [], 'the fruit and the common word are not the companies');
@@ -92,16 +93,24 @@ test('metals, coins and index names; escaped titles are read as written', () => 
 });
 
 test('a headline that names nothing this application follows gets no market, and oil is said to be missing', () => {
-  assert.deepEqual(headlineConcerns('Council opens a new park'), { subjects: [], markets: [] });
-  assert.deepEqual(headlineConcerns(''), { subjects: [], markets: [] });
-  assert.deepEqual(headlineConcerns(null), { subjects: [], markets: [] });
-  assert.deepEqual(headlineConcerns('Oil steady as OPEC meets'), { subjects: [{ label: 'Oil', markets: [], why: 'This application has no oil market', explain: true }], markets: [] });
+  assert.deepEqual(headlineConcerns('Council opens a new park'), { subjects: [], markets: [], named: [] });
+  assert.deepEqual(headlineConcerns(''), { subjects: [], markets: [], named: [] });
+  assert.deepEqual(headlineConcerns(null), { subjects: [], markets: [], named: [] });
+  assert.deepEqual(headlineConcerns('Oil steady as OPEC meets'), { subjects: [{ label: 'Oil', markets: [], why: 'This application has no oil market', explain: true }], markets: [], named: [] });
+});
+
+test('the markets a headline points at by name are told apart from those that only share a currency', () => {
+  const gold = headlineConcerns('Gold steady as the US dollar holds before the Fed');
+  assert.deepEqual(gold.named, ['XAU/USD']);
+  assert.deepEqual(gold.markets, marketsForCurrency('USD'), 'gold is a dollar market as well, and is listed once');
+  assert.deepEqual(headlineConcerns('EUR/USD and the Dow before the ECB').named, ['EUR/USD', 'US30']);
+  assert.deepEqual(headlineConcerns('Dollar firm, yen weak').named, [], 'currencies alone point at no single market');
 });
 
 test('no result carries a direction: only names, markets and reasons', () => {
   for (const title of ['Dollar surges on hawkish Fed', 'Gold plunges', 'Nvidia soars to a record high', 'Euro falls as the dollar gains']) {
     const result = headlineConcerns(title);
-    assert.deepEqual(Object.keys(result).sort(), ['markets', 'subjects']);
+    assert.deepEqual(Object.keys(result).sort(), ['markets', 'named', 'subjects']);
     for (const subject of result.subjects) assert.deepEqual(Object.keys(subject).sort(), ['explain', 'label', 'markets', 'why']);
     assert.doesNotMatch(JSON.stringify(result), /BUY|SELL|bull|bear|"up"|"down"|tone|dir/i, title);
   }

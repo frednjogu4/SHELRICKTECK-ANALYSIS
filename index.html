@@ -364,6 +364,25 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 .news-aside-box{border:1px solid var(--border); border-radius:10px; padding:8px 12px; margin-bottom:6px; background:rgba(224,180,92,.05)}
 .news-aside-line{font-size:12.5px; line-height:1.6}
 .news-aside-line.on{color:var(--red)}
+/* News tables: headlines, markets and stand-aside lines wrap; times, currency, impact and buttons stay on one line */
+.news-tbl td{white-space:normal; vertical-align:top}
+.news-tbl td.nowrap{white-space:nowrap}
+.news-tbl tr.news-main td{border-bottom:0; padding-bottom:2px}
+.news-tbl tr.news-sub td{padding-top:0}
+.news-tbl tr.news-sub:hover, .news-tbl tr.news-main:hover{background:transparent}
+.chart-event{font-weight:700; color:var(--amber)}
+.chart-event.on{color:var(--red)}
+/* On a phone a row of the news tables is a wrapping line, not five fixed columns: nothing runs out of sight */
+@media (max-width:700px){
+  .news-tbl, .news-tbl tbody{display:block; width:100%}
+  .news-tbl tr{display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; padding:9px 2px; border-bottom:1px solid var(--border-soft)}
+  .news-tbl tr:last-child{border-bottom:0}
+  .news-tbl tr.news-main{border-bottom:0; padding-bottom:0}
+  .news-tbl tr.news-sub{padding-top:2px}
+  .tbl.news-tbl td, .tbl.news-tbl tr.news-main td, .tbl.news-tbl tr.news-sub td{display:block; padding:0; border:0}
+  .tbl.news-tbl td:not(.nowrap){flex:1 1 150px; min-width:0}
+  .tbl.news-tbl tr.news-sub td{flex:1 1 100%}
+}
 .news-row{display:flex; gap:12px; padding:11px 0; border-bottom:1px solid var(--border-soft); cursor:pointer}
 .news-row:last-child{border-bottom:0}
 .news-row:hover .headline{color:var(--brand)}

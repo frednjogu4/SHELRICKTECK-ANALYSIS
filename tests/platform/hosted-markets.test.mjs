@@ -2096,6 +2096,8 @@ const newsReadings = (results) => results.map((reading) => {
 const flat = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const feedRow = (app, title) => [...app.doc.querySelectorAll('#newsFeed tbody tr')].find((tr) => tr.textContent.includes(title));
 const calendarRow = (app, name) => [...app.doc.querySelectorAll('#newsCal tbody tr')].find((tr) => tr.textContent.includes(name));
+/* The line under a release: its markets and its stand-aside period. null when the release has none. */
+const calendarDetail = (app, name) => { const next = calendarRow(app, name).nextElementSibling; return next && next.classList.contains('news-sub') ? next : null; };
 const eat = (ms) => new Date(ms + 3 * 3600000).toISOString().slice(11, 16);
 const calendarRows = (now) => [
   { title: 'Fixture rate decision', country: 'USD', impact: 'High', date: new Date(now + 20 * 60000).toISOString(), forecast: '1.0%', previous: '0.9%' },
@@ -2116,6 +2118,7 @@ test('News on the Cloudflare site: a headline names its markets and shows their 
     assert.match(nvidia, /SPX500 .*US100 /, 'the three index markets Nvidia is part of');
     assert.ok(nvidia.endsWith('Nvidia is one of the largest companies in the Nasdaq-100 and the S&P 500, so news about it concerns those indices.'), nvidia);
     assert.equal(flat(feedRow(app, 'Gold steadies').querySelector('.news-concern')), 'Concerns Gold → XAU/USD Sell 71%');
+    assert.equal(feedRow(app, 'Gold steadies').querySelector('[data-news-markets]').dataset.newsNamed, 'XAU/USD');
     assert.equal(flat(feedRow(app, 'new park').querySelector('.news-concern')), 'Names no market of this application.');
     assert.match(flat(feedRow(app, 'Gold steadies')), /FXStreet · (\w{3} )?\d\d:\d\d EAT/, 'source and Nairobi time under the headline');
 
@@ -2141,26 +2144,27 @@ test('News calendar: Nairobi time, the markets of each release, and a stand-asid
   try {
     await app.enter();
     await app.open('news');
-    await app.waitFor(() => calendarRow(app, 'Fixture rate decision') && /Sell \d+%/.test(flat(calendarRow(app, 'Fixture rate decision'))), 'the calendar with the readings of its markets');
+    await app.waitFor(() => calendarRow(app, 'Fixture rate decision') && /Sell \d+%/.test(flat(calendarDetail(app, 'Fixture rate decision'))), 'the calendar with the readings of its markets');
+    const aside = (name) => { const detail = calendarDetail(app, name); return detail ? detail.querySelector('.news-aside') : null; };
     const release = start + 20 * 60000;
 
     const usd = calendarRow(app, 'Fixture rate decision');
     assert.match(flat(usd.cells[0]), new RegExp('^(\\w{3} )?' + eat(release) + ' EAT$'), 'the time of the release on the Nairobi clock');
     assert.equal(usd.cells[0].getAttribute('title'), new Date(release).toISOString().slice(0, 16).replace('T', ' ') + ' UTC');
-    assert.match(flat(usd), /USD markets .*XAU\/USD Sell 71%/, 'the dollar markets, a Buy or Sell reading first');
-    assert.match(flat(usd.querySelector('.news-aside')), new RegExp('^STAND ASIDE NOW · release in (19|20) min · no new trade until ' + eat(release + 30 * 60000) + ' EAT$'));
-    assert.ok(usd.querySelector('.news-aside').classList.contains('on'));
+    assert.match(flat(calendarDetail(app, 'Fixture rate decision')), /^USD markets .*XAU\/USD Sell 71%/, 'the dollar markets, a Buy or Sell reading first');
+    const onChart = app.doc.getElementById('chartSymbol').value;
+    assert.equal(onChart, 'EUR/USD');
+    assert.deepEqual([...calendarDetail(app, 'Fixture rate decision').querySelectorAll('[data-news-open]')].slice(0, 2).map((link) => link.dataset.newsOpen), [onChart, 'XAU/USD'], 'the market on the chart comes first, then the one with a Buy or Sell reading');
+    assert.match(flat(aside('Fixture rate decision')), new RegExp('^STAND ASIDE NOW · release in (19|20) min · no new trade until ' + eat(release + 30 * 60000) + ' EAT$'));
+    assert.ok(aside('Fixture rate decision').classList.contains('on'));
     assert.match(flat(usd), /f: 1\.0% · p: 0\.9%/, 'forecast and previous as the source gives them');
 
-    const gbp = calendarRow(app, 'Fixture output figure');
-    assert.equal(flat(gbp.querySelector('.news-aside')), 'No new trade ' + eat(start + 90 * 60000) + '–' + eat(start + 150 * 60000) + ' EAT (30 min before to 30 min after)');
-    assert.ok(!gbp.querySelector('.news-aside').classList.contains('on'));
-    const eur = calendarRow(app, 'Fixture survey');
-    assert.match(flat(eur), /EUR markets /);
-    assert.equal(eur.querySelector('.news-aside'), null, 'a medium-impact release has no stand-aside period');
-    const cny = calendarRow(app, 'Fixture trade balance');
-    assert.match(flat(cny), /no market of this application is priced in CNY/);
-    assert.equal(cny.querySelector('.news-aside'), null);
+    assert.equal(flat(aside('Fixture output figure')), 'No new trade ' + eat(start + 90 * 60000) + '–' + eat(start + 150 * 60000) + ' EAT (30 min before to 30 min after)');
+    assert.ok(!aside('Fixture output figure').classList.contains('on'));
+    assert.match(flat(calendarDetail(app, 'Fixture survey')), /^EUR markets /);
+    assert.equal(aside('Fixture survey'), null, 'a medium-impact release has no stand-aside period');
+    assert.equal(flat(calendarDetail(app, 'Fixture trade balance')), 'no market of this application is priced in CNY');
+    assert.equal(aside('Fixture trade balance'), null);
 
     const box = () => flat(app.doc.getElementById('newsAside'));
     assert.match(box(), new RegExp('^Stand aside now · USD — Fixture rate decision at (\\w{3} )?' + eat(release) + ' EAT\\. No new trade in USD markets until ' + eat(release + 30 * 60000) + ' EAT \\(EUR/USD, '));
@@ -2174,16 +2178,16 @@ test('News calendar: Nairobi time, the markets of each release, and a stand-asid
     /* One minute after the release: still inside the period. No price tick is needed for the clock to be followed. */
     app.advanceClock(21 * 60000);
     app.runIntervals(1000);
-    await app.waitFor(() => /released/.test(flat(calendarRow(app, 'Fixture rate decision').querySelector('.news-aside'))), 'the period after the release');
-    assert.match(flat(calendarRow(app, 'Fixture rate decision').querySelector('.news-aside')), new RegExp('^STAND ASIDE · released · no new trade for another (28|29) min, until ' + eat(release + 30 * 60000) + ' EAT$'));
+    await app.waitFor(() => /released/.test(flat(aside('Fixture rate decision'))), 'the period after the release');
+    assert.match(flat(aside('Fixture rate decision')), new RegExp('^STAND ASIDE · released · no new trade for another (28|29) min, until ' + eat(release + 30 * 60000) + ' EAT$'));
     assert.match(box(), /^Stand aside now · USD/);
 
     /* Half an hour after the release the period is over, and the box no longer names the dollar. */
     app.advanceClock(30 * 60000);
     app.runIntervals(1000);
-    await app.waitFor(() => /over since/.test(flat(calendarRow(app, 'Fixture rate decision').querySelector('.news-aside'))), 'the end of the period');
-    assert.equal(flat(calendarRow(app, 'Fixture rate decision').querySelector('.news-aside')), 'Stand-aside period over since ' + eat(release + 30 * 60000) + ' EAT');
-    assert.ok(!calendarRow(app, 'Fixture rate decision').querySelector('.news-aside').classList.contains('on'));
+    await app.waitFor(() => /over since/.test(flat(aside('Fixture rate decision'))), 'the end of the period');
+    assert.equal(flat(aside('Fixture rate decision')), 'Stand-aside period over since ' + eat(release + 30 * 60000) + ' EAT');
+    assert.ok(!aside('Fixture rate decision').classList.contains('on'));
     assert.doesNotMatch(box(), /· USD —/, 'no dollar period is running or coming');
     assert.match(box(), /^Next · GBP — Fixture output figure/);
     assert.deepEqual(app.problems, []);

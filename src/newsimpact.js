@@ -97,19 +97,23 @@ const SUBJECTS = [
 /**
  * The markets of this application a headline names.
  *
- *   { subjects: [{ label, markets, why, explain }], markets: [...] }
+ *   { subjects: [{ label, markets, why, explain }], markets: [...], named: [...] }
  *
  * A pair written out ("EUR/USD", "USDJPY") is that one market. A currency or
  * its central bank is every listed market priced in it. A company is the
  * indices it is a large part of. `markets` holds each market once, in the
- * order of the instrument list. An empty list means the headline names nothing
- * this application follows; no market is guessed.
+ * order of the instrument list; `named` are those among them that the
+ * headline points at by more than a currency (a pair, a metal, a coin, an
+ * index, a company), which a page shows first. An empty list means the
+ * headline names nothing this application follows; no market is guessed.
  */
 export function headlineConcerns(title) {
   let text = decodeEntities(title).replace(/\s+/g, ' ');
   const subjects = [];
+  const named = [];
   /* `explain`: the reason is worth showing, because the market is not named in the headline itself */
-  const add = (label, markets, why, explain = false) => {
+  const add = (label, markets, why, explain = false, broad = false) => {
+    if (!broad) named.push(...markets);
     const known = subjects.find((subject) => subject.label === label);
     if (known) { known.markets = listed([...known.markets, ...markets]); return; }
     subjects.push({ label, markets: listed(markets), why, explain });
@@ -126,10 +130,10 @@ export function headlineConcerns(title) {
     const re = new RegExp(subject.re.source, flags);
     if (!re.test(text)) continue;
     text = text.replace(new RegExp(subject.re.source, flags), ' ');
-    if (subject.currency) add(subject.label, marketsForCurrency(subject.currency), 'every listed market priced in ' + subject.currency);
+    if (subject.currency) add(subject.label, marketsForCurrency(subject.currency), 'every listed market priced in ' + subject.currency, false, true);
     else add(subject.label, subject.markets, subject.why, subject.explain === true);
   }
-  return { subjects, markets: listed(subjects.flatMap((subject) => subject.markets)) };
+  return { subjects, markets: listed(subjects.flatMap((subject) => subject.markets)), named: listed(named) };
 }
 
 /** The markets a calendar entry concerns: those priced in its currency. `currency` is '' when the entry names none this application follows. */

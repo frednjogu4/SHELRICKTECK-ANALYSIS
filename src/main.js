@@ -2101,8 +2101,8 @@ function chartEventHtml(sym){
   if(!x)return '';
   const what=x.events.slice(0,2).map(e=>(e.country||'')+' '+(e.event||'')).join(', ')+(x.events.length>2?' and '+(x.events.length-2)+' more':'');
   return x.phase==='aside'
-    ?' <span class="badge sell" data-chart-event="aside" title="'+escHtml(releaseMeasuredText())+'">Stand aside · '+escHtml(what)+' at '+escHtml(eatStamp(x.t,now))+' · no new trade until '+eatClock(x.until)+' EAT</span>'
-    :' <span class="badge wait" data-chart-event="ahead" title="'+escHtml(releaseMeasuredText())+'">High-impact release '+escHtml(eatStamp(x.t,now))+' · '+escHtml(what)+' · no new trade from '+eatClock(x.from)+' EAT</span>';
+    ?' <span class="chart-event on" data-chart-event="aside" title="'+escHtml(releaseMeasuredText())+'">Stand aside · '+escHtml(what)+' at '+escHtml(eatStamp(x.t,now))+' · no new trade until '+eatClock(x.until)+' EAT</span>'
+    :' <span class="chart-event" data-chart-event="ahead" title="'+escHtml(releaseMeasuredText())+'">High-impact release '+escHtml(eatStamp(x.t,now))+' · '+escHtml(what)+' · no new trade from '+eatClock(x.from)+' EAT</span>';
 }
 function updateTradeHeader(){
   const I=bySym[state.chart.sym]; if(!I)return;
@@ -4284,26 +4284,28 @@ function readingChip(sym){
   if(r.bias==='bearish')return {kind:'wait',html:'<span class="badge lean lean-dn" title="'+tip+'">Wait · leans down</span>'};
   return {kind:'wait',html:'<span class="badge wait" title="'+tip+'">Wait</span>'};
 }
-/* The markets a headline or a release concerns, each with its reading: Buy and Sell readings first, the rest counted. */
-function newsMarketsHtml(markets){
+/* The markets a headline or a release concerns, each with its reading. First the markets the headline points at
+   by name (`named`) and the market that is on the chart, then the Buy and Sell readings among the rest; what
+   does not fit is counted. */
+function newsMarketsHtml(markets,named){
   if(!markets.length)return '<span class="faint">no market of this application</span>';
-  const rank={trade:0,wait:1,none:2};
-  const rows=markets.map((sym,i)=>({sym,i,chip:readingChip(sym)})).sort((a,b)=>rank[a.chip.kind]-rank[b.chip.kind]||a.i-b.i);
+  const rank={trade:0,wait:1,none:2}, first=(named||[]).concat(state.chart&&state.chart.sym?[state.chart.sym]:[]);
+  const rows=markets.map((sym,i)=>({sym,i,named:first.includes(sym)?0:1,chip:readingChip(sym)})).sort((a,b)=>a.named-b.named||(a.named?rank[a.chip.kind]-rank[b.chip.kind]:0)||a.i-b.i);
   const shown=rows.slice(0,NEWS_CHIPS), rest=rows.slice(NEWS_CHIPS);
   const count=(kind)=>rest.filter(x=>x.chip.kind===kind).length;
   const restText=[count('trade')?count('trade')+' with a Buy or Sell':'',count('wait')?count('wait')+' on Wait':'',count('none')?count('none')+' without a reading':''].filter(Boolean).join(', ');
   return shown.map(x=>'<span class="news-mkt"><a href="#" data-news-open="'+escHtml(x.sym)+'" title="Open the '+escHtml(x.sym)+' chart">'+escHtml(x.sym)+'</a> '+x.chip.html+'</span>').join(' ')
     +(rest.length?' <span class="faint" title="'+escHtml(rest.map(x=>x.sym).join(', '))+'">+ '+rest.length+' more ('+restText+')</span>':'');
 }
-function newsMarketsBox(markets){ return '<span data-news-markets="'+escHtml(markets.join(','))+'">'+newsMarketsHtml(markets)+'</span>'; }
+function newsMarketsBox(markets,named){ return '<span data-news-markets="'+escHtml(markets.join(','))+'" data-news-named="'+escHtml((named||[]).join(','))+'">'+newsMarketsHtml(markets,named)+'</span>'; }
 /* After a scan the readings beside headlines and releases are redrawn; the feeds are not read again. */
-function paintNewsReadings(){ $$('#view-news [data-news-markets]').forEach(el=>{ el.innerHTML=newsMarketsHtml(el.dataset.newsMarkets?el.dataset.newsMarkets.split(','):[]); }); }
+function paintNewsReadings(){ const list=(text)=>text?text.split(','):[]; $$('#view-news [data-news-markets]').forEach(el=>{ el.innerHTML=newsMarketsHtml(list(el.dataset.newsMarkets),list(el.dataset.newsNamed)); }); }
 function headlineConcernHtml(title){
   const c=headlineConcerns(title);
   if(!c.subjects.length)return '<div class="tiny faint news-concern">Names no market of this application.</div>';
   const why=c.subjects.filter(s=>s.explain).map(s=>s.why);
   return '<div class="tiny news-concern"><span class="faint">Concerns</span> '+c.subjects.map(s=>'<b title="'+escHtml(s.why)+'">'+escHtml(s.label)+'</b>').join(', ')
-    +(c.markets.length?' <span class="faint">→</span> '+newsMarketsBox(c.markets):'')+(why.length?'<div class="faint">'+escHtml(why.join('. '))+'.</div>':'')+'</div>';
+    +(c.markets.length?' <span class="faint">→</span> '+newsMarketsBox(c.markets,c.named):'')+(why.length?'<div class="faint">'+escHtml(why.join('. '))+'.</div>':'')+'</div>';
 }
 function newsSourcesHtml(j){
   if(!Array.isArray(j.sources)||!j.sources.length)return '';
@@ -4413,14 +4415,14 @@ async function renderNewsFeed(){
        order button exist only where the server supplied them. */
     const anyBias=state.newsItems.some(it=>it.bias);
     const anyOrderable=state.newsItems.some(it=>it.bias&&it.bias.pair&&it.bias.dir&&!!INSTRUMENT_MAP[it.bias.pair]);
-    el.innerHTML=newsSourcesHtml(j)+'<div class="tbl-wrap"><table class="tbl"><tbody>'
+    el.innerHTML=newsSourcesHtml(j)+'<div class="tbl-wrap"><table class="tbl news-tbl"><tbody>'
       +state.newsItems.map((it,idx)=>{
         const b=it.bias||{};
         const orderable=b.pair&&b.dir&&!!INSTRUMENT_MAP[b.pair];
         const when=it.t?eatStamp(Number(it.t),now):(it.published||'');
         return '<tr>'+(anyBias?'<td>'+biasChip(it.bias)+'</td>':'')
           +'<td><a href="'+escHtml(safeHref(it.link))+'" target="_blank" rel="noopener">'+escHtml(it.title)+'</a><div class="hint tiny">'+escHtml(it.source||'')+(when?' · '+escHtml(when):'')+'</div>'+headlineConcernHtml(it.title)+'</td>'
-          +'<td class="num">'
+          +'<td class="num nowrap">'
           +(orderable?'<span class="badge tiny gray" data-nv="'+idx+'" style="margin-right:6px">⏱ …</span>':'')
           +(orderable?'<button class="btn sm primary news-exec" data-i="'+idx+'" title="One click opens the confirm sheet — deduction happens on your linked account after you confirm">⚡ Execute</button> ':'')
           +'<button class="btn sm ghost news-wa" data-i="'+idx+'" title="Share this headline to WhatsApp">↗ WA</button> '
@@ -4540,16 +4542,19 @@ function renderNewsTimeline(){
     const major=e.impact==='High'||e.impact==='Medium';
     const c=major?eventConcerns(e):null;
     const aside=e.impact==='High'&&e.t!=null?standAsideLine(e.t,now):null;
-    return '<tr><td class="mono tiny"'+(e.t!=null?' title="'+escHtml(new Date(e.t).toISOString().slice(0,16).replace('T',' ')+' UTC')+'"':'')+'>'+(e.t!=null?escHtml(eatStamp(e.t,now)):'all day')+'</td>'
-    +'<td class="tiny">'+escHtml(e.country||'')+'</td>'
-    +'<td class="tiny">'+escHtml(e.event||'')+(e.forecast?' <span class="tiny faint">f: '+escHtml(e.forecast)+(e.previous?' · p: '+escHtml(e.previous):'')+'</span>':'')
-      +(c?'<div class="tiny news-concern">'+(c.markets.length?'<span class="faint">'+escHtml(c.currency)+' markets</span> '+newsMarketsBox(c.markets):'<span class="faint">no market of this application is priced in '+escHtml(e.country||'this currency')+'</span>')+'</div>':'')
-      +(aside&&c&&c.markets.length?'<div class="tiny news-aside'+(aside.on?' on':'')+'" data-sa="'+e.t+'">'+escHtml(aside.text)+'</div>':'')+'</td>'
-    +'<td>'+newsChip(e.impact)+'</td>'
-    +'<td>'+(e.t!=null?'<span class="badge tiny gray" data-nt="'+e.t+'" data-b="'+newsBucket(e.t)+'">'+escHtml(newsTLabel(e.t))+'</span>':'<span class="badge tiny gray">all day</span>')+'</td></tr>';
+    /* The markets and the stand-aside period go on a line of their own under the release, across the whole
+       width, so that they wrap on a phone instead of running out of sight. */
+    const detail=(c?'<div class="tiny news-concern">'+(c.markets.length?'<span class="faint">'+escHtml(c.currency)+' markets</span> '+newsMarketsBox(c.markets):'<span class="faint">no market of this application is priced in '+escHtml(e.country||'this currency')+'</span>')+'</div>':'')
+      +(aside&&c&&c.markets.length?'<div class="tiny news-aside'+(aside.on?' on':'')+'" data-sa="'+e.t+'">'+escHtml(aside.text)+'</div>':'');
+    return '<tr'+(detail?' class="news-main"':'')+'><td class="mono tiny nowrap"'+(e.t!=null?' title="'+escHtml(new Date(e.t).toISOString().slice(0,16).replace('T',' ')+' UTC')+'"':'')+'>'+(e.t!=null?escHtml(eatStamp(e.t,now)):'all day')+'</td>'
+    +'<td class="tiny nowrap">'+escHtml(e.country||'')+'</td>'
+    +'<td class="tiny">'+escHtml(e.event||'')+(e.forecast?' <span class="tiny faint">f: '+escHtml(e.forecast)+(e.previous?' · p: '+escHtml(e.previous):'')+'</span>':'')+'</td>'
+    +'<td class="nowrap">'+newsChip(e.impact)+'</td>'
+    +'<td class="nowrap">'+(e.t!=null?'<span class="badge tiny gray" data-nt="'+e.t+'" data-b="'+newsBucket(e.t)+'">'+escHtml(newsTLabel(e.t))+'</span>':'<span class="badge tiny gray">all day</span>')+'</td></tr>'
+    +(detail?'<tr class="news-sub"><td colspan="5">'+detail+'</td></tr>':'');
   };
   const sec=(title,arr)=>'<div class="tiny faint" style="margin:12px 0 4px"><b>'+title+'</b></div>'
-    +(arr.length?'<div class="tbl-wrap"><table class="tbl"><tbody>'+arr.map(row).join('')+'</tbody></table></div>':'<div class="hint tiny">— none —</div>');
+    +(arr.length?'<div class="tbl-wrap"><table class="tbl news-tbl"><tbody>'+arr.map(row).join('')+'</tbody></table></div>':'<div class="hint tiny">— none —</div>');
   el.innerHTML='<div class="news-aside-box" id="newsAside">'+newsAsideHtml(all,now)+'</div>'
     +sec('🔴 JUST RELEASED — current news (last 15 min)',cur)
     +sec('⏭ UPCOMING TODAY — exact times, live countdown',up)
