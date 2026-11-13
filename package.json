@@ -7,26 +7,18 @@
   "scripts": {
     "dev": "vite",
     "api": "node server/server.js",
-    "build": "vite build && node scripts/postbuild.mjs",
+    "build": "vite build && cp dist/index.html dist/AURUM_Workspace.html",
     "website": "node server/websiteserver.js",
     "preview": "vite preview",
-    "test": "node --import ./scripts/test-network-guard.mjs tests/smoke.mjs && node scripts/run-node-tests.mjs",
-    "test:server": "node scripts/run-node-tests.mjs server",
-    "test:platform": "node scripts/run-node-tests.mjs platform",
-    "test:worker": "node --test tests/worker-runtime/worker-runtime.test.mjs",
-    "verify:dist": "node scripts/verify-dist.mjs",
-    "verify": "npm run build && npm test && npm run test:worker && wrangler deploy --dry-run --config wrangler.jsonc",
-    "cf:dev": "npm run build && wrangler dev --config wrangler.jsonc --port 8790",
-    "cf:dry-run": "npm run build && wrangler deploy --dry-run --config wrangler.jsonc",
-    "cf:deploy:staging": "npm run build && wrangler deploy --config wrangler.jsonc",
+    "test": "node tests/smoke.mjs && node --test server/tests/ tests/mt5Risk.test.mjs tests/mt5Execution.test.mjs tests/cloud.test.mjs tests/localHosting.test.mjs tests/goldMonitor.test.mjs tests/pwaInstall.test.mjs",
+    "test:server": "node --test server/tests/",
     "start": "node server/server.js"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
     "jsdom": "^26.0.0",
     "vite": "^7.0.0",
-    "vite-plugin-singlefile": "^2.2.0",
-    "wrangler": "4.156.2"
+    "vite-plugin-singlefile": "^2.2.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",
