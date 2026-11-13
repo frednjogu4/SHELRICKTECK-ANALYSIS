@@ -1239,9 +1239,9 @@ const NO_LEVELS = 'Daily index reading from daily closing prices: it has no entr
 /* What the replay measured (src/measured.js). A reading written by these tests names no 5-minute close, the way a PC server
    from before 13 Nov 2026 answers, which looked every minute: "minute". A reading that names its close, made in the page or
    by the PC's server as it is now, has the figure of the 5-minute rule: "close". */
-const EUR_MEASURED_CLOSE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 40.2% of 6,453 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const EUR_MEASURED_CLOSE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 39.9% of 6,114 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const GOLD_MEASURED_MINUTE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.8% of 177,715 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
-const GOLD_MEASURED_CLOSE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 82,069 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const GOLD_MEASURED_CLOSE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 76,694 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const EUR_MEASURED_MINUTE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 39.9% of 13,990 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const CLOCK = '\\d\\d:\\d\\d:\\d\\d';
 

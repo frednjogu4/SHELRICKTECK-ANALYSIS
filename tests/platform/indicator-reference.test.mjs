@@ -5,9 +5,14 @@
  * they come from a separate re-computation of the textbook definitions (done
  * in Python for the audit in docs/ANALYSIS_ENGINE_AUDIT.md) on the fixed
  * series built here. The series is arithmetic, not market data. The tests say
- * what each function computes, including the two places where its definition
- * is not the one a charting platform shows (RSI and ATR), and what cannot be
- * computed from the number of candles the application reads.
+ * what each function computes and what cannot be computed from the number of
+ * candles the application reads.
+ *
+ * RSI and ATR: until 13 November 2026 both were averages of the last 14 values
+ * only, which is not what a charting platform shows. Since then they are
+ * Wilder's, as on TradingView and MT5. The two tests below pin the new values
+ * and keep the former ones beside them, because every figure measured before
+ * that day was measured with the former definitions.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,22 +37,25 @@ test('EMA 20 and 50, MACD 12/26/9 and Bollinger 20/2 equal the independent calcu
   near(bands.mid, sma(CLOSES, 20), 'middle band is the 20-candle average');
 });
 
-test('RSI 14 is the simple-average RSI, which is not the Wilder RSI a chart shows', () => {
-  near(rsi(CLOSES), 11.741539, 'RSI as coded');
-  /* Wilder: the same first average, then each new change enters with weight 1/14. */
+test('RSI 14 is the Wilder RSI a chart shows; the former simple-average RSI read the same series very differently', () => {
+  near(rsi(CLOSES), 37.586140, 'Wilder RSI, independent calculation');
+  /* The former definition: the average of the last 14 changes and nothing before them. */
   let gain = 0, loss = 0;
-  for (let i = 1; i <= 14; i++) { const d = CLOSES[i] - CLOSES[i - 1]; if (d > 0) gain += d; else loss -= d; }
-  gain /= 14; loss /= 14;
-  for (let i = 15; i < CLOSES.length; i++) { const d = CLOSES[i] - CLOSES[i - 1]; gain = (gain * 13 + Math.max(d, 0)) / 14; loss = (loss * 13 + Math.max(-d, 0)) / 14; }
-  const wilder = 100 - 100 / (1 + gain / loss);
-  assert.ok(Math.abs(rsi(CLOSES) - wilder) > 5, `on this series the two differ by ${Math.abs(rsi(CLOSES) - wilder).toFixed(1)} points`);
-  /* The simple-average RSI of a window depends only on its last 15 closes. */
-  assert.equal(rsi(CLOSES), rsi(CLOSES.slice(-15)));
+  for (let i = CLOSES.length - 14; i < CLOSES.length; i++) { const d = CLOSES[i] - CLOSES[i - 1]; if (d > 0) gain += d; else loss -= d; }
+  const former = 100 - 100 / (1 + gain / loss);
+  near(former, 11.741539, 'the value this test pinned until 13 November 2026');
+  assert.ok(Math.abs(rsi(CLOSES) - former) > 25, `on this series the two differ by ${Math.abs(rsi(CLOSES) - former).toFixed(1)} points`);
+  /* A Wilder average carries the candles before the last 14 with it. Given 15 closes only, nothing is before them and it equals the former figure. */
+  near(rsi(CLOSES.slice(-15)), former, 'seed only');
+  /* From the candles of one reading it is within a few hundredths of the value from a longer history. */
+  assert.ok(Math.abs(rsi(CLOSES.slice(-READING_CANDLES)) - rsi(CLOSES)) < 0.05);
 });
 
-test('ATR 14 is the plain average of the last 14 true ranges, not the Wilder average', () => {
-  near(atr(CANDLES), 1.587898, 'ATR as coded');
-  assert.equal(atr(CANDLES), atr(CANDLES.slice(-15)), 'only the last 15 candles count');
+test('ATR 14 is the Wilder average of the true ranges; the former plain average used the last 14 only', () => {
+  near(atr(CANDLES), 1.581492, 'Wilder ATR, independent calculation');
+  near(atr(CANDLES.slice(-15)), 1.587898, 'with 15 candles only the first average exists: the value pinned until 13 November 2026');
+  assert.notEqual(atr(CANDLES), atr(CANDLES.slice(-15)), 'candles before the last 14 count');
+  assert.ok(Math.abs(atr(CANDLES.slice(-READING_CANDLES)) - atr(CANDLES)) < 0.001);
 });
 
 test('EMA 200 and SMA 200 cannot be computed from the candles the application reads', () => {

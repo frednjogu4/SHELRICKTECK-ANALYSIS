@@ -220,6 +220,31 @@ in the bridge window when the bridge starts without MetaTrader 5.
   of error codes and users' reports. Nothing has been run on Windows or against
   a real terminal.
 
+### When the PC app refuses every Exness order
+
+Since 13 November 2026 (pull request #16) an Exness order from the PC app
+stops at the app's own order check, before anything is sent to MetaTrader,
+with:
+
+```text
+Blocked: mandatory checks UNKNOWN (missing data never counts as passed): news_event.
+```
+
+The check (`/api/risk/gate`, `server/lib/riskgate.js`) asks whether a news
+restriction applies. The page answers "none" with every order, as it always
+has; it never looked at the calendar for that. The server no longer takes the
+page's word, and it has no calendar check of its own yet. So the answer is
+"unknown" for every order, and an unknown mandatory check blocks. This is the
+same for a manual ticket and for an automated entry, and no setting turns it
+off.
+
+What would let an order pass again is the server reading the calendar and the
+market hours itself (step 3 of the plan in `docs/ANALYSIS_ENGINE_AUDIT.md`),
+with an unreadable calendar still counting as unknown. That is not built.
+Until it is, the PC app analyses and alerts, and an Exness order is placed in
+MetaTrader by hand. `server/tests/risklimits.test.mjs` states the refusal as a
+test, and keeps the former reservation test beside it, skipped.
+
 ### Signals on the cloud viewer
 
 **Who computes a reading.** On the cloud viewer the 20 Deriv-backed markets
@@ -514,30 +539,31 @@ before the spread.
 
 | Market | Period | Alerts | Per weekday | Target 1 first | Alerts, look every minute | Per weekday | Target 1 first |
 |---|---|---|---|---|---|---|---|
-| Gold (XAU/USD) | Jan 2020 – Nov 2026 | 82,069 | 46 | **39.6%** | 177,715 | 100 | 39.8% |
-| EUR/USD | Mar – Sep 2026 | 6,453 | 49 | **40.2%** | 13,990 | 106 | 39.9% |
-| GBP/USD | Mar – Sep 2026 | 6,444 | 49 | **36.9%** | 13,876 | 105 | 36.8% |
-| AUD/USD | Mar – Sep 2026 | 6,560 | 50 | **39.3%** | 13,968 | 106 | 39.4% |
-| USD/JPY | Mar – Sep 2026 | 6,272 | 48 | **40.5%** | 13,703 | 104 | 40.1% |
-| USD/CHF | Mar – Sep 2026 | 6,273 | 48 | **38.6%** | 13,523 | 102 | 38.7% |
-| USD/CAD | Mar – Sep 2026 | 6,364 | 48 | **40.9%** | 13,887 | 105 | 41.2% |
-| US30 | Mar – Sep 2026 | 6,087 | 46 | **39.7%** | 13,055 | 99 | 39.9% |
-| NAS100 | Mar – Sep 2026 | 5,827 | 44 | **40.7%** | 12,536 | 95 | 41.4% |
-| SPX500 | Mar – Sep 2026 | 5,952 | 45 | **40.7%** | 12,923 | 98 | 40.3% |
+| Gold (XAU/USD) | Jan 2020 – Nov 2026 | 76,694 | 43 | **39.6%** | 177,715 | 100 | 39.8% |
+| EUR/USD | Mar – Sep 2026 | 6,114 | 46 | **39.9%** | 13,990 | 106 | 39.9% |
+| GBP/USD | Mar – Sep 2026 | 5,991 | 45 | **36.9%** | 13,876 | 105 | 36.8% |
+| AUD/USD | Mar – Sep 2026 | 6,143 | 47 | **39.4%** | 13,968 | 106 | 39.4% |
+| USD/JPY | Mar – Sep 2026 | 5,919 | 45 | **41.1%** | 13,703 | 104 | 40.1% |
+| USD/CHF | Mar – Sep 2026 | 5,807 | 44 | **38.9%** | 13,523 | 102 | 38.7% |
+| USD/CAD | Mar – Sep 2026 | 5,996 | 45 | **40.4%** | 13,887 | 105 | 41.2% |
+| US30 | Mar – Sep 2026 | 5,723 | 43 | **41.2%** | 13,055 | 99 | 39.9% |
+| NAS100 | Mar – Sep 2026 | 5,369 | 41 | **41%** | 12,536 | 95 | 41.4% |
+| SPX500 | Mar – Sep 2026 | 5,585 | 42 | **39.6%** | 12,923 | 98 | 40.3% |
 
-The first three figure columns are the rule as it runs now (one reading per
-5-minute close), the last three the rule as it ran before. Gold over the whole
-period, as it runs now:
+The first three figure columns are the rule as it runs now: one reading per
+5-minute close, RSI and ATR with Wilder's smoothing. The last three are the
+rule as it ran until November 2026: a look every minute, with the RSI and ATR
+it had then. Gold over the whole period, as it runs now:
 
 | Gold, Jan 2020 – 11 Nov 2026, one reading per 5-minute close | Alerts | Target 1 first |
 |---|---|---|
-| Each single year 2020 … 2026 | 10,236 – 12,119 | 38.6 / 39.8 / 39.5 / 39.1 / 40.4 / 39.9 / 39.9% |
-| Score below 60 / 60–64 / 65–69 / 70–74 / 75–79 / 80 and above | 6,087 / 27,178 / 23,012 / 20,429 / 5,067 / 296 | 39.4 / 39.9 / 39.2 / 39.7 / 39.4 / 40.2% |
-| All three timeframes agree | 7,831 | 39.4% |
-| The 1-hour vote agrees / is neutral / is against | 34,851 / 21,997 / 25,221 | 40.0 / 39.0 / 39.5% |
-| BUY / SELL | 41,964 / 40,105 | 39.8 / 39.4% |
-| Control: the opposite direction at the same moments, same distances | 82,069 | 40.6% |
-| Control: a coin flip at the same moments, same distances | 82,069 | 39.8% |
+| Each single year 2020 … 2026 | 9,510 – 11,459 | 38.2 / 40.2 / 39.5 / 39.6 / 39.9 / 39.5 / 40.4% |
+| Score below 60 / 60–64 / 65–69 / 70–74 / 75–79 / 80 and above | 2,476 / 21,873 / 20,967 / 22,252 / 8,423 / 703 | 39.1 / 39.5 / 39.5 / 39.7 / 39.9 / 37.3% |
+| All three timeframes agree | 9,956 | 39.4% |
+| The 1-hour vote agrees / is neutral / is against | 31,777 / 21,458 / 23,459 | 39.6 / 39.6 / 39.5% |
+| BUY / SELL | 39,101 / 37,593 | 39.7 / 39.5% |
+| Control: the opposite direction at the same moments, same distances | 76,694 | 40.8% |
+| Control: a coin flip at the same moments, same distances | 76,694 | 40.3% |
 
 In words: on this data the rule's direction was right as often as a coin's,
 its score did not separate better alerts from worse ones, and stricter
@@ -545,18 +571,38 @@ versions of the same votes did not change that. The six-month figures of the
 other markets lie between 37% and 41%; with about 6,000 alerts each they are
 known to about ±1.2 points at best, so none of them is evidence of an edge.
 (The coin flip itself moves by that much from one run to the next: on GBP/USD
-it reached 38.4% in one run and 39.8% in another.) One reading per 5-minute
-candle halves the number of alerts and leaves the share where it was: per gold
-alert at 0.01 lot the replay gives −$0.02 before the spread and −$0.27 after an
-assumed $0.25, about −$22,000 over the period against −$43,700 with a look
-every minute. Fewer alerts cost less; they do not win more often. The live
-movement of the score does not change this either: it reports where the price
-is against a reading, it does not predict where it goes next.
+it reached 38.4% in one run and 39.8% in another.) Per gold alert at 0.01 lot
+the replay gives −$0.01 before the spread and −$0.26 after an assumed $0.25,
+about −$19,800 over the period; with a look every minute it was −$43,700.
+Fewer alerts cost less; they do not win more often. The live movement of the
+score does not change this either: it reports where the price is against a
+reading, it does not predict where it goes next.
+
+Two things about the rule changed in November 2026, and each was replayed on
+the same data before and after:
+
+| Change | Before | After |
+|---|---|---|
+| One reading per finished 5-minute candle instead of a look every minute (gold) | 39.8% of 177,715 | 39.6% of 82,069 |
+| RSI and ATR with Wilder's smoothing, as a chart shows them, instead of averages of the last 14 values (gold) | 39.6% of 82,069 | 39.6% of 76,694 |
+| The same change of RSI and ATR on the nine other markets | 36.9% to 40.9% | 36.9% to 41.2% |
+
+The first halved the number of alerts. The second (13 November,
+`server/lib/indicators.js`) removed about 6% of them, between 5% and 8% on
+every market. Neither moved the share that reached target 1. On gold it stayed
+at 39.6%. On the nine six-month samples it went up on five, down on three and
+stayed on one; the largest moves were +1.5 points (US30) and −1.1 (SPX500),
+one up and one down, at the edge of the ±1.2 points that about 6,000 alerts
+leave open. So a reading now shows the same
+RSI and ATR as TradingView or MT5 would. It is not a better reading for that,
+and not a worse one. A PC whose `server` folder dates from the hours between
+the two changes still computes the former RSI and ATR; the figure beside its
+signals is the new one, and the table says how little that matters.
 
 What the page shows (`measuredText` in `src/measured.js`): under a BUY or SELL
 of the 1m/5m/1h rule, the figure of that market and of the timing that made
 the reading, for example `Measured in a replay on gold (Jan 2020 – Nov 2026):
-39.6% of 82,069 signals of this rule reached target 1 before the stop; 40% is
+39.6% of 76,694 signals of this rule reached target 1 before the stop; 40% is
 needed to break even, before the spread. Not a forecast.` A market that was
 not replayed says so and gives the range of the ten that were. A WAIT has no
 such line. A daily index reading (US30, NAS100, SPX500 on the cloud) has no
@@ -579,8 +625,8 @@ Data used: gold, the public archive
 markets, the free six-month 1-minute samples published on GitHub by
 getdata.finance (26 March to 25 September 2026). Neither is Exness's or
 Deriv's price series. As a check of one source against the other, gold over
-the same six months gives 39.8% of 6,045 alerts in the first and 39.7% of
-6,002 in the second.
+the same six months gives 40.0% of 5,665 alerts in the first and 39.7% of
+5,557 in the second.
 
 Limits of the replay: one price series per market that is not the broker's;
 the alert is taken at the price of the 5-minute close it belongs to, while a
@@ -715,9 +761,10 @@ never moves: it needs five finished candles after it, and from then on it
 depends on no later candle. The figures follow the definitions a chart uses
 (EMA seeded with a simple average, ATR and ADX with Wilder's smoothing), so
 they can be compared with TradingView or MetaTrader on the same candles.
-(The signal rule itself uses simpler versions of RSI and ATR, see
-`docs/ANALYSIS_ENGINE_AUDIT.md` B2; this view does not share them and does not
-change them.)
+(Since 13 November 2026 the signal rule computes its RSI and ATR the same way;
+before that it used averages of the last 14 values, see
+`docs/ANALYSIS_ENGINE_AUDIT.md` B2. This view has its own series either way,
+because it needs a value for every candle.)
 
 **Where the candles come from.** 600 candles per timeframe from Deriv's public
 feed: on the website this browser reads them itself, and the AURUM cloud is
@@ -768,49 +815,57 @@ better in one state than in another? Every alert of the rule (the replay of
 [the section above](#the-confidence-score-and-how-it-moves-with-the-price))
 was matched with the state of each timeframe as of the 5-minute close the
 alert belongs to. "With" is a BUY in an uptrend or a SELL in a downtrend,
-"against" the reverse. 77,445 of the 82,069 alerts could be matched; the first
-4,624 fall before 599 four-hour candles existed.
+"against" the reverse. 72,280 of the 76,694 alerts could be matched; the first
+4,414 fall before 599 four-hour candles existed.
 
 | Alerts of the rule on gold | Alerts | Target 1 first | Needed after a $0.25 spread | Per alert after the spread |
 |---|---|---|---|---|
-| All alerts | 77,445 | 39.6% | 42.8% | −$0.26 |
-| With the 4-hour trend | 12,614 | 41.1% | 42.9% | −$0.16 |
-| Against the 4-hour trend | 11,615 | 38.9% | 42.1% | −$0.30 |
-| 4-hour state: range | 23,303 | 38.9% | 43.7% | −$0.35 |
-| 4-hour state: unclear | 29,913 | 39.9% | 42.5% | −$0.21 |
-| With the 1-hour and the 4-hour trend | 6,065 | 41.5% | 42.6% | −$0.11 |
-| With the trend on all four timeframes | 784 | 43.6% | 41.1% | +$0.32 |
+| All alerts | 72,280 | 39.7% | 42.6% | −$0.241 |
+| With the 4-hour trend | 11,631 | 41.2% | 42.9% | −$0.153 |
+| Against the 4-hour trend | 10,963 | 39% | 42.2% | −$0.294 |
+| 4-hour state: range | 21,563 | 39.2% | 43.5% | −$0.316 |
+| 4-hour state: unclear | 28,123 | 39.8% | 42.2% | −$0.200 |
+| With the 1-hour and the 4-hour trend | 5,616 | 41.4% | 42% | −$0.062 |
+| With the trend on all four timeframes | 618 | 42.2% | 40.1% | +$0.275 |
+
+These are the figures of the rule as it runs now. The run was repeated on 13
+November 2026, after the rule's RSI and ATR were changed to Wilder's (see the
+section above). Before that change it gave 41.1% of 12,614 alerts with the
+4-hour trend and 38.9% of 11,615 against it: the same picture.
 
 "Needed" is the share at which a group breaks even, from its own average win
 and loss, after an assumed spread of $0.25 per alert (the same assumption as
 in the section above). Before the spread it is 40% for any single alert, and
-39.8% for the 82,069 alerts of the rule together, whose winners were a little
+39.7% for the 76,694 alerts of the rule together, whose winners were a little
 larger than their losers. "Per alert" is in dollars per ounce, which is the
 result of 0.01 lot. The same $0.25 weighs more in the early years, when gold
 stood near $1,800 and the stops were closer: with the 4-hour trend the share
-needed was 45% in 2020 and 42% in 2026.
+needed was 44.7% in 2020 and 41.5% in 2026.
 
 In words:
 
 - Alerts that pointed with the 4-hour trend reached target 1 about two points
-  more often than those against it (41.1% against 38.9%), and did so in five
-  of the seven years. With 12,000 alerts in a group a share is known to about
+  more often than those against it (41.2% against 39.0%), and did so in five
+  of the seven years. With 11,000 alerts in a group a share is known to about
   ±0.9 points at best (alerts close together in time are not independent of
   each other), so the difference is probably not chance.
 - It is not enough. 42.9% is needed after the spread, and the group lost money
-  in six of the seven years. The 1-hour and the 4-hour trend together give
-  41.5% against the 42.6% needed, and a loss in five of the seven years.
-- Of the groups in the table, the one above break-even is the smallest: 784
-  alerts in seven years with the trend on all four timeframes, between 74 and
-  176 a year, known to about ±3.5 points. It came out ahead in two of the
-  seven years, 2024 and 2026, and its total comes from those two.
+  in each of the seven years. The 1-hour and the 4-hour trend together give
+  41.4% against the 42.0% needed, and a loss in five of the seven years.
+- Of the groups in the table, the one above break-even is the smallest: 618
+  alerts in seven years with the trend on all four timeframes, between 63 and
+  135 a year, known to about ±3.9 points. It came out ahead in two of the
+  seven years, 2024 and 2026, and its total comes from those two (2026 alone:
+  95 alerts at +$3.21 each).
 - Splitting the alerts by structure or by volatility instead gave between
-  38.7% and 41.2% in every group of more than 1,000 alerts. One of those 32
+  38.2% and 41.4% in every group of more than 1,000 alerts. One of those 32
   groups came out above its break-even: alerts while 15-minute volatility
-  was "extreme" (41.2% of 3,591 against the 40.7% needed, +$0.09 per alert).
-  With 3,591 alerts a share is known to about ±1.6 points, and among 32
-  groups one that far above the rest is what chance alone gives. It was not
-  looked into further.
+  was "extreme" (41.4% of 3,145 against the 40.9% needed, +$0.095 per alert).
+  With 3,145 alerts a share is known to about ±1.7 points, and among 32
+  groups one that far above the rest is what chance alone gives. It was the
+  same group before the change of RSI and ATR, but on largely the same
+  alerts, so that is not a second confirmation. It was not looked into
+  further.
 
 So the state is shown as what it is, a description of the chart, and no
 filter, veto or score was built on it. The sentence under the heading of the
@@ -1119,9 +1174,12 @@ npm run build                         # then commit the changed files, including
 GitHub does not run it). It runs on pull requests and on pushes to `main`, and
 it only verifies — it never deploys and needs no secrets:
 
-- Node 22 and 24: `npm ci`, `npm audit` (reported as a warning), then
+- Node 22 and 24: `npm ci`, `npm audit --audit-level=high`, then
   `npm run verify` (build → smoke and unit tests → the Worker inside workerd →
-  `wrangler deploy --dry-run`).
+  `wrangler deploy --dry-run`). Since 13 November a high or critical advisory
+  against a dependency fails the job (before, it was a warning). A job can
+  therefore turn red on a commit that changed nothing about dependencies:
+  `npm audit` names the package, `npm audit fix` usually repairs it.
 - Python 3.11 and 3.13: a syntax check and the PC bridge unit tests
   (`python -m unittest discover -s tests -p "test_*.py"`). They use only the
   standard library; no conda environment is involved.

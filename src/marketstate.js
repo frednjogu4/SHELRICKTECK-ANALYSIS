@@ -31,9 +31,10 @@
  *
  * Definitions are the ones a chart shows, so the figures can be checked
  * against TradingView or MetaTrader: EMA seeded with a simple average, ATR
- * and ADX with Wilder's smoothing. (The signal rule uses simpler versions of
- * RSI and ATR, see docs/ANALYSIS_ENGINE_AUDIT.md B2; this file does not share
- * them and does not change them.)
+ * and ADX with Wilder's smoothing. (Since 13 November 2026 the signal rule
+ * computes its RSI and ATR the same way, in server/lib/indicators.js; before
+ * that it used averages of the last 14 values. This file has its own series
+ * either way, because it needs a value for every candle.)
  *
  * Nothing is estimated. Too few candles, candles out of order or a series
  * that could not be read give `ok: false` with the reason, never a state.
@@ -513,16 +514,19 @@ const figure = (percent, alerts, needed) => Object.freeze({ percent, alerts, nee
  *            per alert, from its own average win and loss (for a single
  *            alert it is 40% before the spread)
  *
- * Fixed numbers from that run: they do not update by themselves, and
+ * Fixed numbers from the run of 13 November 2026, made after the rule's RSI
+ * and ATR were changed to Wilder's (with the former ones the same run gave
+ * 41.1% of 12,614 alerts with the 4-hour trend and 38.9% of 11,615 against
+ * it). They do not update by themselves, and
  * tests/platform/market-state.test.mjs keeps the README and this object equal.
  */
 export const STATE_MEASURED = Object.freeze({
   market: 'gold', span: 'Jan 2020 \u2013 Nov 2026', spread: 0.25,
-  all: figure(39.6, 77445, 42.8),
-  h4With: figure(41.1, 12614, 42.9),
-  h4Against: figure(38.9, 11615, 42.1),
-  h1h4With: figure(41.5, 6065, 42.6),
-  allFourWith: figure(43.6, 784, 41.1)
+  all: figure(39.7, 72280, 42.6),
+  h4With: figure(41.2, 11631, 42.9),
+  h4Against: figure(39.0, 10963, 42.2),
+  h1h4With: figure(41.4, 5616, 42.0),
+  allFourWith: figure(42.2, 618, 40.1)
 });
 
 const thousands = (count) => count.toLocaleString('en-US');
