@@ -48,13 +48,9 @@ jobs:
       - name: Install exactly what package-lock.json pins
         run: npm ci --no-fund
 
-      # Reported, never blocking: a newly published advisory must not turn an
-      # unrelated commit red. Fix with 'npm audit fix' when the warning appears.
-      - name: Security advisories (warning only)
-        run: |
-          if ! npm audit --audit-level=high; then
-            echo "::warning title=npm audit::npm reports high or critical advisories (or the registry could not be reached). Run 'npm audit' locally."
-          fi
+      # High and critical dependency advisories are release blockers.
+      - name: Fail on high or critical dependency advisories
+        run: npm audit --audit-level=high
 
       # build -> smoke + node:test suites -> Worker in the real workerd runtime
       # -> wrangler deploy --dry-run (which re-checks dist/ first).

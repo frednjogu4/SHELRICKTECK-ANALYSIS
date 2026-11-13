@@ -97,12 +97,14 @@ export function evaluateRisk(inx) {
       ? 'Market-hours state not supplied — UNKNOWN.'
       : (inx.marketHours ? 'Instrument is in trading hours.' : 'Market is closed for this instrument.')));
 
+  const newsEvidenceTrusted = inx?.newsEvidenceTrusted === true;
+  const newsStateKnown = newsEvidenceTrusted && typeof inx?.newsBlocked === 'boolean';
   checks.push(check('news_event',
-    inx?.newsBlocked == null ? CHECK.UNKNOWN : (inx.newsBlocked ? CHECK.FAILED : CHECK.PASSED),
-    inx?.newsBlocked == null ? 'not supplied' : 'restricted=' + inx.newsBlocked,
-    inx?.newsBlocked == null
-      ? 'News/event restriction state not supplied — UNKNOWN.'
-      : (inx.newsBlocked ? 'High-impact news restriction is active.' : 'No active news restriction.')));
+    !newsStateKnown ? CHECK.UNKNOWN : (inx.newsBlocked ? CHECK.FAILED : CHECK.PASSED),
+    !newsStateKnown ? 'untrusted or missing news evidence' : 'restricted=' + inx.newsBlocked,
+    !newsStateKnown
+      ? 'News/event evidence is not verified by the server — UNKNOWN.'
+      : (inx.newsBlocked ? 'High-impact news restriction is active.' : 'Server-verified news feed reports no active restriction.')));
 
   const blocking = checks.filter(c => c.mandatory && c.status !== CHECK.PASSED);
   const failed = blocking.filter(c => c.status === CHECK.FAILED);
