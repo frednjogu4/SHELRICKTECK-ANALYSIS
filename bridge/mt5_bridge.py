@@ -353,6 +353,9 @@ _LOG_IN_STEP = ("in MetaTrader 5 use File > Login to Trade Account (account numb
                 "and wait until the bottom-right corner shows a connection speed and not 'No connection'")
 _NORMAL_START_STEP = "start MetaTrader 5 with a normal double-click, not 'Run as administrator'"
 _ONLY_ONE_STEP = "keep only that one MetaTrader 5 open"
+# The attach at bridge start waits 60 s, an attach asked for by Connect 5 s (the app waits 8 s for its answer).
+_FULL_MINUTE_STEP = ("run START_ALL_LOCAL.bat again with MetaTrader 5 open and logged in: "
+                     "the bridge then waits a full minute for it")
 _PYTHON_BOX_STEP = "if Tools > Options > Community has a 'Python integration' box, tick it and restart MetaTrader 5"
 _START_AGAIN = "run START_ALL_LOCAL.bat again"
 
@@ -393,8 +396,9 @@ def _attach_failure_message():
               + f" If MetaTrader 5 shows your account already: {_NORMAL_START_STEP}, {_ONLY_ONE_STEP}, then {_START_AGAIN}.")
     elif "not found" in low:
         what = "no MetaTrader 5 desktop program was found on this PC"
-        do = ("Install MetaTrader 5 from your Exness Personal Area (the Exness web terminal does not count), "
-              f"open it and log in, then {_START_AGAIN}.")
+        do = (f"If MetaTrader 5 is installed, open it and log in, then {_START_AGAIN}: the launcher saves where it is. "
+              "If it is not installed, get the MetaTrader 5 desktop program from your Exness Personal Area first "
+              "(the Exness web terminal does not count).")
         if sys.maxsize <= 2 ** 32:
             do += " This Python is 32-bit and MetaTrader 5 needs the 64-bit one: install 64-bit Python 3.13 first."
     elif "process create" in low:
@@ -407,7 +411,7 @@ def _attach_failure_message():
     elif code == -10005 or "timeout" in low or "time-out" in low:
         what = f"MetaTrader 5 did not answer within {seconds}"
         do = ("If it has only just started, wait until it shows your account and press Connect again. "
-              "If it is already open: " + _steps(_LOG_IN_STEP, _NORMAL_START_STEP, _PYTHON_BOX_STEP, "press Connect again"))
+              "If it is already open: " + _steps(_LOG_IN_STEP, _NORMAL_START_STEP, _PYTHON_BOX_STEP, _FULL_MINUTE_STEP))
     elif code == -5 or "version" in low:
         what = "MetaTrader 5 and its Python connector have different versions"
         do = "Restart MetaTrader 5 so that it updates itself, log in, then press Connect again."

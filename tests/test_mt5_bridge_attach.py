@@ -227,6 +227,28 @@ class AttachMessageTests(unittest.TestCase):
         self.assertTrue(message.endswith("Terminal tried: the default MetaTrader 5 of this PC (no location is saved)."))
         self.assert_reaches_the_user(message)
 
+    def test_a_terminal_that_does_not_answer_in_time_is_given_the_way_to_a_full_minute(self):
+        self.terminal.init_error = (-10005, "IPC timeout")
+        message = self.login_message()
+        self.assertIn("If it has only just started, wait until it shows your account and press Connect again. "
+                      "If it is already open: 1) in MetaTrader 5 use File > Login to Trade Account", message)
+        self.assertIn("; 2) start MetaTrader 5 with a normal double-click, not 'Run as administrator'; 3) if Tools > Options > "
+                      "Community has a 'Python integration' box, tick it and restart MetaTrader 5; 4) run START_ALL_LOCAL.bat "
+                      "again with MetaTrader 5 open and logged in: the bridge then waits a full minute for it. Terminal tried:",
+                      message)
+        self.assertEqual(self.bridge._START_ATTACH_WAIT_MS, 60000)  # the 'full minute' of the message
+        self.assert_reaches_the_user(message)
+
+    def test_no_terminal_found_says_what_to_do_whether_it_is_installed_or_not(self):
+        self.terminal.init_error = (-10003, "IPC initialize failed, MetaTrader 5 x64 not found")
+        message = self.login_message()
+        self.assertIn("no MetaTrader 5 desktop program was found on this PC (step terminal, code -10003: "
+                      "IPC initialize failed, MetaTrader 5 x64 not found). If MetaTrader 5 is installed, open it and log in, "
+                      "then run START_ALL_LOCAL.bat again: the launcher saves where it is. If it is not installed, get the "
+                      "MetaTrader 5 desktop program from your Exness Personal Area first (the Exness web terminal does not "
+                      "count). Terminal tried:", message)
+        self.assert_reaches_the_user(message)
+
     def test_the_code_alone_or_the_text_alone_is_enough_to_recognise_a_failure(self):
         cases = [
             ((-6, "something else"), "not logged in to a trading account"),

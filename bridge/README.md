@@ -36,6 +36,7 @@ For phone access, keep the phone on the same private Wi-Fi/LAN, open the PC addr
 
 ## Troubleshooting
 
+- If **Connect** answers `Cannot attach to MetaTrader 5: ...`, the words after the colon are the reason and the steps follow them; the message ends with the terminal that was tried. The bridge window prints the same text when it starts without MetaTrader 5. `(step terminal, code 1: Success)` comes from an `mt5_bridge.py` older than 13 November 2026 and hides the reason: replace the file and restart the bridge.
 - If terminal attach is ambiguous, set `AURUM_MT5_PATH` to the exact Exness `terminal64.exe` path in the batch file and restart.
 - If login is rejected, confirm the account number, MT5 password, and exact Exness server in the Exness Personal Area. An investor/read-only password is sufficient for the read-only phase.
 - If the app reports a server/company mismatch, stop. Do not try a different broker terminal as a fallback.

@@ -123,6 +123,6 @@ test('the Python tests of the PC bridge pass', (t) => {
   assert.equal(run.status, 0, output.slice(-3000));
   assert.match(output, /\nOK\b/);
   const ran = output.match(/Ran (\d+) tests? in/);
-  assert.ok(ran && Number(ran[1]) >= 42, `Python tests run: ${ran ? ran[1] : 'none'}`);
+  assert.ok(ran && Number(ran[1]) >= 44, `Python tests run: ${ran ? ran[1] : 'none'}`);
   assert.match(output, /test_a_failed_attach_reports_the_reason_and_not_code_1_success .*ok/);
 });
