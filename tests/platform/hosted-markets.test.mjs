@@ -32,6 +32,7 @@ import { DERIV_INSTRUMENTS, INDEX_INSTRUMENTS, derivCandleRows, basePriceFor, ya
 import { tradingDayText } from '../../src/bestpick.js';
 import { runDeterministicAnalysis } from '../../server/lib/analyzer.js';
 import { localDecision } from '../../server/lib/localdecision.js';
+import { closedCandleSets } from '../../src/closedcandles.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
@@ -75,6 +76,8 @@ before(async () => {
  *   candleAgeSec  how old the newest candle is, on both sides
  *   ticks         answer every price subscription with one tick
  *   yahooBars     options for the Yahoo fixture: { newestBarAt, session } (see market-fixtures.mjs)
+ *   candleRows    (code, granularity, count, nowSec) => rows, a market written by the test in place of
+ *                 the built-in series, whose candles do not keep their content from one minute to the next
  *   rewriteScan   (results) => results, applied to what the Worker answers to /api/signals/scan:
  *                 lets a test hand the page a reading of its own writing for one market
  *   scanTakesMs   page time that passes while a scan request is answered
@@ -83,7 +86,7 @@ before(async () => {
  * and `pcApi(path, body)` answers its API requests with { status, body }.
  */
 async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, bridgeApi = null } = {}) {
-  const state = { browserDeriv: 'ok', cloudDeriv: 'ok', yahoo: 'ok', candleAgeSec: 0, ticks: false, yahooBars: {}, rewriteScan: null, scanTakesMs: 0, scanGate: null, ...world };
+  const state = { browserDeriv: 'ok', cloudDeriv: 'ok', yahoo: 'ok', candleAgeSec: 0, ticks: false, yahooBars: {}, rewriteScan: null, scanTakesMs: 0, scanGate: null, candleRows: null, ...world };
   const problems = [];
   const warnings = [];
   const requests = [];
@@ -93,7 +96,9 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, bridg
   let closing = false;
 
   const symbolOf = (code) => DERIV_INSTRUMENTS.find((instrument) => instrument.deriv === code);
-  const rows = (code, granularity, count) => derivCandleRows({ count, granularity, end: nowSec() + clock.shiftMs / 1000 - state.candleAgeSec, base: basePriceFor(code) });
+  const rows = (code, granularity, count) => (state.candleRows
+    ? state.candleRows(code, granularity, count, nowSec() + clock.shiftMs / 1000 - state.candleAgeSec)
+    : derivCandleRows({ count, granularity, end: nowSec() + clock.shiftMs / 1000 - state.candleAgeSec, base: basePriceFor(code) }));
 
   const worker = createReadOnlyWorker({
     requestImpl: async (payload) => {
@@ -359,7 +364,8 @@ test('entering the workspace: its first scan is already read in this browser —
     const cards = [...grid.querySelectorAll('.sig-card')].map((card) => ({ symbol: card.querySelector('.sym-name').textContent, why: card.querySelector('.sig-why').textContent }));
     const fromDeriv = cards.filter((card) => DERIV_SYMBOLS.includes(card.symbol));
     assert.equal(fromDeriv.length, 6, 'each of the six Deriv markets of that scan has a card');
-    for (const card of fromDeriv) assert.match(card.why, / · source: Deriv public candles · analysed in this browser$/, card.symbol);
+    /* ...and says which 5-minute close the reading was made at. */
+    for (const card of fromDeriv) assert.match(card.why, / · source: Deriv public candles · analysed in this browser · read at the \d\d:\d\d candle close$/, card.symbol);
     assert.equal(cards.length - fromDeriv.length, 3, 'plus the three daily index readings');
     assert.match(app.doc.getElementById('sigStamp').textContent, /^Updated \d\d:\d\d:\d\d · technical · live candles$/, 'nothing is reported as stale, missing or unavailable');
     for (const symbol of app.scannedByApiAfterEntering()) assert.ok(INDEX_SYMBOLS.includes(symbol), `${symbol} was sent to the AURUM cloud although this browser can read it`);
@@ -481,7 +487,7 @@ test('Signals view: once the feed is back, Refresh reads the markets in this bro
     app.click(app.doc.getElementById('refreshSigs'));
     await app.waitFor(() => grid.querySelectorAll('.sig-card').length === 6, 'six signal cards after Refresh');
     for (const card of grid.querySelectorAll('.sig-card')) {
-      assert.match(card.querySelector('.sig-why').textContent, / · source: Deriv public candles · analysed in this browser$/);
+      assert.match(card.querySelector('.sig-why').textContent, / · source: Deriv public candles · analysed in this browser · read at the \d\d:\d\d candle close$/);
     }
     assert.match(app.doc.getElementById('sigStamp').textContent, /^Updated \d\d:\d\d:\d\d · technical · live candles · 3 unavailable$/);
     assert.deepEqual(app.problems, []);
@@ -1160,7 +1166,13 @@ const pushTick = (app, code, quote) => {
   assert.ok(stream, 'the price stream is open');
   stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: code, quote, epoch: nowSec() } }) });
 };
-const NO_LEVELS = 'Daily reading with no entry, stop or target: this score moves only when one of its daily votes changes.';
+const NO_LEVELS = 'Daily index reading from daily closing prices: it has no entry, stop or target, so nothing here moves with the price and there is no measured result. Levels need minute-by-minute prices, which for indices come only from Exness MT5 in the PC app.';
+/* What the replay measured (src/measured.js). A reading written by these tests comes from the PC's server, which looks every minute: "minute".
+   A reading made in the page from finished candles belongs to a 5-minute close: "close". */
+const EUR_MEASURED_CLOSE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 40.2% of 6,458 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const GOLD_MEASURED_MINUTE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.8% of 177,715 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const GOLD_MEASURED_CLOSE = 'Measured in a replay on gold (Jan 2020 \u2013 Nov 2026): 39.6% of 82,324 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
+const EUR_MEASURED_MINUTE = 'Measured in a replay on EUR/USD (Mar \u2013 Sep 2026): 39.9% of 13,990 signals of this rule reached target 1 before the stop; 40% is needed to break even, before the spread. Not a forecast.';
 const CLOCK = '\\d\\d:\\d\\d:\\d\\d';
 
 test('live confidence, scanner cards: the score moves with the price since the reading, and the card says by how much', async () => {
@@ -1175,6 +1187,15 @@ test('live confidence, scanner cards: the score moves with the price since the r
     };
     /* The reading says 70. The feed ticks 6 pips above its entry, a third of the way to the target: 70 + 5. */
     await app.waitFor(() => shown('EUR/USD') && shown('EUR/USD').score === '75%', 'the card to show the score at the live price');
+    /* Under it: what a replay of the rule measured on this market. A WAIT has no such line; a daily reading says why in its own sentence. */
+    const measured = (symbol) => card(symbol).querySelector('.sig-measured').textContent;
+    assert.equal(measured('EUR/USD'), EUR_MEASURED_MINUTE);
+    assert.equal(measured('GBP/USD'), '');
+    assert.equal(measured('US30'), '');
+    /* The alert of the same reading ends with that figure; the alert of a daily reading says that it has none. */
+    const alertBody = (title) => { const el = [...app.doc.querySelectorAll('#toasts .toast')].find((toast) => toast.querySelector('b').textContent === title); return el ? el.querySelector('span').textContent : null; };
+    assert.match(alertBody('Signal update \u00b7 EUR/USD'), /\nMeasured in a replay on EUR\/USD: 39\.9% of such signals reached TP1 before the SL \(break-even 40% before the spread\)\. Not a forecast\.$/);
+    assert.match(alertBody('Signal update \u00b7 US30'), /\nNot measured: a daily reading has no stop or target\.$/);
     assert.equal(shown('EUR/USD').bar, '75%');
     assert.match(shown('EUR/USD').note, new RegExp('^6\\.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 49\\.99940, ' + CLOCK + ' \u00b7 score as read 70%$'));
 
@@ -1258,11 +1279,11 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
       box.dispatchEvent(new app.window.Event('change', { bubbles: true }));
     }
     const cells = (symbol) => [...rowOf(symbol).children].map((td) => td.textContent);
-    await app.waitFor(() => cells('EUR/USD')[3] === '75%6.0 pips with', 'the live score in the selected-markets table');
+    await app.waitFor(() => cells('EUR/USD')[3] === '75%6.0 pips withmeasured 39.9%', 'the live score in the selected-markets table');
     assert.equal(cells('EUR/USD').length, headers(watchTable).length, 'one cell under every header');
     assert.equal(cells('GBP/USD')[3], '20%', 'a WAIT shows the score as read, with nothing to follow');
     assert.equal(cells('AUD/USD')[3], '\u2014', 'a reading without a score shows a dash, not 0%');
-    assert.equal(cells('US30')[3], '90%', 'a daily reading shows its score as read: there is no level to measure from');
+    assert.equal(cells('US30')[3], '90%not measured', 'a daily reading shows its score as read: there is no level to measure from');
 
     /* The setups table lists the BUYs and the SELL, not the WAIT. */
     const setups = () => doc.querySelector('#sniperSignalList table');
@@ -1270,10 +1291,18 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     const setupCells = (symbol) => { const tr = [...setups().querySelectorAll('tbody tr')].find((el) => el.children[0].textContent === symbol); return tr ? [...tr.children].map((td) => td.textContent) : null; };
     assert.equal(setups().querySelectorAll('tbody tr').length, 3);
     assert.equal(setupCells('EUR/USD').length, 8);
-    assert.equal(setupCells('EUR/USD')[2], '75%6.0 pips with');
+    assert.equal(setupCells('EUR/USD')[2], '75%6.0 pips withmeasured 39.9%');
     assert.equal(setupCells('AUD/USD')[2], '\u2014');
-    assert.equal(setupCells('US30')[2], '90%');
+    assert.equal(setupCells('US30')[2], '90%not measured');
     assert.equal(setupCells('GBP/USD'), null);
+
+    /* Under each score: what the replay measured for that market. The full sentence is the tooltip.
+       These readings come from the PC's server, which still looks every minute: the figure is the one of that timing. */
+    const measuredIn = (tr) => { const el = tr.querySelector('[data-measured]'); return el ? { text: el.textContent, title: el.getAttribute('title') } : null; };
+    assert.deepEqual(measuredIn(rowOf('EUR/USD')), { text: 'measured 39.9%', title: EUR_MEASURED_MINUTE });
+    assert.deepEqual(measuredIn(rowOf('US30')), { text: 'not measured', title: NO_LEVELS });
+    assert.equal(measuredIn(rowOf('GBP/USD')), null, 'a WAIT of the 1m/5m/1h rule is not a signal to measure');
+    assert.equal(measuredIn(rowOf('AUD/USD')), null);
 
     /* The eye icon: the detail line. */
     app.click(doc.querySelector('[data-sniper-view="EUR/USD"]'));
@@ -1282,15 +1311,16 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     /* This box styles <b> as a heading on a line of its own: the score stays inside its sentence. */
     assert.equal(detail.querySelector('.hint [data-live-conf]').tagName, 'SPAN');
     assert.match(detail.querySelector('[data-live-note]').textContent, /^6\.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 49\.99940, /);
+    assert.equal(detail.querySelector('[data-measured]').textContent, EUR_MEASURED_MINUTE);
 
     /* One tick against the reading moves all three. */
     pushTick(app, 'frxEURUSD', EUR_TICK - 12 * PIP);
-    assert.equal(cells('EUR/USD')[3], '55%6.0 pips against');
-    assert.equal(setupCells('EUR/USD')[2], '55%6.0 pips against');
+    assert.equal(cells('EUR/USD')[3], '55%6.0 pips againstmeasured 39.9%');
+    assert.equal(setupCells('EUR/USD')[2], '55%6.0 pips againstmeasured 39.9%');
     assert.match(detail.textContent, /Confidence: 55% \u00b7 Source: /);
     assert.match(detail.querySelector('[data-live-note]').textContent, /^6\.0 pips against this BUY \u00b7 50% of the way to the stop /);
-    assert.equal(cells('US30')[3], '90%', 'the daily reading is left as it was');
-    assert.equal(setupCells('US30')[2], '90%');
+    assert.equal(cells('US30')[3], '90%not measured', 'the daily reading is left as it was');
+    assert.equal(setupCells('US30')[2], '90%not measured');
     assert.equal(cells('GBP/USD')[3], '20%');
 
     /* The scanner reads EUR/USD again, as WAIT. These tables still hold the BUY of the last market scan:
@@ -1301,8 +1331,8 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     await app.waitFor(() => liveCard(app, 'EUR/USD') && liveCard(app, 'EUR/USD').direction === 'WAIT', 'the newer reading on the scanner card');
     pushTick(app, 'frxEURUSD', EUR_TICK);
     assert.equal(cells('EUR/USD')[2], 'BUY', 'the row is still the BUY');
-    assert.equal(cells('EUR/USD')[3], '70%not the newest reading');
-    assert.equal(setupCells('EUR/USD')[2], '70%not the newest reading');
+    assert.equal(cells('EUR/USD')[3], '70%not the newest readingmeasured 39.9%');
+    assert.equal(setupCells('EUR/USD')[2], '70%not the newest readingmeasured 39.9%');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -1332,6 +1362,12 @@ test('live confidence, Gold monitor: the score is shown, moves with the gold pri
     await app.open('gold');
     await app.waitFor(() => text('goldSignal') === 'SELL', 'the first gold analysis');
 
+    /* Under the score: what the replay measured on gold. This analysis comes from the PC's server: the every-minute figure. */
+    assert.equal(text('goldMeasured'), GOLD_MEASURED_MINUTE);
+    const goldAlert = [...doc.querySelectorAll('#toasts .toast')].find((toast) => /^Gold\/USD signal (ready|changed)$/.test(toast.querySelector('b').textContent));
+    assert.match(goldAlert.querySelector('span').textContent, /\nMeasured in a replay on gold: 39\.8% of such signals reached TP1 before the SL \(break-even 40% before the spread\)\. Not a forecast\.$/);
+    assert.match(text('goldSignalUpdated'), /^Last analysis: /, 'the PC server does not say which close its reading belongs to');
+
     /* 3 dollars with the SELL, 13% of the way to the target: 71 + 2. */
     assert.equal(text('goldConfidence'), '73%');
     assert.equal(doc.getElementById('goldConfidenceBar').style.width, '73%');
@@ -1349,6 +1385,7 @@ test('live confidence, Gold monitor: the score is shown, moves with the gold pri
     await app.waitFor(() => text('goldSignal') === 'WAIT', 'the WAIT analysis');
     assert.equal(text('goldConfidence'), '38%');
     assert.equal(text('goldConfidenceNote'), 'No confirmed direction, so there is no entry, stop or target to follow.');
+    assert.equal(text('goldMeasured'), '', 'a WAIT is not a signal to measure');
 
     /* The analysis fails (the local API, and the browser's own read of Deriv behind it): no score is left standing. */
     answer = null;
@@ -1358,6 +1395,19 @@ test('live confidence, Gold monitor: the score is shown, moves with the gold pri
     assert.equal(text('goldConfidence'), '\u2014');
     assert.equal(doc.getElementById('goldConfidenceBar').style.width, '0%');
     assert.equal(text('goldConfidenceNote'), 'No current analysis, so no score is shown.');
+    assert.equal(text('goldMeasured'), '');
+
+    /* A signal again, and a failure straight after it: the replay figure of the vanished signal is not left standing. */
+    answer = sell;
+    app.state.browserDeriv = 'ok';
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => text('goldSignal') === 'SELL', 'the signal again');
+    assert.equal(text('goldMeasured'), GOLD_MEASURED_MINUTE);
+    answer = null;
+    app.state.browserDeriv = 'down';
+    app.click(doc.getElementById('goldAnalyzeBtn'));
+    await app.waitFor(() => text('goldSignalBadge') === 'UNAVAILABLE', 'the second failure');
+    assert.equal(text('goldMeasured'), '');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -1508,7 +1558,8 @@ test('live confidence, Gold monitor: a stop crossed while another view is open s
    These tests are about which price a reading is measured against, not about what the rule
    concludes. They need a reading with a direction, so they ask the rule itself which of a few
    plain series it reads as BUY or SELL, and take the entry, the target and the score from its
-   answer. */
+   answer. The rule is asked as the application asks it: with the candles that had finished by
+   the last 5-minute close (src/closedcandles.js). */
 const BRIDGE_TF = { M1: 60, M5: 300, H1: 3600 };
 const BRIDGE_SHAPES = [{ slope: -0.0004, wobble: 0.002 }, { slope: 0.0008, wobble: 0 }, { slope: -0.0008, wobble: 0 }, { slope: 0.0004, wobble: 0.002 }];
 function bridgeCandles(timeframe, shape, level) {
@@ -1523,7 +1574,7 @@ function bridgeCandles(timeframe, shape, level) {
 function bridgeMarket(symbol, { name, level, digits }) {
   for (const shape of BRIDGE_SHAPES) {
     const sets = { m1: bridgeCandles('M1', shape, level), m5: bridgeCandles('M5', shape, level), h1: bridgeCandles('H1', shape, level) };
-    const decision = localDecision(runDeterministicAnalysis(symbol, sets));
+    const decision = localDecision(runDeterministicAnalysis(symbol, closedCandleSets(sets).sets));
     if (decision.signal === 'BUY' || decision.signal === 'SELL') {
       /* `price` is the terminal's quote at this moment (a test moves it); `known` is whether the terminal has the market. */
       return { name, level, digits, shape, decision, price: decision.entry, known: true, third: decision.entry + (decision.tp1 - decision.entry) / 3 };
@@ -1579,6 +1630,10 @@ test('live confidence, Exness connected: a reading made from Exness candles is m
     const first = liveCard(app, 'EUR/USD');
     assert.equal(first.direction, direction);
     assert.equal(first.score, base + '%');
+    /* A reading made in the page from finished candles: it says which close it belongs to, and the replay figure is the one of that timing. */
+    assert.match(source(), / \u00b7 read at the \d\d:\d\d candle close$/);
+    const measuredOnCard = () => [...app.doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === 'EUR/USD').querySelector('.sig-measured').textContent;
+    assert.equal(measuredOnCard(), EUR_MEASURED_CLOSE);
     assert.match(first.note, new RegExp('^No move yet \u00b7 first read at ' + eur.decision.entry.toFixed(5).replace('.', '\\.') + ', ' + CLOCK + EXNESS_SAMPLED));
 
     /* The Deriv stream quotes this market at 50: far beyond any level of the Exness reading. Nothing moves. */
@@ -1602,6 +1657,9 @@ test('live confidence, Exness connected: a reading made from Exness candles is m
     const third = liveCard(app, 'EUR/USD');
     assert.equal(third.direction, 'BUY');
     assert.equal(third.score, '75%', '70 as read, 6 of 18 pips toward its own target');
+    /* The fallback reading comes from the PC's server, which looks every minute and names no close. */
+    assert.doesNotMatch(source(), /candle close/);
+    assert.equal(measuredOnCard(), EUR_MEASURED_MINUTE);
     assert.match(third.note, new RegExp('^6\\.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 49\\.99940, ' + CLOCK + ' \u00b7 score as read 70%$'));
     pushTick(app, 'frxEURUSD', EUR_TICK - 12 * PIP);
     assert.equal(liveCard(app, 'EUR/USD').score, '55%', '6 of 12 pips toward its stop: 70 - 15');
@@ -1662,6 +1720,9 @@ test('live confidence, Gold monitor on Exness: the score follows the Exness gold
     const first = shown();
     assert.equal(first.score, base + '%');
     assert.match(first.note, /^No move yet \u00b7 first read at /);
+    /* Made in the page from finished candles: the close it belongs to, and the replay figure of that timing. */
+    assert.match(text('goldSignalUpdated'), /^Reading of the \d\d:\d\d candle close \u00b7 checked .* \u00b7 the next reading comes with the next 5-minute close; no fixed expiry\.$/);
+    assert.equal(text('goldMeasured'), GOLD_MEASURED_CLOSE);
 
     /* Deriv quotes gold at a few hundred here: far beyond every level of this reading. Nothing moves. */
     pushTick(app, 'frxXAUUSD', GOLD_TICK + 5);
@@ -1690,3 +1751,210 @@ test('live confidence, Gold monitor on Exness: the score follows the Exness gold
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
+
+/* ---------------------------------------------------------------- the questions of 13 November 2026 */
+
+test('index cards on the cloud: a daily reading says on the card why it has no entry, stop or target, whether it reads BUY or WAIT', async () => {
+  /* As on the screenshot: NAS100 WAIT 66%, US30 BUY 82%, SPX500 WAIT 66%, three empty boxes each. */
+  const as = { NAS100: { signal: 'WAIT', bias: 'bearish', confidence: 66 }, US30: { signal: 'BUY', bias: 'bullish', confidence: 82 }, SPX500: { signal: 'WAIT', bias: 'bearish', confidence: 66 } };
+  const app = await bootApp({ world: { ticks: true, rewriteScan: (results) => results.map((reading) => (as[reading.symbol] ? { ...reading, ...as[reading.symbol] } : reading)) } });
+  try {
+    await app.enter();
+    await app.open('signals');
+    await app.waitFor(() => Object.keys(as).every((symbol) => liveCard(app, symbol)), 'the three index cards');
+    const cardEl = (symbol) => [...app.doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === symbol);
+    const check = () => {
+      for (const [symbol, reading] of Object.entries(as)) {
+        assert.deepEqual(liveCard(app, symbol), { direction: reading.signal, score: reading.confidence + '%', bar: reading.confidence + '%', note: NO_LEVELS }, symbol);
+        assert.deepEqual(['e', 's', 't'].map((key) => cardEl(symbol).querySelector('[data-l="' + key + '"]').textContent), ['\u2014', '\u2014', '\u2014'], symbol + ': the three boxes stay empty');
+        assert.equal(cardEl(symbol).querySelector('.sig-measured').textContent, '', symbol + ': the sentence above already says that nothing was measured');
+        assert.match(cardEl(symbol).querySelector('.sig-why').textContent, / \u00b7 DAILY \(index\) \u00b7 source: Yahoo Finance public daily data \u00b7 AURUM cloud analysis$/);
+      }
+    };
+    check();
+    /* A price tick repaints every score and sentence on the page: the explanation stays. */
+    pushTick(app, 'frxEURUSD', EUR_TICK);
+    check();
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* A market whose price is a function of time, so that a candle keeps its content whenever it is asked for, as
+   a real one does. `drift` is the relative move per minute. The built-in series of this file cannot do this. */
+function steadyMarket(drift) {
+  const anchor = nowSec();
+  const priceAt = (base, t) => base * Math.exp((drift * (t - anchor)) / 60);
+  return (code, granularity, count, now) => {
+    const base = basePriceFor(code), newest = Math.floor(now / granularity) * granularity;
+    return Array.from({ length: count }, (_unused, i) => {
+      const start = newest - (count - 1 - i) * granularity, end = Math.min(start + granularity, now);
+      const open = priceAt(base, start), close = priceAt(base, end);
+      return { epoch: start, open, high: Math.max(open, close), low: Math.min(open, close), close };
+    });
+  };
+}
+/* The first steady market the rule reads as BUY or SELL. The tests below need a signal; which one does not matter. */
+function directionalMarket() {
+  for (const drift of [0.00002, 0.00005, 0.0001, -0.00002, -0.00005, -0.0001]) {
+    const market = steadyMarket(drift), now = nowSec();
+    const sets = Object.fromEntries([['m1', 60], ['m5', 300], ['h1', 3600]].map(([key, granularity]) => [key, market('frxEURUSD', granularity, 120, now).map((row) => ({ time: row.epoch, open: row.open, high: row.high, low: row.low, close: row.close }))]));
+    if (['BUY', 'SELL'].includes(localDecision(runDeterministicAnalysis('EUR/USD', closedCandleSets(sets).sets)).signal)) return market;
+  }
+  return assert.fail('the rule reads none of these steady markets as BUY or SELL any more: add one that it does');
+}
+
+/* The page's clock in seconds, and a way to move it. `settle()` leaves room for two looks inside one 5-minute candle
+   and returns the close that candle began with. */
+function pageClock(app) {
+  let shift = 0;
+  const now = () => Date.now() / 1000 + shift;
+  const advance = (seconds) => { shift += seconds; app.advanceClock(seconds * 1000); };
+  const settle = () => { if (now() % 300 > 180) advance(320 - (now() % 300)); return Math.floor(now() / 300) * 300; };
+  return { now, advance, settle };
+}
+const hhmm = (seconds) => new Date(seconds * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+test('one reading per finished 5-minute candle: looking again before the next close changes nothing, and the next close brings the next reading', async () => {
+  const app = await bootApp({ world: { candleRows: directionalMarket() } });
+  try {
+    const clock = pageClock(app), pageNow = clock.now, advance = clock.advance;
+    const doc = app.doc;
+    const cardEl = () => [...doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === 'EUR/USD');
+    const snapshot = () => {
+      const el = cardEl();
+      return {
+        direction: el.querySelector('.badge').textContent, scoreAsRead: el.querySelector('[data-live-conf]').dataset.liveBase,
+        entry: el.querySelector('[data-l="e"]').textContent, stop: el.querySelector('[data-l="s"]').textContent, target: el.querySelector('[data-l="t"]').textContent,
+        why: el.querySelector('.sig-why').textContent, measured: el.querySelector('.sig-measured').textContent
+      };
+    };
+    const candleRequests = () => app.sockets.reduce((total, entry) => total + entry.sent.filter((message) => message.style === 'candles' && message.ticks_history === 'frxEURUSD').length, 0);
+    const look = async () => {
+      app.click(doc.getElementById('refreshSigs'));
+      assert.equal(doc.getElementById('sigStamp').textContent, 'Scanning\u2026');
+      await app.waitFor(() => /^Updated /.test(doc.getElementById('sigStamp').textContent) && cardEl(), 'the scan to finish');
+      return snapshot();
+    };
+
+    await app.enter();
+    await app.open('signals');
+    const close = clock.settle();
+
+    const first = await look();
+    assert.ok(first.direction === 'BUY' || first.direction === 'SELL', 'the page reads the chosen market as a direction, as the rule did when asked');
+    assert.match(first.why, new RegExp(' \u00b7 source: Deriv public candles \u00b7 analysed in this browser \u00b7 read at the ' + hhmm(close) + ' candle close$'));
+    assert.equal(first.measured, EUR_MEASURED_CLOSE);
+
+    /* A minute later, in the same 5-minute candle: the feed is asked again, one more 1-minute candle has finished,
+       the forming candles have moved on, and the reading is the same in every figure. */
+    const asked = candleRequests();
+    advance(61);
+    const second = await look();
+    assert.ok(candleRequests() > asked, 'the candles were fetched again, not reused');
+    assert.deepEqual(second, first);
+
+    /* Twenty seconds after the next 5-minute close: the next reading, made at that close, at another price. */
+    advance(close + 320 - pageNow());
+    const third = await look();
+    assert.match(third.why, new RegExp(' \u00b7 read at the ' + hhmm(close + 300) + ' candle close$'));
+    assert.equal(third.direction, first.direction);
+    assert.notEqual(third.entry, first.entry);
+
+    /* The Sniper detail of the same market names the close too, and gives the same replay figure. */
+    await app.open('sniper');
+    app.click(doc.getElementById('sniperPickerToggle'));
+    await app.waitFor(() => doc.querySelector('[data-sniper-view="EUR/USD"]') && doc.querySelector('[data-sniper-watch="EUR/USD"]').closest('tr').querySelector('[data-live-conf]'), 'the scanned EUR/USD row');
+    app.click(doc.querySelector('[data-sniper-view="EUR/USD"]'));
+    const detail = doc.getElementById('sniperSelectedDetail');
+    assert.match(detail.textContent, / \u00b7 MTF 1m\/5m\/1h \u00b7 read at the \d\d:\d\d candle close\. Analysis only \u2014 no order sent\./);
+    assert.equal(detail.querySelector('[data-measured]').textContent, EUR_MEASURED_CLOSE);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Gold monitor on the cloud: one reading per finished 5-minute candle, and a new look seconds after each close', async () => {
+  /* As on the live site: the AURUM cloud cannot reach Deriv, so the monitor reads Deriv's gold candles in this browser. */
+  const app = await bootApp({ world: { cloudDeriv: 'down', ticks: true, candleRows: directionalMarket() } });
+  try {
+    const clock = pageClock(app);
+    const doc = app.doc;
+    const text = (id) => doc.getElementById(id).textContent;
+    const levelsShown = () => ({ signal: text('goldSignal'), entry: text('goldEntry'), stop: text('goldSL'), target: text('goldTP1'), measured: text('goldMeasured') });
+    const closeShown = () => (/^Reading of the (\d\d:\d\d) candle close /.exec(text('goldSignalUpdated')) || [])[1];
+    /* The monitor analyses only with a gold price under two minutes old: after the clock has been moved, the feed ticks again. */
+    const tickNow = () => {
+      const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks'));
+      stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: 'frxXAUUSD', quote: GOLD_TICK, epoch: Math.floor(clock.now()) } }) });
+    };
+    /* A look asked for by hand: done when the "checked" time has moved on. */
+    const look = async () => {
+      const before = text('goldSignalUpdated');
+      tickNow();
+      app.click(doc.getElementById('goldAnalyzeBtn'));
+      await app.waitFor(() => text('goldSignalUpdated') !== before && text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the gold analysis');
+      return levelsShown();
+    };
+
+    await app.enter();
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.ticks_history === 'frxXAUUSD')), 'the gold price subscription');
+    await new Promise((r) => setTimeout(r, 60));
+    const close = clock.settle();
+    await app.open('gold');
+    await app.waitFor(() => text('goldFeedStatus').startsWith('LIVE ANALYSIS'), 'the first gold analysis');
+    assert.match(text('goldFeedStatus'), /^LIVE ANALYSIS \u00b7 Deriv public candles \u00b7 labelled fallback/);
+
+    const first = levelsShown();
+    assert.ok(first.signal === 'BUY' || first.signal === 'SELL', 'the page reads the chosen market as a direction, as the rule did when asked');
+    assert.equal(closeShown(), hhmm(close));
+    assert.equal(first.measured, GOLD_MEASURED_CLOSE);
+
+    /* A minute later, inside the same 5-minute candle: the same reading in every figure. */
+    clock.advance(61);
+    assert.deepEqual(await look(), first);
+    assert.equal(closeShown(), hhmm(close));
+
+    /* After the next close: the next reading, at another price. */
+    clock.advance(close + 320 - clock.now());
+    const next = await look();
+    assert.equal(closeShown(), hhmm(close + 300));
+    assert.notEqual(next.entry, first.entry);
+
+    /* The monitor on its own. Thirty seconds before the following close it makes its regular check... */
+    clock.advance(close + 570 - clock.now());
+    const beforeCheck = text('goldSignalUpdated');
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => text('goldSignalUpdated') !== beforeCheck, 'the regular check');
+    assert.equal(closeShown(), hhmm(close + 300), 'the candle has not closed yet');
+    /* ...and ten seconds after that close it has looked again, although its regular minute is not over. */
+    clock.advance(40);
+    const afterClose = text('goldSignalUpdated');
+    tickNow();
+    app.runIntervals(10000);
+    await app.waitFor(() => text('goldSignalUpdated') !== afterClose, 'the look right after the close');
+    assert.equal(closeShown(), hhmm(close + 600));
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Sniper entry alert: the message ends with what the replay measured for that market', async () => {
+  const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, world: { ticks: true } });
+  try {
+    await app.enter();
+    await app.open('sniper');
+    const doc = app.doc;
+    app.click(doc.getElementById('sniperPickerToggle'));
+    await app.waitFor(() => doc.querySelector('[data-sniper-watch="EUR/USD"]'), 'the market list');
+    for (const symbol of ['EUR/USD', 'US30']) {
+      const box = doc.querySelector('[data-sniper-watch="' + symbol + '"]');
+      box.checked = true;
+      box.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+    }
+    app.click(doc.getElementById('sniperMonitorToggle'));
+    const alertBody = (title) => { const el = [...doc.querySelectorAll('#toasts .toast')].find((toast) => toast.querySelector('b').textContent === title); return el ? el.querySelector('span').textContent : null; };
+    await app.waitFor(() => alertBody('Sniper entry setup \u00b7 EUR/USD'), 'the entry alert for EUR/USD');
+    assert.match(alertBody('Sniper entry setup \u00b7 EUR/USD'), /\nSignal alert only \u2014 no order was placed\.\nMeasured in a replay on EUR\/USD: 39\.9% of such signals reached TP1 before the SL \(break-even 40% before the spread\)\. Not a forecast\.$/);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+

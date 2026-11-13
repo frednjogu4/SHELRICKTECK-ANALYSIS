@@ -980,7 +980,9 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <div><h1>Signal Analyzer</h1><p class="sub">Multi-timeframe confluence (1m / 5m / 1h) into one validated decision with risk levels.</p>
             <details class="tiny faint" style="margin-top:6px"><summary style="cursor:pointer">How the confidence score is computed (quality score — NOT a probability of profit)</summary>
             <div style="margin-top:6px;max-width:640px">Technical confluence score, 0–100: <b>15</b> base + <b>7</b> per confirming timeframe (up to 5) + up to <b>25</b> for bias strength (5×|avg bias|, capped) + <b>20</b> when the multi-timeframe signal is confirmed; overall cap 93 (WAIT signals capped at 45). Index CFD reads use <b>50 + 8×|signal score|</b>, capped 90. Formula is fixed and shown here so the number is explainable and stable — it is a setup-quality/confluence score, not a calibrated chance of profit.
-            <div style="margin-top:6px"><b>It then moves with the market.</b> A BUY or SELL is followed from the price it was first read at: up to <b>30</b> points come off as the live price moves from that entry toward the stop, and up to <b>15</b> are added as it moves toward target 1 (a move in the signal's direction uses up part of the target distance, so the score rises half as fast as it falls). The sentence under the score gives the distance in pips (dollars for gold) and when the signal was first read. At the stop or at target 1 that reading is over and the next analysis starts a new one. Daily index readings have no entry, stop or target, so their score moves only when a daily vote changes. Alerts and Sniper filters use the score as read. In the PC app with Exness connected, a reading made from Exness candles is measured at the Exness price of its latest analysis, never at a Deriv price, so it moves at each analysis instead of at each tick.</div></div>
+            <div style="margin-top:6px"><b>It then moves with the market.</b> A BUY or SELL is followed from the price it was first read at: up to <b>30</b> points come off as the live price moves from that entry toward the stop, and up to <b>15</b> are added as it moves toward target 1 (a move in the signal's direction uses up part of the target distance, so the score rises half as fast as it falls). The sentence under the score gives the distance in pips (dollars for gold) and when the signal was first read. At the stop or at target 1 that reading is over and the next analysis starts a new one. Daily index readings have no entry, stop or target, so their score moves only when a daily vote changes. Alerts and Sniper filters use the score as read. In the PC app with Exness connected, a reading made from Exness candles is measured at the Exness price of its latest analysis, never at a Deriv price, so it moves at each analysis instead of at each tick.</div>
+            <div style="margin-top:6px"><b>One reading per finished 5-minute candle.</b> A reading is made from finished candles only, as they stood at the last 5-minute close. A market can therefore change its reading at most once per 5-minute candle, and looking again in between changes nothing. Each card says which close it was read at.</div>
+            <div style="margin-top:6px"><b>What the score has been worth, measured.</b> In replays of this rule on historical 1-minute prices, a new BUY or SELL reached target 1 before its stop <span data-measured-range>37–41%</span> of the time, depending on the market (gold, January 2020 to November 2026: <span data-measured-gold>39.6% of 82,324</span>). 40% is needed to break even before the spread, and signals with a higher score did no better. The line under each score gives the figure for that market. It is a measurement of the past, not a forecast.</div></div>
             </details>
           </div>
           <span class="pill hidden" id="azBudget">AI today —</span>
@@ -1228,7 +1230,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <div id="sniperSelectedDetail" class="empty"><b>No market selected</b>Choose the eye icon beside a market to view its current signal details.</div>
         </div>
         <div class="card">
-          <div class="card-head"><div><h3>Live Sniper setups</h3><div class="sub">The same source-labelled setups shown in alerts and the Automation panel. Confidence moves with the price since each setup was first read; it is a score, not a chance of profit.</div></div></div>
+          <div class="card-head"><div><h3>Live Sniper setups</h3><div class="sub">The same source-labelled setups shown in alerts and the Automation panel. Confidence moves with the price since each setup was first read; it is a score, not a chance of profit. The line under it is what a replay of the rule measured on that market.</div></div></div>
           <div id="sniperSignalList"><div class="tiny faint">Start monitoring to populate Sniper setups.</div></div>
         </div>
       </section>
@@ -1241,7 +1243,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
         <div class="card" style="margin-bottom:14px">
           <div class="card-head wrap">
-            <div><h3>Gold signal monitor</h3><div class="sub">M1 / M5 / H1 confirmation · cost-free refresh every minute. Analysis source is separate from the order broker; no silent source switching.</div></div>
+            <div><h3>Gold signal monitor</h3><div class="sub">M1 / M5 / H1 confirmation · one reading per finished 5-minute candle, checked every minute at no cost. Analysis source is separate from the order broker; no silent source switching.</div></div>
             <div class="row wrap" style="gap:10px">
               <label class="row tiny" style="gap:6px">Analysis source <select class="input sm" id="goldSourceSelect" style="width:auto;min-width:190px"><option value="auto">Follow connected broker</option><option value="deriv">Deriv public candles</option><option value="mt5">Exness MT5 local bridge</option></select></label>
               <label class="row tiny" style="gap:6px"><input type="checkbox" id="goldAuto" checked> Auto-refresh</label>
@@ -1260,7 +1262,8 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <h2 id="goldSignal" style="font-size:32px;margin-top:10px">—</h2>
               <div class="row between" style="margin-top:8px"><span class="faint tiny">CONFIDENCE</span><b class="mono" id="goldConfidence" style="font-size:20px">—</b></div>
               <div class="conf-bar" style="margin-top:6px"><i id="goldConfidenceBar" style="width:0%"></i></div>
-              <div class="tiny faint" id="goldConfidenceNote" style="margin:6px 0 8px;line-height:1.45">The score appears with the first analysis.</div>
+              <div class="tiny faint" id="goldConfidenceNote" style="margin:6px 0 4px;line-height:1.45">The score appears with the first analysis.</div>
+              <div class="tiny faint" id="goldMeasured" style="margin:0 0 8px;line-height:1.45"></div>
               <div class="tiny faint" id="goldVotes">No verified timeframe votes yet.</div>
               <div class="tiny faint" id="goldSignalUpdated" style="margin-top:6px">Last analysis: —</div>
             </div>

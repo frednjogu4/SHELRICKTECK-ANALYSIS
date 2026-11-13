@@ -130,6 +130,11 @@ for (const symbol of DERIV_SYMBOLS) {
     for (const key of Object.keys(analyze).filter((name) => name !== 'meta')) {
       assert.deepEqual(inBrowser[key], analyze[key], `analysis field "${key}"`);
     }
+    /* All three name the 5-minute close the reading was made at, and it is the same one. */
+    assert.ok(inBrowser.candle_close > 0 && inBrowser.candle_close % 300 === 0);
+    assert.ok(inBrowser.candle_close <= inBrowser.latest_candle_time, 'a close the feed has already passed');
+    assert.equal(scan.candle_close, inBrowser.candle_close);
+    assert.equal(analyze.candle_close, inBrowser.candle_close);
     assert.equal(inBrowser.meta.mode, 'technical');
     assert.deepEqual(inBrowser.meta.engines, []);
   });

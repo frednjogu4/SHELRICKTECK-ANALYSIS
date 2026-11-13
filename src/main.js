@@ -27,6 +27,8 @@ import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudS
 import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
 import { candleHistory } from './derivhistory.js';
 import { createHostedScanner, signalState, summarizeReadings } from './hostedscan.js';
+import { closedCandleSets, nextReadingCheck } from './closedcandles.js';
+import { measuredText, measuredLine, isDailyReading } from './measured.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
 
 const $  = (s,r)=> (r||document).querySelector(s);
@@ -66,7 +68,12 @@ const chgOf=I=>{ if(I.p==null||I.open==null)return null; return ((I.p-I.open)/I.
 const STREAM_FEED='stream';
 const feedOfReading=r=>r&&r.model==='technical-exness'?'exness':STREAM_FEED;
 const signalRuns=createSignalTracker({feedOf:feedOfReading}), goldRuns=createSignalTracker();
-const NO_LEVELS_NOTE='Daily reading with no entry, stop or target: this score moves only when one of its daily votes changes.';
+/* Why an index card of the cloud has three empty boxes: said on the card itself, for BUY, SELL and WAIT alike. */
+const DAILY_NOTE='Daily index reading from daily closing prices: it has no entry, stop or target, so nothing here moves with the price and there is no measured result. Levels need minute-by-minute prices, which for indices come only from Exness MT5 in the PC app.';
+const NO_LEVELS_NOTE='This reading has no entry, stop or target, so its score does not move with the price.';
+/* "14:35" for the 5-minute close a reading was made at; '' for a reading that does not say (the PC server's, the daily ones). */
+const timeHM=t=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+const closeText=r=>Number(r&&r.candle_close)>0?timeHM(Number(r.candle_close)*1000):'';
 function liveReading(symbol){const I=bySym[symbol];return signalRuns.read(symbol,I&&I.p!=null?I.p:null,STREAM_FEED);}
 function liveNoteText(live,symbol,short){const I=bySym[symbol],digits=(I&&I.d)||2;return describeLive(live,{short:!!short,time:timeStr,price:v=>fmtPx(v,digits),sampled:at=>'measured at the Exness price of '+at+', updated at each analysis'});}
 const hasLevels=r=>Number(r&&r.entry)>0&&Number(r&&r.stop_loss)>0&&Number(r&&r.tp1)>0;
@@ -75,7 +82,8 @@ const hasLevels=r=>Number(r&&r.entry)>0&&Number(r&&r.stop_loss)>0&&Number(r&&r.t
    are a snapshot until Refresh). When the newest analysis is a different reading (another
    direction, another venue, WAIT or a failure), the card keeps its own score and says so; it
    never borrows the numbers of a different reading. */
-function liveView(symbol,side,base,levels,short,feedName){
+function liveView(symbol,side,base,levels,short,feedName,daily){
+  if(daily)return {score:base,note:short?'':DAILY_NOTE};
   const directional=side==='BUY'||side==='SELL';
   const live=directional?liveReading(symbol):null;
   if(live&&live.signal===side&&live.feed===feedName)return {score:live.confidence,note:liveNoteText(live,symbol,short)};
@@ -83,19 +91,19 @@ function liveView(symbol,side,base,levels,short,feedName){
   if(!levels)return {score:base,note:short?'':NO_LEVELS_NOTE};
   return {score:base,note:short?'not the newest reading':'This '+side+' reading is no longer the newest for this market: refresh to see the latest.'};
 }
-const liveViewOf=(r,short)=>liveView(r.symbol,r.signal,Number(r.confidence)||0,hasLevels(r),short,feedOfReading(r));
+const liveViewOf=(r,short)=>liveView(r.symbol,r.signal,Number(r.confidence)||0,hasLevels(r),short,feedOfReading(r),isDailyReading(r));
 function liveScore(r){return r&&r.symbol?liveViewOf(r).score:(Number(r&&r.confidence)||0);}
 /* The sentence beside a reading's score: how far the market has moved since it was first read. */
 function liveNoteFor(r,short){return r&&!r.error?liveViewOf(r,short).note:'';}
 /* What paintLiveConfidence() needs to redo that computation on every tick. `role` is Conf, Bar or Note. */
-function setLiveData(el,r,role){el.dataset['live'+role]=r.symbol;el.dataset.liveSide=r.signal||'';el.dataset.liveBase=String(Number(r.confidence)||0);el.dataset.liveLevels=hasLevels(r)?'1':'0';el.dataset.liveFeed=feedOfReading(r);}
-function liveData(r,role,short){return ' data-live-'+role+'="'+escHtml(r.symbol)+'" data-live-side="'+escHtml(r.signal||'')+'" data-live-base="'+(Number(r.confidence)||0)+'" data-live-levels="'+(hasLevels(r)?1:0)+'" data-live-feed="'+feedOfReading(r)+'"'+(short?' data-live-short="1"':'');}
+function setLiveData(el,r,role){el.dataset['live'+role]=r.symbol;el.dataset.liveSide=r.signal||'';el.dataset.liveBase=String(Number(r.confidence)||0);el.dataset.liveLevels=hasLevels(r)?'1':'0';el.dataset.liveFeed=feedOfReading(r);el.dataset.liveDaily=isDailyReading(r)?'1':'0';}
+function liveData(r,role,short){return ' data-live-'+role+'="'+escHtml(r.symbol)+'" data-live-side="'+escHtml(r.signal||'')+'" data-live-base="'+(Number(r.confidence)||0)+'" data-live-levels="'+(hasLevels(r)?1:0)+'" data-live-feed="'+feedOfReading(r)+'" data-live-daily="'+(isDailyReading(r)?1:0)+'"'+(short?' data-live-short="1"':'');}
 /* '<b data-live-conf="EUR/USD" …>75%</b>': a score that paintLiveConfidence() keeps current between renders. */
 function liveScoreHtml(r,tag='b'){return '<'+tag+liveData(r,'conf')+'>'+liveScore(r)+'%</'+tag+'>';}
 function liveNoteHtml(r,short){return '<div class="tiny faint"'+liveData(r,'note',short)+'>'+escHtml(liveNoteFor(r,short))+'</div>';}
 /* Runs on every price tick: rewrites the scores, bars and sentences already on the page. */
 function paintLiveConfidence(){
-  const view=(el,symbol)=>liveView(symbol,el.dataset.liveSide,Number(el.dataset.liveBase)||0,el.dataset.liveLevels==='1',el.dataset.liveShort==='1',el.dataset.liveFeed);
+  const view=(el,symbol)=>liveView(symbol,el.dataset.liveSide,Number(el.dataset.liveBase)||0,el.dataset.liveLevels==='1',el.dataset.liveShort==='1',el.dataset.liveFeed,el.dataset.liveDaily==='1');
   $$('[data-live-conf]').forEach(el=>{el.textContent=view(el,el.dataset.liveConf).score+'%';});
   $$('[data-live-bar]').forEach(el=>{el.style.width=view(el,el.dataset.liveBar).score+'%';});
   $$('[data-live-note]').forEach(el=>{el.textContent=view(el,el.dataset.liveNote).note;});
@@ -104,7 +112,13 @@ function paintLiveConfidence(){
 /* Confidence cell of the Sniper tables: the live score and a short note for a BUY/SELL, the score as read for a WAIT, a dash when the reading carries no score. */
 function sniperConfidenceCell(r){
   if(!r||r.error||r.confidence==null||!Number.isFinite(Number(r.confidence)))return '—';
-  return r.signal==='BUY'||r.signal==='SELL'?liveScoreHtml(r)+liveNoteHtml(r,true):escHtml(String(Number(r.confidence)))+'%';
+  const score=r.signal==='BUY'||r.signal==='SELL'?liveScoreHtml(r)+liveNoteHtml(r,true):escHtml(String(Number(r.confidence)))+'%';
+  return score+measuredShortHtml(r);
+}
+/* "measured 39.6%" / "not measured" under a score in a table; the full sentence is the tooltip. '' for a WAIT of the 1m/5m/1h rule. */
+function measuredShortHtml(r){
+  const short=measuredText(r,{short:true});
+  return short?'<div class="tiny faint" data-measured="'+escHtml(r.symbol)+'" title="'+escHtml(measuredText(r)||DAILY_NOTE)+'">'+escHtml(short)+'</div>':'';
 }
 
 /* ---------- built-in WhatsApp number ----------
@@ -1317,6 +1331,7 @@ function renderSignals(){
       '<div class="row between"><span class="tiny muted">Confidence</span><b class="mono"></b></div>'+
       '<div class="conf-bar"><i></i></div>'+
       '<div class="tiny faint sig-live" style="margin-top:6px;line-height:1.45"></div>'+
+      '<div class="tiny faint sig-measured" style="margin-top:4px;line-height:1.45"></div>'+
       '<div class="sig-levels">'+
         '<div><div class="k">Entry</div><div class="v" data-l="e"></div></div>'+
         '<div><div class="k">Stop</div><div class="v down" data-l="s"></div></div>'+
@@ -1332,10 +1347,11 @@ function renderSignals(){
     const cb=card.querySelector('.conf-bar i'); cb.style.width=score+'%'; setLiveData(cb,sig,'Bar');
     const cv=card.querySelector('.row.between b'); cv.textContent=score+'%'; setLiveData(cv,sig,'Conf');
     const cn=card.querySelector('.sig-live'); cn.textContent=liveNoteFor(sig); setLiveData(cn,sig,'Note');
+    card.querySelector('.sig-measured').textContent=measuredText(sig);
     card.querySelector('[data-l="e"]').textContent=fmtPx(sig.entry,I.d);
     card.querySelector('[data-l="s"]').textContent=fmtPx(sig.stop_loss,I.d);
     card.querySelector('[data-l="t"]').textContent=fmtPx(sig.tp1,I.d);
-    card.querySelector('.sig-why').textContent=String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase()+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable');
+    card.querySelector('.sig-why').textContent=String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase()+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
     card.querySelector('.sig-chart').onclick=()=>openSignalSymbol(sig.symbol);
     card.querySelector('.sig-use').onclick=()=>{
       state.side=sig.signal==='SELL'?'SELL':'BUY';
@@ -1424,14 +1440,17 @@ async function exnessSignalFor(I,includeCandles=false){
   if(!sets.m1||!sets.m5||!sets.h1)throw new Error('Exness MT5 did not return all required M1/M5/H1 candles.');
   const q=qr&&qr.quotes&&qr.quotes[0],price=signalPriceFromQuote(q);
   if(!q||!(price>0)||!marketCandleFresh(q.time,120000))throw new Error('No fresh Exness MT5 quote for '+I.s+'.');
-  const det=runDeterministicAnalysis(I.s,sets),short=['m1','m5','h1'].find(k=>det.analyses[k].error);
+  /* Finished candles only, as of the last 5-minute close (closedcandles.js). The freshness checks below are about
+     the feed, so they keep looking at the newest candles it returned. */
+  const closed=closedCandleSets(sets);
+  const det=runDeterministicAnalysis(I.s,closed.sets),short=['m1','m5','h1'].find(k=>det.analyses[k].error);
   if(short){const a=det.analyses[short];throw new Error('Exness '+a.timeframe+' history: '+(a.have||0)+'/'+(a.required||50)+' verified candles.');}
   const newest={m1:sets.m1.at(-1),m5:sets.m5.at(-1),h1:sets.h1.at(-1)};
   const limits={m1:180000,m5:660000,h1:7260000};
   const stale=['m1','m5','h1'].find(k=>!newest[k]||!marketCandleFresh(newest[k].time,limits[k]));
   if(stale)throw new Error('Exness latest '+({m1:'M1',m5:'M5',h1:'H1'}[stale])+' candle is stale.');
   const dec=localDecision(det),wr=dec.signal==='WAIT'?waitReason(det,{maxAgeSec:3*3600+300}):null;
-  return {symbol:I.s,price,signal:dec.signal,bias:dec.bias,confidence:dec.confidence,entry:dec.entry,stop_loss:dec.stop_loss,tp1:dec.tp1,tp2:dec.tp2,rrr:dec.rrr,mtf_signal:det.mtfSignal,data_ok:true,votes:votesSummary(det.analyses),wait_reason:wr&&wr.code,wait_detail:wr&&wr.detail,tf:'MTF 1m/5m/1h',model:'technical-exness',source:'Exness MT5 local candles',data_source:'Exness MT5 local candles · '+String(q.symbol||I.s),latest_candle_time:newest.m1.time,ts:Date.now(),fallback:false,...(includeCandles?{candle_sets:sets}: {})};
+  return {symbol:I.s,price,signal:dec.signal,bias:dec.bias,confidence:dec.confidence,entry:dec.entry,stop_loss:dec.stop_loss,tp1:dec.tp1,tp2:dec.tp2,rrr:dec.rrr,mtf_signal:det.mtfSignal,data_ok:true,votes:votesSummary(det.analyses),wait_reason:wr&&wr.code,wait_detail:wr&&wr.detail,tf:'MTF 1m/5m/1h',model:'technical-exness',source:'Exness MT5 local candles',data_source:'Exness MT5 local candles · '+String(q.symbol||I.s),latest_candle_time:newest.m1.time,candle_close:closed.close,ts:Date.now(),fallback:false,...(includeCandles?{candle_sets:sets}: {})};
 }
 function fallbackSourceFor(r){
   if(r&&r.source)return String(r.source);
@@ -1542,7 +1561,7 @@ function emitSignalAlerts(results){
     if(previous===fingerprint)continue;
     store.set(key,fingerprint);
     if(signal==='BUY'||signal==='SELL'){
-      const details='Market: '+symbol+' · '+signal+' '+(Number(r.confidence)||0)+'% ('+(r.tf||'technical scan')+')\nEntry reference: '+level('entry')+' · SL: '+level('stop_loss')+' · TP1: '+level('tp1')+' · TP2 / exit reference: '+level('tp2')+'\nSource: '+source+'\nAnalysis only — no order was placed. Verify current price and spread before acting.';
+      const details='Market: '+symbol+' · '+signal+' '+(Number(r.confidence)||0)+'% ('+(r.tf||'technical scan')+')\nEntry reference: '+level('entry')+' · SL: '+level('stop_loss')+' · TP1: '+level('tp1')+' · TP2 / exit reference: '+level('tp2')+'\nSource: '+source+'\nAnalysis only — no order was placed. Verify current price and spread before acting.'+(measuredLine(r)?'\n'+measuredLine(r):'');
       notify('Signal update · '+symbol,details,{tag:'signal-'+symbol+'-'+signal,kind:signal==='BUY'?'ok':'warn'});
     }else if(previous&&(String(previous).startsWith('BUY|')||String(previous).startsWith('SELL|'))){
       notify('Signal withdrawn · '+symbol,'The latest scan is WAIT. Source: '+source+'. Recheck before acting.',{tag:'signal-'+symbol+'-wait',kind:'warn'});
@@ -3459,13 +3478,16 @@ async function azAnalyze() {
       if(await isCloudflareHostedApp()){
         /* Cloudflare staging is public-facing. Keep Exness candles entirely in
            this browser: never POST local MT5 history to the hosted Worker. */
-        const sets=bundle.candle_sets,det=runDeterministicAnalysis(sym,sets),last=sets.m1&&sets.m1[sets.m1.length-1],decision=localDecision(det);
+        /* The same finished candles the scanner reading was made from, so the same reading results. (bundle.candle_sets
+           are the candles as MT5 returned them: the PC's server, which is sent them in the other branch, refuses a
+           1-minute series whose newest candle is more than three minutes old.) */
+        const closedSets=closedCandleSets(bundle.candle_sets).sets,det=runDeterministicAnalysis(sym,closedSets),decision=localDecision(det);
         const wr=decision.signal==='WAIT'?waitReason(det,{maxAgeSec:3*3600+300}):null;
         data=Object.assign({},decision,{
           symbol:sym,price:det.analyses.m1&&det.analyses.m1.currentPrice,
           mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),
           data_ok:det.ok,data_source:'Exness MT5 local candles · analyzed in this browser',
-          latest_candle_time:last&&last.time,
+          latest_candle_time:bundle.latest_candle_time,candle_close:bundle.candle_close,
           sentiment_score:50,sentiment_source:'derived',news:{available:false,reason:'exness_local_only'},
           wait_reason:wr&&wr.code||null,wait_detail:wr&&wr.detail||null
         });
@@ -4018,8 +4040,9 @@ function goldLivePrice(){
 }
 /* Gold monitor score: the analysis' own figure, moved by the price since this BUY/SELL was first read. */
 function updateGoldConfidence(){
-  const el=$('#goldConfidence'),bar=$('#goldConfidenceBar'),note=$('#goldConfidenceNote');if(!el)return;
+  const el=$('#goldConfidence'),bar=$('#goldConfidenceBar'),note=$('#goldConfidenceNote'),measured=$('#goldMeasured');if(!el)return;
   const d=state.goldAnalysis;
+  if(measured)measured.textContent=d?measuredText(goldReading(d)):'';
   if(!d){el.textContent='—';if(bar)bar.style.width='0%';if(note)note.textContent='No current analysis, so no score is shown.';return;}
   const live=goldRuns.read(GOLD_SYMBOL,goldLivePrice()),score=live?live.confidence:(Number(d.confidence)||0),dig=goldDisplayDigits();
   el.textContent=score+'%';if(bar)bar.style.width=score+'%';
@@ -4029,15 +4052,17 @@ function goldDisplayDigits(){const raw=goldMt5Quote&&goldMt5Quote.digits,d=raw==
 function goldFmtLevel(value,digits){return value==null||!Number.isFinite(Number(value))?'—':fmtPx(Number(value),digits);}
 function goldSignalMessage(d){
   const dig=goldDisplayDigits();
-  return '🟡 Gold/USD technical signal · '+d.signal+'\nSource: '+(d.data_source||'verified live candles')+'\nMTF: '+(d.mtf_signal||'—')+' · quality score '+(d.confidence??'—')+' (not probability of profit)\nEntry '+goldFmtLevel(d.entry,dig)+' · SL '+goldFmtLevel(d.stop_loss,dig)+' · TP1 '+goldFmtLevel(d.tp1,dig)+' · TP2 '+goldFmtLevel(d.tp2,dig)+'\n'+(d.signal==='WAIT'?'No 2-of-3 confirmation; stand aside.':'Levels are technical references only; verify spread, news and broker terms.')+'\nAnalysis-only; no order was sent.';
+  return '🟡 Gold/USD technical signal · '+d.signal+'\nSource: '+(d.data_source||'verified live candles')+'\nMTF: '+(d.mtf_signal||'—')+' · quality score '+(d.confidence??'—')+' (not probability of profit)\nEntry '+goldFmtLevel(d.entry,dig)+' · SL '+goldFmtLevel(d.stop_loss,dig)+' · TP1 '+goldFmtLevel(d.tp1,dig)+' · TP2 '+goldFmtLevel(d.tp2,dig)+'\n'+(d.signal==='WAIT'?'No 2-of-3 confirmation; stand aside.':'Levels are technical references only; verify spread, news and broker terms.')+'\nAnalysis-only; no order was sent.'+(measuredLine(goldReading(d))?'\n'+measuredLine(goldReading(d)):'');
 }
+/* The Gold monitor's analysis as a reading of XAU/USD, for the helpers that look a market up by its symbol. */
+function goldReading(d){return Object.assign({},d,{symbol:GOLD_SYMBOL});}
 function renderGoldAnalysis(){
   const d=state.goldAnalysis;if(!d)return;
   const dig=goldDisplayDigits();
   const badge=$('#goldSignalBadge');badge.textContent=d.signal||'WAIT';badge.className='badge '+(d.signal==='BUY'?'buy':d.signal==='SELL'?'sell':'gray');
   $('#goldSignal').textContent=d.signal||'WAIT';$('#goldSignal').className=d.signal==='BUY'?'up':d.signal==='SELL'?'down':'faint';
   $('#goldVotes').textContent='Analysis timeframe: M1 / M5 / H1 · '+(d.mtf_signal||'no confirmation')+' · '+(d.data_source||'');
-  $('#goldSignalUpdated').textContent='Last analysis: '+(d.updatedAt?new Date(d.updatedAt).toLocaleString():'—')+' · review after next M5 candle; no fixed expiry.';
+  $('#goldSignalUpdated').textContent=(closeText(d)?'Reading of the '+closeText(d)+' candle close · checked ':'Last analysis: ')+(d.updatedAt?new Date(d.updatedAt).toLocaleString():'—')+(closeText(d)?' · the next reading comes with the next 5-minute close; no fixed expiry.':' · review after next M5 candle; no fixed expiry.');
   $('#goldEntry').textContent=goldFmtLevel(d.entry,dig);$('#goldSL').textContent=goldFmtLevel(d.stop_loss,dig);$('#goldTP1').textContent=goldFmtLevel(d.tp1,dig);$('#goldTP2').textContent=goldFmtLevel(d.tp2,dig);
   const votes=String(d.votes||'');const buy=(votes.match(/\bBUY\b/g)||[]).length,sell=(votes.match(/\bSELL\b/g)||[]).length,wait=(votes.match(/\bWAIT\b/g)||[]).length;
   $('#goldPressure').textContent='Timeframe vote tally: '+buy+' BUY · '+sell+' SELL · '+wait+' WAIT. '+(d.signal==='BUY'?'Bullish technical confluence is confirmed.':d.signal==='SELL'?'Bearish technical confluence is confirmed.':'No directional majority; the monitor stands aside.');
@@ -4054,7 +4079,7 @@ function renderGoldAnalysis(){
 function goldAnalysisNoticeText(){
   const auto=state.settings.goldAuto!==false;
   const retry=auto&&goldNextAttemptAt?Math.max(0,Math.ceil((goldNextAttemptAt-Date.now())/1000)):null;
-  const cadence=auto?(retry==null?'Automatic retry is scheduled after this check.':'Auto-refresh '+(goldAnalysisError?'retry':'next check')+' in '+retry+'s (once per minute).'):'Auto-refresh is off; use Analyze now to retry.';
+  const cadence=auto?(retry==null?'Automatic retry is scheduled after this check.':'Auto-refresh '+(goldAnalysisError?'retry':'next check')+' in '+retry+'s (a reading changes only when a 5-minute candle closes).'):'Auto-refresh is off; use Analyze now to retry.';
   if(goldAnalysisBusy)return 'Fetching fresh '+(goldDataSource()==='mt5'?'Exness MT5 XAUUSD':'Gold')+' quote and M1 / M5 / H1 candles. '+cadence;
   if(goldAnalysisError){
     const raw=String(goldAnalysisError);
@@ -4099,11 +4124,11 @@ async function goldDerivFallback(reason){
     return Object.assign({},j,{data_source:label,fallback:true,fallback_reason:reason});
   }catch(serverError){
     const [m1,m5,h1]=await Promise.all([feed.fetchPublicCandles(GOLD_SYMBOL,60,120),feed.fetchPublicCandles(GOLD_SYMBOL,300,120),feed.fetchPublicCandles(GOLD_SYMBOL,3600,120)]);
-    const sets={m1,m5,h1},det=runDeterministicAnalysis(GOLD_SYMBOL,sets);
+    const closed=closedCandleSets({m1,m5,h1}),det=runDeterministicAnalysis(GOLD_SYMBOL,closed.sets);
     const short=['m1','m5','h1'].find(k=>det.analyses[k].error);
     if(short){const a=det.analyses[short];throw new Error('Deriv '+a.timeframe+' history has '+(a.have||0)+' verified candles; at least '+(a.required||50)+' are needed.');}
     const lastCandle=m1[m1.length-1];if(!lastCandle||!goldFreshTimestamp(lastCandle.time))throw new Error('Deriv Gold M1 candles are stale; no live signal will be shown.');
-    return Object.assign({},localDecision(det),{symbol:GOLD_SYMBOL,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:true,data_source:label,fallback:true,fallback_reason:reason,latest_candle_time:lastCandle.time,meta:{mode:'technical',reason:'labelled_deriv_fallback'}});
+    return Object.assign({},localDecision(det),{symbol:GOLD_SYMBOL,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:true,data_source:label,fallback:true,fallback_reason:reason,latest_candle_time:lastCandle.time,candle_close:closed.close,meta:{mode:'technical',reason:'labelled_deriv_fallback'}});
   }
 }
 async function runGoldAnalysis(){
@@ -4121,11 +4146,12 @@ async function runGoldAnalysis(){
       ]);
       const sets={m1:m1&&m1.candles,m5:m5&&m5.candles,h1:h1&&h1.candles};
       if(!sets.m1||!sets.m5||!sets.h1)throw new Error('Exness MT5 did not return all required Gold timeframes.');
-      const det=runDeterministicAnalysis(GOLD_SYMBOL,sets),decision=localDecision(det),q=qReply&&qReply.quotes&&qReply.quotes[0],price=goldQuotePrice(q),lastCandle=sets.m1[sets.m1.length-1];
+      const closed=closedCandleSets(sets);
+      const det=runDeterministicAnalysis(GOLD_SYMBOL,closed.sets),decision=localDecision(det),q=qReply&&qReply.quotes&&qReply.quotes[0],price=goldQuotePrice(q),lastCandle=sets.m1[sets.m1.length-1];
       if(!q||!Number(q.time)||!(price>0)||!goldFreshTimestamp(q.time))throw new Error('No fresh Exness Gold tick; live signal is paused rather than reused.');
       if(!lastCandle||!goldFreshTimestamp(lastCandle.time))throw new Error('Exness Gold M1 candles are stale; refresh when current history returns.');
       goldMt5Quote={symbol:String(q.symbol||''),price,time:Number(q.time),digits:q.digits,trade_mode:q.trade_mode};
-      d=Object.assign({},decision,{price:det.analyses.m1&&det.analyses.m1.currentPrice,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:det.ok,data_source:'Exness MT5 local candles',latest_candle_time:lastCandle.time,meta:{mode:'technical',reason:'local_read_only'}});
+      d=Object.assign({},decision,{price:det.analyses.m1&&det.analyses.m1.currentPrice,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:det.ok,data_source:'Exness MT5 local candles',latest_candle_time:lastCandle.time,candle_close:closed.close,meta:{mode:'technical',reason:'local_read_only'}});
       }catch(exnessError){goldMt5Quote=null;d=await goldDerivFallback('Exness MT5 unavailable: '+String(exnessError&&exnessError.message||exnessError).slice(0,100));}
     }else{
       d=await goldDerivFallback(goldFallbackReason());
@@ -4149,6 +4175,8 @@ async function runGoldAnalysis(){
   }finally{
     goldAnalysisBusy=false;if(btn)btn.disabled=false;
     goldNextAttemptAt=state.settings.goldAuto!==false?Date.now()+GOLD_REFRESH_MS:0;
+    /* A reading changes only at a 5-minute close: look again seconds after the next one, so it is shown while its entry is still the price. */
+    if(goldNextAttemptAt)goldNextAttemptAt=nextReadingCheck(Date.now(),GOLD_REFRESH_MS);
     updateGoldAnalysisNotice();
   }
 }
@@ -4567,7 +4595,7 @@ function renderSniperSelectedDetail(){
   if(!symbol||!r){el.innerHTML='<div class="empty"><b>No current scan result</b>Refresh signals to load this market.</div>';return;}
   if(r.error){el.innerHTML='<div class="empty"><b>Signal unavailable for '+escHtml(symbol)+'</b>'+escHtml(r.detail||'No verified source data.')+' No levels are shown as current.</div>';return;}
   const I=bySym[symbol],digits=I&&I.d||2,fmt=k=>{const n=Number(r[k]);return Number.isFinite(n)&&n>0?fmtPx(n,digits):'—';},source=r.data_source||r.source||'unavailable';
-  el.innerHTML='<div class="row between wrap"><div><b style="font-size:18px">'+escHtml(symbol)+'</b> <span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span></div><label class="row tiny" style="gap:6px"><input type="checkbox" data-sniper-detail-watch="'+escHtml(symbol)+'" '+(sniperWatchSymbols.has(symbol)?'checked':'')+'> Notify on entry &amp; exit</label></div><div class="az-tiles" style="margin-top:12px"><div class="az-tile"><div class="k">ENTRY REFERENCE</div><div class="v">'+fmt('entry')+'</div></div><div class="az-tile"><div class="k">STOP LOSS</div><div class="v down">'+fmt('stop_loss')+'</div></div><div class="az-tile"><div class="k">TP1</div><div class="v up">'+fmt('tp1')+'</div></div><div class="az-tile"><div class="k">TP2 / EXIT</div><div class="v up">'+fmt('tp2')+'</div></div></div><div class="hint">Price: '+(Number(r.price)>0?fmtPx(Number(r.price),digits):'—')+' · Confidence: '+liveScoreHtml(r,'span')+' · Source: '+escHtml(source)+' · '+escHtml(r.tf||'')+'. Analysis only — no order sent.</div>'+liveNoteHtml(r,false);
+  el.innerHTML='<div class="row between wrap"><div><b style="font-size:18px">'+escHtml(symbol)+'</b> <span class="badge '+(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray')+'">'+escHtml(r.signal||'WAIT')+'</span></div><label class="row tiny" style="gap:6px"><input type="checkbox" data-sniper-detail-watch="'+escHtml(symbol)+'" '+(sniperWatchSymbols.has(symbol)?'checked':'')+'> Notify on entry &amp; exit</label></div><div class="az-tiles" style="margin-top:12px"><div class="az-tile"><div class="k">ENTRY REFERENCE</div><div class="v">'+fmt('entry')+'</div></div><div class="az-tile"><div class="k">STOP LOSS</div><div class="v down">'+fmt('stop_loss')+'</div></div><div class="az-tile"><div class="k">TP1</div><div class="v up">'+fmt('tp1')+'</div></div><div class="az-tile"><div class="k">TP2 / EXIT</div><div class="v up">'+fmt('tp2')+'</div></div></div><div class="hint">Price: '+(Number(r.price)>0?fmtPx(Number(r.price),digits):'—')+' · Confidence: '+liveScoreHtml(r,'span')+' · Source: '+escHtml(source)+' · '+escHtml(r.tf||'')+(closeText(r)?' · read at the '+closeText(r)+' candle close':'')+'. Analysis only — no order sent.</div>'+liveNoteHtml(r,false)+(measuredText(r)?'<div class="tiny faint" data-measured="'+escHtml(symbol)+'">'+escHtml(measuredText(r))+'</div>':'');
   const watch=el.querySelector('[data-sniper-detail-watch]');if(watch)watch.onchange=()=>setSniperWatch(symbol,watch.checked);
 }
 function renderSniperSignalAlerts(results,qualifiedSymbols=new Set()){
@@ -4591,7 +4619,7 @@ function emitSniperSignalAlerts(qualified,allResults){
     const source=String(r.data_source||r.source||'source unavailable'),old=active[r.symbol];
     if(old&&old.signal===r.signal&&old.source===source)continue;
     const fingerprint=[r.signal,source,'levels-v1'].join('|');
-    const details='Market: '+r.symbol+' · '+r.signal+' '+(Number(r.confidence)||0)+'%\nTimeframe: '+String(r.tf||'—')+'\nEntry: '+level(r.symbol,r.entry)+' · SL: '+level(r.symbol,r.stop_loss)+' · TP1: '+level(r.symbol,r.tp1)+' · TP2 / exit: '+level(r.symbol,r.tp2)+'\nSource: '+source+'\nSignal alert only — no order was placed.';
+    const details='Market: '+r.symbol+' · '+r.signal+' '+(Number(r.confidence)||0)+'%\nTimeframe: '+String(r.tf||'—')+'\nEntry: '+level(r.symbol,r.entry)+' · SL: '+level(r.symbol,r.stop_loss)+' · TP1: '+level(r.symbol,r.tp1)+' · TP2 / exit: '+level(r.symbol,r.tp2)+'\nSource: '+source+'\nSignal alert only — no order was placed.'+(measuredLine(r)?'\n'+measuredLine(r):'');
     notify('Sniper entry setup · '+r.symbol,details,{tag:'sniper-'+r.symbol+'-entry',kind:r.signal==='BUY'?'ok':'warn'});
     active[r.symbol]={signal:r.signal,source,entry:r.entry,stop_loss:r.stop_loss,tp1:r.tp1,tp2:r.tp2,tf:r.tf||'',stage:0,startedAt:Date.now(),fingerprint};
     started.add(r.symbol);

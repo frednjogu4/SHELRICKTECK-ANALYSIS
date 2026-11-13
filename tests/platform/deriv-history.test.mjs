@@ -12,7 +12,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCandleClient, normalizeCandles, isFeedFailure, ttlFor, CandleError, GRANULARITIES } from '../../src/derivhistory.js';
+import { createCandleClient, normalizeCandles, isFeedFailure, ttlFor, sameCandle, CandleError, GRANULARITIES } from '../../src/derivhistory.js';
 import { DERIV_PUBLIC_URL } from '../../src/marketdata.js';
 import { createReadOnlyWorker } from '../../cloudflare/worker.js';
 import { DERIV_INSTRUMENTS, INDEX_INSTRUMENTS, derivCandleRows, basePriceFor, fakeSocketClass, nowSec } from './helpers/market-fixtures.mjs';
@@ -167,6 +167,44 @@ test('identical requests share one fetch; a series is reused for its period and 
     await client.fetchCandles('GBP/USD', 60, 120);
     await client.fetchCandles('EUR/USD', 300, 120);
     assert.equal(sent(), 4, 'another market or timeframe is its own request');
+  } finally { client.close(); }
+});
+
+test('a copy taken before a candle closed is not reused after the close, however young it is', async () => {
+  /* The manual clock starts on a full hour. */
+  const clock = manualClock();
+  const { FakeSocket, sockets } = answeringFeed();
+  const client = createCandleClient({ WebSocketImpl: FakeSocket, now: clock.now, lingerMs: 5 });
+  const sent = () => sockets.reduce((total, socket) => total + socket.sent.length, 0);
+  try {
+    assert.equal(sameCandle(0, 299999, 300), true);
+    assert.equal(sameCandle(299999, 300000, 300), false);
+    assert.equal(sameCandle(3599000, 3600000, 3600), false);
+    assert.equal(sameCandle(3600000, 7199999, 3600), true);
+
+    /* Ten seconds before a 5-minute close: all three series are fetched. */
+    clock.advance(290000);
+    await Promise.all([60, 300, 3600].map((granularity) => client.fetchCandles('EUR/USD', granularity, 120)));
+    assert.equal(sent(), 3);
+
+    /* Five seconds after it. Each copy is 15 seconds old, inside its reuse period, but the 1-minute and the
+       5-minute candle have closed in between: those two are fetched again. The hour goes on: its copy stands. */
+    clock.advance(15000);
+    await Promise.all([60, 300, 3600].map((granularity) => client.fetchCandles('EUR/USD', granularity, 120)));
+    assert.equal(sent(), 5);
+
+    /* Inside the same candles nothing is fetched again. */
+    clock.advance(10000);
+    await Promise.all([60, 300, 3600].map((granularity) => client.fetchCandles('EUR/USD', granularity, 120)));
+    assert.equal(sent(), 5);
+
+    /* Across the full hour the 1-hour copy goes too, four minutes into its five. */
+    clock.advance(3600000 - 310000 - 240000); /* to four minutes before the hour */
+    await client.fetchCandles('EUR/USD', 3600, 120);
+    assert.equal(sent(), 6, 'older than five minutes by now: fetched');
+    clock.advance(241000);
+    await client.fetchCandles('EUR/USD', 3600, 120);
+    assert.equal(sent(), 7, 'four minutes old, and the hour has closed');
   } finally { client.close(); }
 });
 

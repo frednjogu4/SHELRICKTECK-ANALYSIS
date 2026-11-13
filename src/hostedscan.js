@@ -30,6 +30,7 @@ import { DERIV_CODE_MAP } from '../server/lib/symbols.js';
 import { runDeterministicAnalysis, votesSummary, waitReason } from '../server/lib/analyzer.js';
 import { localDecision } from '../server/lib/localdecision.js';
 import { isFeedFailure } from './derivhistory.js';
+import { closedCandleSets } from './closedcandles.js';
 
 export const DERIV_SOURCE = 'Deriv public candles';
 export const YAHOO_SOURCE = 'Yahoo Finance public daily data';
@@ -64,9 +65,15 @@ export function isDerivBacked(symbol) {
  * same result the Worker's /api/signals/scan and /api/signals/analyze return
  * for the same candles (tests/platform/hosted-scan.test.mjs holds the two
  * together), so a market reads the same wherever it is computed.
+ *
+ * The reading is made from finished candles, as of the last 5-minute close
+ * (closedcandles.js): `candle_close` is that close. `latest_candle_time` stays
+ * the start of the newest 1-minute candle the feed returned, finished or not,
+ * because it answers a different question: is the feed current?
  */
 export function buildDerivReading(symbol, sets, nowMs = Date.now()) {
-  const det = runDeterministicAnalysis(symbol, sets);
+  const closed = closedCandleSets(sets);
+  const det = runDeterministicAnalysis(symbol, closed.sets);
   const decision = localDecision(det);
   const wr = decision.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
   const latest = sets.m1[sets.m1.length - 1];
@@ -85,6 +92,7 @@ export function buildDerivReading(symbol, sets, nowMs = Date.now()) {
     source: DERIV_SOURCE,
     data_source: DERIV_SOURCE,
     latest_candle_time: Number(latest?.time || 0),
+    candle_close: closed.close,
     ts: nowMs,
     sentiment_score: 50,
     sentiment_source: 'derived',

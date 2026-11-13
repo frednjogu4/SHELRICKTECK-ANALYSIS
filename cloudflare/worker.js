@@ -10,6 +10,7 @@
 import { DERIV_CODE_MAP, INSTRUMENT_MAP } from '../server/lib/symbols.js';
 import { runDeterministicAnalysis, votesSummary, waitReason } from '../server/lib/analyzer.js';
 import { localDecision } from '../server/lib/localdecision.js';
+import { closedCandleSets } from '../src/closedcandles.js';
 import { indexDailySignal, parseYahooChart } from '../server/lib/indices.js';
 import { rsi, sma } from '../server/lib/indicators.js';
 import {
@@ -313,7 +314,9 @@ function createReadOnlyWorker({
         fetchCandlesForSymbol(symbol, 300, 120),
         fetchCandlesForSymbol(symbol, 3600, 120)
       ]);
-      const det = runDeterministicAnalysis(symbol, { m1, m5, h1 });
+      /* Finished candles only, as of the last 5-minute close: the same reading this browser makes (src/closedcandles.js). */
+      const closed = closedCandleSets({ m1, m5, h1 });
+      const det = runDeterministicAnalysis(symbol, closed.sets);
       const decision = localDecision(det);
       const wr = decision.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
       const source = 'Deriv public candles';
@@ -326,7 +329,7 @@ function createReadOnlyWorker({
         confidence: decision.confidence,
         entry: decision.entry, stop_loss: decision.stop_loss, tp1: decision.tp1, tp2: decision.tp2,
         rrr: decision.rrr, tf: 'MTF 1m/5m/1h', model: 'technical',
-        source, data_source: source, latest_candle_time: Number(latest?.time || 0), ts: now()
+        source, data_source: source, latest_candle_time: Number(latest?.time || 0), candle_close: closed.close, ts: now()
       };
     } catch (e) {
       const source = 'unavailable';
@@ -478,7 +481,8 @@ function createReadOnlyWorker({
           fetchCandlesForSymbol(symbol, 300, 120),
           fetchCandlesForSymbol(symbol, 3600, 120)
         ]);
-        const det = runDeterministicAnalysis(symbol, { m1, m5, h1 });
+        const closed = closedCandleSets({ m1, m5, h1 });
+        const det = runDeterministicAnalysis(symbol, closed.sets);
         const decision = localDecision(det);
         const wr = decision.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
         const latest = m1[m1.length - 1];
@@ -490,6 +494,7 @@ function createReadOnlyWorker({
           data_ok: det.ok, sentiment_score: 50, sentiment_source: 'derived',
           news: { available: false, reason: 'technical_only' }, data_source: source,
           latest_candle_time: Number(latest?.time || 0),
+          candle_close: closed.close,
           meta: { mode: 'technical', reason: 'cloudflare_readonly', engines: [], spent: 0, cap: 0, cached: false, at: new Date(now()).toISOString() }
         });
       } catch (e) {
