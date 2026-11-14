@@ -3847,17 +3847,21 @@ function learnDrawdown(payload){
     .then(run)
     .catch((e)=>{ status.textContent='History unavailable ('+(e.message||'error')+'). The panel stays empty rather than showing invented data.'; $('#ddChart').style.display='none'; $('#ddStats').innerHTML=''; });
 }
-/* Real candle history for the calculator panels. Cloud viewer: read by this
-   browser from the Deriv public feed first; the AURUM API is the fallback
-   there and the only source on the PC. Never invented: a failure rejects. */
-async function historyCandles(sym,granularity,count){
+/* Real candle history for the calculator panels and the Market state view.
+   Cloud viewer: read by this browser from the Deriv public feed first; the
+   AURUM API is the fallback there and the only source on the PC. Never
+   invented: a failure rejects.
+   `acrossClosures`: the newest `count` candles there are. Without it Deriv
+   answers with the candles of the last `count` candle widths of time, which
+   are fewer after a weekend (src/derivhistory.js, fetchCandlesByCode). */
+async function historyCandles(sym,granularity,count,{acrossClosures=false}={}){
   if(DERIV_CODE_MAP[sym]&&await isCloudflareHostedApp()){
     try{
-      const candles=await candleHistory.fetchCandles(sym,granularity,count);
+      const candles=await candleHistory.fetchCandles(sym,granularity,count,{acrossClosures});
       if(candles.length>=30)return {source:'Deriv public feed, read by this browser',instrument:sym,granularity,count:candles.length,fetched_at:new Date().toISOString(),candles};
     }catch(_e){ /* this browser could not get it: ask the AURUM cloud */ }
   }
-  const r=await api('/api/history/candles',{method:'POST',body:{sym,granularity,count}});
+  const r=await api('/api/history/candles',{method:'POST',body:acrossClosures?{sym,granularity,count,across_closures:true}:{sym,granularity,count}});
   const j=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(j.detail||j.error||'history unavailable');
   return j;
@@ -4751,7 +4755,8 @@ async function msLoad({force=false}={}){
   msRender();
   const read=async(tf)=>{
     try{
-      const p=await historyCandles(sym,tf.seconds,STATE_CANDLES);
+      /* The newest 600 candles, also when the market was closed in between: a state needs 400 finished ones. */
+      const p=await historyCandles(sym,tf.seconds,STATE_CANDLES,{acrossClosures:true});
       if(run!==msView.run)return;
       msView.readings[tf.key]=timeframeState(p.candles,tf);
       msView.sources[tf.key]=p.source;

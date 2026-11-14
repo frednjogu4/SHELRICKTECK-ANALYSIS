@@ -771,7 +771,44 @@ because it needs a value for every candle.)
 feed: on the website this browser reads them itself, and the AURUM cloud is
 asked only for a series the browser could not get; in the PC app they come
 through the PC's own server (`POST /api/history/candles`). The card says
-which. The view is read when it is opened, when the market is changed, with
+which.
+
+**Which 600.** The view asks Deriv for the newest 600 candles there are
+(`start: 1` in the request; `acrossClosures` in `src/derivhistory.js`). Asked
+without a start, Deriv counts back 600 candle widths of time and returns the
+candles that started in it. Hours in which the market was closed are part of
+that time and hold no candles. Measured on Deriv's feed on Saturday
+14 November 2026, EUR/USD, each request for 600 candles:
+
+| Timeframe | Without a start | With `start: 1` |
+|---|---|---|
+| 5 minutes | 526 | 600 |
+| 15 minutes | 468 | 600 |
+| 1 hour | 440 | 600 |
+| 4 hours | 431 | 600 |
+
+The view first went online, on that day, asking without a start. Worked out
+from the rule above for a currency pair that trades from Monday 00:00 to
+Friday 20:55 UTC (it was found on the Saturday, before it could be watched):
+the 15-minute card would have had fewer than 400 finished candles, and so no
+state, from the Monday open until about 04:00 UTC on Friday; the 1-hour card
+until early on Wednesday; the 5-minute card until Tuesday morning; and with
+one card empty the sentence above the cards says nothing. A market that
+trades round the clock gets all 600 either way (measured the same day on
+VOL 75 and BTC/USD).
+
+Two things stay as they were. The signal pages ask for 120 candles without a
+start, as before, so their readings are made from the same candles as on the
+day before this change. By the same rule they get fewer than 120 for some
+hours after a market opens (on that Saturday a request for 120 five-minute
+candles of EUR/USD brought 44); whether they should ask across closed hours
+too is a question about the signals, not about this view. And the PC's server
+asks Deriv without a start as well (`server/lib/derivfeed.js`), so in the PC
+app the cards can still be empty at the times named above; the page tells the
+server which kind it wants (`across_closures: true`), and the server does not
+act on it yet.
+
+**When it is read.** When the view is opened, when the market is changed, with
 **Read again**, and a few seconds after every 5-minute close while it stays
 open. At such a close only the series whose own candle may have finished are
 read again: the 5-minute series each time, the 4-hour series six times a day.
@@ -898,9 +935,17 @@ that a double top can be seen for what it is. A state says nothing about the
 candle that is forming. A candle counts as finished only when the series
 holds a later one (the rule of the signal pages), so on a closed market the
 last candle before the close is left out until the market opens again, and a
-chart elsewhere shows one candle more than the card was read from. Not
-verified anywhere: the view against Deriv's live feed. The tests use written
-candles, and the pictures taken while building it used the gold archive.
+chart elsewhere shows one candle more than the card was read from.
+
+Checked against Deriv's live feed once: on the website on Saturday
+14 November 2026, with the market closed, EUR/USD showed a state on all four
+timeframes and the note that the market is closed. That look is how the short
+answers described under "Which 600" were found. Not checked: the view while
+a market is open, the view in the PC app on Windows, and its figures against
+a TradingView chart of the same candles. The tests use written candles; their
+stand-in for Deriv returns as many candles as were asked for unless a test
+gives the market closed hours, and then it answers the two kinds of request
+the way Deriv did on that day.
 
 ### Before any deployment
 
