@@ -3683,15 +3683,16 @@ function azModeLabel(meta) {
 
 function renderAz(p, meta) {
   lastAz = p;
+  const approved=isAsterPublishable(p),directional=isDirectionalCandidate(p);
   const cls = { BUY: 'buy', SELL: 'sell', WAIT: 'neutral' };
   const dec = (bySym[p.symbol] && bySym[p.symbol].d) || 4;
 
   const badge = $('#azBadge');
-  badge.className = 'badge ' + (cls[p.signal] || 'neutral');
-  badge.textContent = p.signal;
+  badge.className = 'badge ' + (approved?(cls[p.signal] || 'neutral'):'gray');
+  badge.textContent = directional&&!approved?'ASTER BLOCKED':p.signal;
   const sig = $('#azSignal');
-  sig.textContent = p.signal;
-  sig.className = p.signal === 'BUY' ? 'up' : p.signal === 'SELL' ? 'down' : 'faint';
+  sig.textContent = directional&&!approved?'WITHHELD':p.signal;
+  sig.className = approved&&p.signal === 'BUY' ? 'up' : approved&&p.signal === 'SELL' ? 'down' : 'faint';
 
   const mode = $('#azMode');
   mode.className = 'badge ' + (meta.mode === 'ai' ? 'gold' : 'gray');
@@ -3699,15 +3700,15 @@ function renderAz(p, meta) {
   $('#azMtf').textContent = 'Analysis timeframe: M1 / M5 / H1 confluence · MTF: ' + String(p.mtf_signal || '—').replace(/_/g, ' ').toLowerCase() + ' · source: ' + String(p.data_source||p.source||'unavailable');
   $('#azSignalTiming').textContent = 'Suggested review: after the next 5-minute candle closes (about 5 min); re-check sooner if price, spread or market status changes. Guidance only — no fixed signal expiry or holding-time guarantee.';
 
-  $('#azConf').textContent = p.confidence;
-  $('#azConfTxt').textContent = p.confidence + '%';
-  $('#azConfBar').style.width = p.confidence + '%';
+  $('#azConf').textContent = approved?p.confidence:'—';
+  $('#azConfTxt').textContent = approved?p.confidence + '%':'WITHHELD';
+  $('#azConfBar').style.width = approved?p.confidence + '%':'0%';
 
-  $('#azEntry').textContent = fmtPx(p.entry, dec);
-  $('#azSl').textContent = fmtPx(p.stop_loss, dec);
-  $('#azTp1').textContent = fmtPx(p.tp1, dec);
-  $('#azTp2').textContent = fmtPx(p.tp2, dec);
-  $('#azRrr').textContent = (p.rrr != null ? Number(p.rrr).toFixed(2) : '—') + ' : 1';
+  $('#azEntry').textContent = approved?fmtPx(p.entry, dec):'—';
+  $('#azSl').textContent = approved?fmtPx(p.stop_loss, dec):'—';
+  $('#azTp1').textContent = approved?fmtPx(p.tp1, dec):'—';
+  $('#azTp2').textContent = approved?fmtPx(p.tp2, dec):'—';
+  $('#azRrr').textContent = approved?(p.rrr != null ? Number(p.rrr).toFixed(2) : '—') + ' : 1':'—';
 
   const sent = $('#azSentiment');
   sent.className = 'badge neutral';
@@ -3722,7 +3723,11 @@ function renderAz(p, meta) {
   /* WAIT transparency: reason code + human reason + per-timeframe votes + auto-trade gate */
   const azWhy = $('#azWhy');
   if (azWhy) {
-    if (p.signal === 'WAIT') {
+    if(directional&&!approved){
+      const reasons=Array.isArray(p.aster?.rejectionReasons)?p.aster.rejectionReasons.join('; '):'Complete ASTER evidence is missing or has not been validated.';
+      azWhy.innerHTML='<div class="az-why"><b>Signal withheld by ASTER:</b> '+escHtml(reasons)+'</div><div class="az-why tiny faint">Technical direction and levels are not published because mandatory checks have not passed.</div>';
+      azWhy.classList.remove('hidden');
+    } else if (p.signal === 'WAIT') {
       const atConf = ((typeof atCfg === 'function' && atCfg()) ? (atCfg().conf ?? 70) : 70);
       azWhy.innerHTML = '<div class="az-why"><b>Why WAIT:</b> ' + escHtml(p.wait_detail || 'Timeframes did not confirm 2-of-3.') +
         '</div><div class="az-why tiny faint">reason: ' + escHtml(p.wait_reason || 'MTF_NO_ALIGNMENT') +
@@ -3744,7 +3749,8 @@ function renderAz(p, meta) {
   $('#azResistance').innerHTML = (levels.resistance || []).map(v => lvlRow(v, 'resistance')).join('') || '<div class="tiny faint">—</div>';
 
   $('#azRisks').innerHTML = (p.risks || []).map(r => '<li>' + escHtml(r) + '</li>').join('') || '<li>No major risks identified</li>';
-  $('#azUse').disabled = false;
+  $('#azUse').disabled = !approved;
+  $('#azUse').title = approved?'Load this ASTER-approved setup':'Blocked until ASTER approves publication';
 
   $('#azResult').classList.remove('hidden');
   azAddHistory(p, meta);
@@ -3760,13 +3766,14 @@ function azAddHistory(p, meta) {
   const cls = { BUY: 'buy', SELL: 'sell', WAIT: 'neutral' };
   const dec = (bySym[p.symbol] && bySym[p.symbol].d) || 4;
   const modelTag = meta.mode === 'ai' ? (meta.engines||['ai']).join('+') : 'technical';
+  const visibleSignal=isAsterPublishable(p)?p.signal:(isDirectionalCandidate(p)?'WITHHELD':p.signal);
   const tr = document.createElement('tr');
   tr.innerHTML =
     '<td class="tiny faint mono">' + timeStr(Date.now()) + '</td>' +
     '<td><b>' + p.symbol + '</b></td>' +
-    '<td><span class="badge ' + (cls[p.signal] || 'neutral') + '">' + p.signal + '</span></td>' +
-    '<td class="num mono">' + p.confidence + '%</td>' +
-    '<td class="num mono">' + fmtPx(p.entry, dec) + '</td>' +
+    '<td><span class="badge ' + (isAsterPublishable(p)?(cls[p.signal] || 'neutral'):'gray') + '">' + visibleSignal + '</span></td>' +
+    '<td class="num mono">' + (isAsterPublishable(p)?p.confidence+'%':'—') + '</td>' +
+    '<td class="num mono">' + (isAsterPublishable(p)?fmtPx(p.entry, dec):'—') + '</td>' +
     '<td><span class="badge ' + (meta.mode === 'ai' ? 'gold' : 'gray') + '">' + modelTag + '</span></td>';
   body.insertBefore(tr, body.firstChild);
   while (body.children.length > 10) body.removeChild(body.lastChild);
@@ -3776,6 +3783,7 @@ function azAddHistory(p, meta) {
 function azUseSetup() {
   if (!lastAz) return;
   const p = lastAz;
+  if(!isAsterPublishable(p)){toast('ASTER blocked','This technical candidate has not passed the complete publication gate.','warn');return;}
   const dec = (bySym[p.symbol] && bySym[p.symbol].d) || 4;
   $('#orderSL').value = Number(p.stop_loss).toFixed(dec);
   $('#orderTP').value = Number(p.tp1).toFixed(dec);
