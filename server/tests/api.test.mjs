@@ -119,7 +119,7 @@ test('analyze returns the full decision contract (technical, no keys, live stub 
       ? (d.aster.planEvidence.rrValid && d.aster.planEvidence.targetOrderValid ? 'PASSED' : 'FAILED')
       : 'UNKNOWN');
   assert.ok(d.aster.unresolvedEvidence.includes('bidAskValid'));
-  assert.match(d.aster.checks.find(c => c.name === 'bidAskValid').evidence, /single quote/);
+  assert.match(d.aster.checks.find(c => c.name === 'bidAskValid').evidence, /one quote/);
 });
 
 test('ASTER publication block never rewrites the deterministic PC technical reading', async () => {
