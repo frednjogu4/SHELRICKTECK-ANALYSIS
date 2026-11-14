@@ -1384,7 +1384,7 @@ function renderSignals(){
     card.querySelector('[data-l="e"]').textContent=approved?fmtPx(sig.entry,I.d):'—';
     card.querySelector('[data-l="s"]').textContent=approved?fmtPx(sig.stop_loss,I.d):'—';
     card.querySelector('[data-l="t"]').textContent=approved?fmtPx(sig.tp1,I.d):'—';
-    card.querySelector('.sig-why').textContent=(directional&&!approved?'Multi-timeframe direction withheld by ASTER.':String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase())+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
+    card.querySelector('.sig-why').textContent=(!approved?'Multi-timeframe direction withheld by ASTER.':String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase())+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
     const ps=sig.pro_scalper, pi=ps&&ps.indicators, proEl=card.querySelector('.sig-pro');
     if(ps&&ps.ok&&pi){
       const k=pi.stochasticRsi, ic=pi.ichimoku, vp=pi.volumeProfile;
@@ -3664,12 +3664,11 @@ function renderAz(p, meta) {
   /* WAIT transparency: reason code + human reason + per-timeframe votes + auto-trade gate */
   const azWhy = $('#azWhy');
   if (azWhy) {
-    if(directional&&!approved){
+    if(!approved){
       const reasons=Array.isArray(p.aster?.rejectionReasons)?p.aster.rejectionReasons.join('; '):'Complete ASTER evidence is missing or has not been validated.';
       azWhy.innerHTML='<div class="az-why"><b>Signal withheld by ASTER:</b> '+escHtml(reasons)+'</div><div class="az-why tiny faint">Technical direction and levels are not published because mandatory checks have not passed.</div>';
       azWhy.classList.remove('hidden');
     } else if (p.signal === 'WAIT') {
-      const atConf = ((typeof atCfg === 'function' && atCfg()) ? (atCfg().conf ?? 70) : 70);
       azWhy.innerHTML = '<div class="az-why"><b>Why WAIT:</b> ' + escHtml(p.wait_detail || 'Timeframes did not confirm 2-of-3.') +
         '</div><div class="az-why tiny faint">reason: ' + escHtml(p.wait_reason || 'MTF_NO_ALIGNMENT') +
         ' · votes: ' + escHtml(p.votes || 'n/a') +
@@ -4329,7 +4328,7 @@ function readingChip(sym){
   if(!r)return {kind:'none',html:'<span class="badge gray" title="No reading of this market has been made yet.">no reading yet</span>'};
   if(r.error)return {kind:'none',html:'<span class="badge gray" title="'+escHtml(r.detail||'No reading is available for this market right now.')+'">no reading</span>'};
   const daily=isDailyReading(r);
-  const tip=escHtml((daily?'Daily reading from daily closing prices. ':'Reading of the 1m/5m/1h rule'+(closeText(r)?' at the '+closeText(r)+' candle close. ':'. '))+(r.votes?'Timeframes: '+r.votes+'. ':'')+'The percentage is how strongly the timeframes agree, not a chance of profit.');
+  const tip=escHtml(!isAsterPublishable(r)?'ASTER has not validated this reading; timeframe votes are withheld.':(daily?'Daily reading from daily closing prices. ':'Reading of the 1m/5m/1h rule'+(closeText(r)?' at the '+closeText(r)+' candle close. ':'. '))+(r.votes?'Timeframes: '+r.votes+'. ':'')+'The percentage is how strongly the timeframes agree, not a chance of profit.');
   if(isDirectionalCandidate(r)&&!isAsterPublishable(r))return {kind:'wait',html:'<span class="badge gray" title="Technical candidate withheld until ASTER approves publication.">ASTER blocked</span>'};
   if((r.bias==='bullish'||r.bias==='bearish')&&!isAsterPublishable(r))return {kind:'wait',html:'<span class="badge gray" title="Directional bias withheld until ASTER validates the evidence.">ASTER pending</span>'};
   if(r.signal==='BUY'||r.signal==='SELL')return {kind:'trade',html:'<span class="badge '+(r.signal==='BUY'?'buy':'sell')+'" title="'+tip+'">'+(r.signal==='BUY'?'Buy ':'Sell ')+liveScoreHtml(r,'span')+(daily?' · daily':'')+'</span>'};
