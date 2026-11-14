@@ -51,7 +51,7 @@ export function validateAsterSignal(input = {}, options = {}) {
     };
   });
 
-  const rr = Number(input.rrAtTp1);
+  const rr = input.rrAtTp1 == null || input.rrAtTp1 === '' ? NaN : Number(input.rrAtTp1);
   const rrCheck = Number.isFinite(rr) && rr >= 2;
   checks.push({
     name: 'minimum_rr_at_tp1',
@@ -59,7 +59,7 @@ export function validateAsterSignal(input = {}, options = {}) {
     evidence: Number.isFinite(rr) ? 'RR=' + round(rr) : 'RR not supplied',
   });
 
-  const riskPct = Number(input.accountRiskPercent);
+  const riskPct = input.accountRiskPercent == null || input.accountRiskPercent === '' ? NaN : Number(input.accountRiskPercent);
   const configuredLimit = Number(input.configuredRiskLimitPercent);
   const riskLimitKnown = Number.isFinite(configuredLimit) && configuredLimit > 0;
   const riskLimit = riskLimitKnown ? Math.min(1, configuredLimit) : null;
