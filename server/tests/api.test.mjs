@@ -109,6 +109,28 @@ test('analyze returns the full decision contract (technical, no keys, live stub 
   assert.equal(d.latest_candle_time, STUB_CLOSE + 120);
 });
 
+test('ASTER publication block never rewrites the deterministic PC technical reading', async () => {
+  const candleSets = {
+    m1: stubCandles('XAU/USD', 60, 120),
+    m5: stubCandles('XAU/USD', 300, 120),
+    h1: stubCandles('XAU/USD', 3600, 120)
+  };
+  const closed = closedCandleSets(candleSets);
+  const expected = localDecision(runDeterministicAnalysis('XAU/USD', closed.sets));
+  const response = await post('/api/signals/analyze', {
+    symbol: 'XAU/USD', technicalOnly: true, force: true
+  });
+  assert.equal(response.status, 200);
+  const actual = await response.json();
+
+  for (const field of ['signal', 'bias', 'confidence', 'entry', 'stop_loss', 'tp1', 'tp2', 'rrr']) {
+    assert.deepEqual(actual[field], expected[field], field + ' must remain the canonical technical reading');
+  }
+  assert.equal(actual.aster.publicationBlocked, true, 'missing mandatory evidence must block publication');
+  assert.equal(actual.aster.publishable, false, 'a directional reading is not an ASTER approval');
+  assert.equal(actual.aster.executionAuthorized, false, 'analysis never authorizes execution');
+});
+
 test('technicalOnly analysis returns deterministic Gold levels without AI calls or signal-history writes', async () => {
   const before = await (await get('/api/signals/history', { 'x-aurum-user': 'gold-tech' })).json();
   const r = await post('/api/signals/analyze', { symbol: 'XAU/USD', force: true, withNews: true, technicalOnly: true }, {
