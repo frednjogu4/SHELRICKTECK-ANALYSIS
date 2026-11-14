@@ -47,7 +47,7 @@ export function validateAsterSignal(input = {}, options = {}) {
     return {
       name,
       status: value === true ? 'PASSED' : value === false ? 'FAILED' : 'UNKNOWN',
-      evidence: value === true ? 'verified true' : value === false ? 'verified false' : 'missing or unverified',
+      evidence: value === true ? 'verified true' : value === false ? 'verified false' : String(input.evidenceDetails?.[name] || 'missing or unverified').slice(0, 240),
     };
   });
 
