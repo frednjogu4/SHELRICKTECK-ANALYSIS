@@ -460,6 +460,14 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
           measuredTargetsValid: planEvidence.measuredTargetsValid
         }),
         confluence: candleEvidence.confluence,
+        evidenceDetails: {
+          bidAskValid: 'The Deriv public feed implementation supplies one quote, not an independently verified bid and ask.',
+          spreadValid: 'Spread cannot be calculated without a trusted bid/ask pair.',
+          newsValidated: 'No trusted, timestamped, instrument-matched news validation is wired into this analysis request.',
+          positionSizingValid: 'No authenticated account equity, account currency, or position-size evidence is available.',
+          brokerConstraintsValid: 'No authenticated broker instrument specification or account constraint evidence is available.',
+          riskWithinLimit: 'Account-specific monetary risk cannot be verified without authenticated account and sizing data.'
+        },
         rrAtTp1: planEvidence.rrAtTp1,
         accountRiskPercent: null,
         configuredRiskLimitPercent: Number(process.env.ASTER_MAX_ACCOUNT_RISK_PERCENT)
