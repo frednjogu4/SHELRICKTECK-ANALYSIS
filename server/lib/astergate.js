@@ -43,7 +43,7 @@ export function validateAsterSignal(input = {}, options = {}) {
   const evidence = input.evidence && typeof input.evidence === 'object' ? input.evidence : {};
   const confluence = input.confluence && typeof input.confluence === 'object' ? input.confluence : {};
   const checks = REQUIRED.map((name) => {
-    const value = evidence[name];
+    const value = name === 'symbolValid' && !symbol ? false : evidence[name];
     return {
       name,
       status: value === true ? 'PASSED' : value === false ? 'FAILED' : 'UNKNOWN',
