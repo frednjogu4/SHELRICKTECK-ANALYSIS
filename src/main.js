@@ -1208,7 +1208,7 @@ async function refreshBestPick(){
      that reading. Should the scan itself fail, the panel is filled from an empty list. */
   let results=[];
   try{ results=await scanSignalsPreferred(syms); }catch(e){}
-  bestPick.blocked=results.filter(r=>!r.error&&isDirectionalCandidate(r)&&!isAsterPublishable(r)).length;
+  bestPick.blocked=results.filter(r=>!r.error&&!String(r.tf||'').toUpperCase().includes('DAILY')&&isDirectionalCandidate(r)&&!isAsterPublishable(r)).length;
   const eligible=results.filter(r=>r.error||String(r.tf||'').toUpperCase().includes('DAILY')||isAsterPublishable(r));
   const pick=splitBestPick(eligible,BEST_PICK_INDICES);
   bestPick.item=pick.live; bestPick.daily=pick.daily; bestPick.dailyRead=pick.dailyRead;
@@ -1376,6 +1376,7 @@ function renderSignals(){
     card.querySelector('.sym-name').textContent=sig.symbol;
     card.querySelector('.sym-full').textContent=I.n;
     card.querySelector('.badge').textContent=directional&&!approved?'ASTER BLOCKED':sig.signal;
+    const cb=card.querySelector('.conf-bar i');
     const score=approved?liveScore(sig):null; cb.style.width=(score||0)+'%'; if(approved)setLiveData(cb,sig,'Bar');
     const cv=card.querySelector('.row.between b'); cv.textContent=approved?score+'%':'WITHHELD'; if(approved)setLiveData(cv,sig,'Conf');
     const cn=card.querySelector('.sig-live'); cn.textContent=directional&&!approved?'Technical candidate withheld: ASTER has not approved publication.':liveNoteFor(sig); if(approved)setLiveData(cn,sig,'Note');
