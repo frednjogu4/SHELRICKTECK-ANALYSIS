@@ -1311,6 +1311,8 @@ async function scanSignals(){
     const useSyms=(syms.length?syms:INSTR.slice(0,6).map(I=>I.s)).slice();
     ['NAS100','US30','SPX500'].forEach(ix=>{ if(!useSyms.includes(ix))useSyms.push(ix); }); /* daily index reads */
     const results=await scanSignalsPreferred(useSyms);
+    state.mktScan=state.mktScan||{};
+    results.forEach(r=>{if(r&&r.symbol)state.mktScan[r.symbol]=r;});
     const data={results};
     emitSignalAlerts(results);
     state.signals=(data.results||[]).filter(r=>!r.error);
@@ -1485,7 +1487,7 @@ async function exnessSignalFor(I,includeCandles=false){
   const proKeys=['stochasticRsi','cci','williamsR','supertrend','ichimoku','keltner'];
   const proMissing=proKeys.filter(key=>{const v=proScalperRaw.indicators&&proScalperRaw.indicators[key];return v==null||(typeof v==='object'?Object.values(v).some(x=>x==null||(typeof x==='number'&&!Number.isFinite(x))):typeof v==='number'&&!Number.isFinite(v));});
   const proScalper=Object.assign({},proScalperRaw,{validation:{priceIndicatorsValid:proScalperRaw.ok===true&&proMissing.length===0,missingPriceIndicators:proMissing,mode:'deterministic-candle-snapshot'}});
-  return {symbol:I.s,price,signal:dec.signal,bias:dec.bias,confidence:dec.confidence,entry:dec.entry,stop_loss:dec.stop_loss,tp1:dec.tp1,tp2:dec.tp2,rrr:dec.rrr,mtf_signal:det.mtfSignal,data_ok:true,votes:votesSummary(det.analyses),wait_reason:wr&&wr.code,wait_detail:wr&&wr.detail,tf:'MTF 1m/5m/1h',model:'technical-exness',source:'Exness MT5 local candles',data_source:'Exness MT5 local candles · '+String(q.symbol||I.s),latest_candle_time:newest.m1.time,candle_close:closed.close,pro_scalper:Object.assign({},proScalper,{validation:{priceIndicatorsValid:!!(proScalper.ok&&proScalper.indicators&&proScalper.indicators.supertrend&&proScalper.indicators.ichimoku&&proScalper.indicators.keltner&&proScalper.indicators.stochasticRsi&&Number.isFinite(proScalper.indicators.cci)&&Number.isFinite(proScalper.indicators.williamsR)),mode:'browser-calculated'}}),aster:{status:'NOT_VALIDATED',publishable:false,publicationBlocked:true,publicationDecision:'BLOCK_PUBLICATION',rejectionReasons:['This technical-only read does not include the complete ASTER evidence set.']},ts:Date.now(),fallback:false,...(includeCandles?{candle_sets:sets}: {})};
+  return {symbol:I.s,price,signal:dec.signal,bias:dec.bias,confidence:dec.confidence,entry:dec.entry,stop_loss:dec.stop_loss,tp1:dec.tp1,tp2:dec.tp2,rrr:dec.rrr,mtf_signal:det.mtfSignal,data_ok:true,votes:votesSummary(det.analyses),wait_reason:wr&&wr.code,wait_detail:wr&&wr.detail,tf:'MTF 1m/5m/1h',model:'technical-exness',source:'Exness MT5 local candles',data_source:'Exness MT5 local candles · '+String(q.symbol||I.s),latest_candle_time:newest.m1.time,candle_close:closed.close,pro_scalper:proScalper,aster:{status:'NOT_VALIDATED',publishable:false,publicationBlocked:true,publicationDecision:'BLOCK_PUBLICATION',rejectionReasons:['This technical-only read does not include the complete ASTER evidence set.']},ts:Date.now(),fallback:false,...(includeCandles?{candle_sets:sets}: {})};
 }
 function fallbackSourceFor(r){
   if(r&&r.source)return String(r.source);
