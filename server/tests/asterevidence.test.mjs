@@ -64,7 +64,6 @@ test('malformed OHLC bars fail validation and do not produce trend evidence', ()
   assert.equal(result.evidence.structureValid, null);
 });
 
-
 test('ASTER plan evidence validates directional stop and target geometry and recomputes TP1 RR', () => {
   const long = buildAsterPlanEvidence({
     direction: 'LONG', entry: 100, stopLoss: 98, tp1: 104, tp2: 106
@@ -102,7 +101,6 @@ test('missing proposed levels remain UNKNOWN instead of passing', () => {
   assert.equal(missing.measuredTargetsValid, null);
   assert.equal(missing.rrAtTp1, null);
 });
-
 
 test('stale timeframe candles do not pass the freshness gate', () => {
   const now = Date.now();

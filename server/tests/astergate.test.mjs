@@ -75,7 +75,6 @@ test('ASTER treats null RR and account risk as UNKNOWN, never as zero risk', () 
   assert.equal(r.publishable, false);
 });
 
-
 test('ASTER exposes the specific reason a mandatory evidence item is UNKNOWN', () => {
   const evidence = { ...allEvidence, bidAskValid: null };
   const r = validateAsterSignal({

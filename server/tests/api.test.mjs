@@ -296,7 +296,7 @@ test('scan and analyze: the candle that is still forming does not change the rea
     assert.deepEqual(pick(goldAfter), pick(goldBefore));
     assert.deepEqual(pick(fullAfter), pick(fullBefore));
     /* the six-role panel under a reading is made from the same finished candles */
-    const roles = (answer) => ({ close: answer.candle_close, current: answer.candle_current, votes: answer.pipeline.charts.votes, mtf: answer.pipeline.charts.mtfSignal, score: answer.pipeline.scout.score, direction: answer.pipeline.scout.direction, verdict: answer.pipeline.boss.verdict });
+    const roles = (answer) => ({ close: answer.candle_close, current: answer.candle_current, votes: answer.pipeline.charts.votes, mtf: answer.pipeline.charts.mtfSignal, score: answer.pipeline.scores.score, direction: answer.pipeline.scores.direction, verdict: answer.pipeline.bulls.verdict });
     assert.deepEqual(roles(rolesAfter), roles(rolesBefore));
     assert.equal(rolesBefore.pipeline.charts.votes, fullBefore.votes);
     assert.equal(rolesBefore.pipeline.charts.mtfSignal, fullBefore.mtf_signal);
