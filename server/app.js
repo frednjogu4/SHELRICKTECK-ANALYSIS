@@ -421,7 +421,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         latest_candle_time: latestCandleTime,
         candle_close: closed.close,
         candle_current: closed.current,
-        pro_scalper: Object.assign({}, proScalper.snapshot, { validation: { priceIndicatorsValid: proScalper.valid, missingPriceIndicators: proScalper.missing } })
+        pro_scalper: Object.assign({}, proScalper.snapshot, { validation: { priceIndicatorsValid: proScalper.valid, missingPriceIndicators: proScalper.missing, mode: 'deterministic-candle-snapshot' } })
       });
       /* ASTER strategy inventory: keep the repository's two strategy families
          separate. The source currently defines 4 rule-based setups and 12
@@ -615,7 +615,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
           /* Preserve the canonical deterministic reading for PC/browser/Worker parity.
              ASTER independently controls whether it may be published or acted on. */
           signal: dec.signal,
-          pro_scalper: Object.assign({}, proScalper.snapshot, { validation: { priceIndicatorsValid: proScalper.valid, missingPriceIndicators: proScalper.missing } }),
+          pro_scalper: Object.assign({}, proScalper.snapshot, { validation: { priceIndicatorsValid: proScalper.valid, missingPriceIndicators: proScalper.missing, mode: 'deterministic-candle-snapshot' } }),
           aster: Object.assign({}, scanAster, {
             proScalper: { priceIndicatorsValid: proScalper.valid, missingPriceIndicators: proScalper.missing },
             publicationBlocked: !scanAster.publishable,
