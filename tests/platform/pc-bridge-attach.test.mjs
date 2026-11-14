@@ -17,10 +17,12 @@
  * (tests/platform/pc-page.test.mjs), so the same facts are checked in their
  * built, minified form as well.
  *
- * The bridge's behaviour itself is tested in Python
- * (tests/test_mt5_bridge_attach.py, against a stand-in for the Windows-only
- * MetaTrader5 package). Those tests are run from here when a Python
- * interpreter is installed. No terminal, broker or network is involved.
+ * The bridge's behaviour itself is tested in Python: against a stand-in for
+ * the Windows-only MetaTrader5 package that answers what a test tells it to
+ * (tests/test_mt5_bridge_attach.py), and against a model of what that package
+ * does, read from the package's own file (tests/test_mt5_connector_model.py).
+ * Those tests are run from here when a Python interpreter is installed. No
+ * terminal, broker or network is involved.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -127,10 +129,21 @@ test('a login gives its account to the attach, a bound bridge is asked first, an
   const attach = login.indexOf('if not attach_terminal((login, password, server)):');
   const ownLogin = login.indexOf('ok = mt5.login(login, password=password, server=server)');
   assert.ok(bound > 0 && attach > bound, 'the bound account is checked before MetaTrader 5 can be given another one');
-  /* what follows the attach is unchanged: MetaTrader's own login() with the same three, then the identity checks */
+  /* what follows the attach: MetaTrader's own login() with the same three, then the identity checks */
   assert.ok(ownLogin > attach);
   assert.ok(login.indexOf('actual_server.casefold() != server.casefold()') > ownLogin);
   assert.ok(login.indexOf('"exness" not in company.casefold()') > ownLogin);
+
+  /* An attach that carried the account is itself that login (the package sends MetaTrader 5 the same login), so
+     it is not sent a second time: the app waits 6 seconds for the whole answer. Only the thread whose own attach
+     logged MetaTrader 5 in leaves it out, once, and then the account number MetaTrader 5 reports is compared. */
+  assert.match(login, /\n {4}_ATTACHED_HERE\.with_account = False[^\n]*\n {4}try:\n {8}login = int\(msg\.get\("login"\) or 0\)/);
+  assert.match(login, /\n {4}just_logged_in = bool\(getattr\(_ATTACHED_HERE, "with_account", False\)\)\n {4}_ATTACHED_HERE\.with_account = False\n/);
+  assert.match(login, /\n {8}if just_logged_in:\n {12}ok = True[^\n]*\n {8}else:\n {12}ok = mt5\.login\(login, password=password, server=server\)\n/);
+  assert.match(login, /\n {8}if just_logged_in and _account_number\(ai\) != login:\n/);
+  assert.match(bridge, /\n {8}logged_in = _attach_terminal_once\(account_wait_ms, account\)\n {8}_ATTACHED_HERE\.with_account = logged_in[^\n]*\n {8}return logged_in\n/);
+  assert.match(bridge, /\n_ATTACHED_HERE = threading\.local\(\)\n/);
+  assert.equal((bridge.match(/_ATTACHED_HERE\.with_account = /g) || []).length, 4);
 
   /* only the login calls the attach with an account */
   const calls = [...bridge.matchAll(/(?<!def )\battach_terminal\(([^)\n]*)\)?/g)].map((call) => call[1]);
@@ -160,6 +173,31 @@ test('the reason for a failed attach is read before mt5.shutdown() and reported 
   assert.ok(!bridge.includes('Cannot attach to the configured MetaTrader 5 terminal (step terminal, code {code}: {desc})'));
 });
 
+test('without a saved location the bridge attaches to the MetaTrader 5 that is open, and a message names the bridge that sent it', () => {
+  /* Without a path the MetaTrader5 package takes the installation whose settings were saved last, running or
+     not. The bridge looks for the running one with the Windows calls the package itself uses. */
+  const attach = bridge.slice(bridge.indexOf('def _attach_terminal_once(wait_ms, account=None, account_follows=False):'), bridge.indexOf('try:\n    from websockets.datastructures import Headers'));
+  assert.match(attach, /\n {8}if not p:[^\n]*\n {12}p, open_count = _open_terminal\(\)\n {12}chosen = "open" if p else "default"\n/);
+  assert.match(attach, /if p and chosen == "saved" and not os\.path\.isfile\(p\):/);
+  const lookUp = bridge.slice(bridge.indexOf('def _running_terminals(kernel32=None):'), bridge.indexOf('def _open_terminal():'));
+  for (const call of ['CreateToolhelp32Snapshot', 'Process32FirstW', 'Process32NextW', 'OpenProcess', 'QueryFullProcessImageNameW', 'CloseHandle']) {
+    assert.ok(lookUp.includes(`kernel32.${call}`), call);
+  }
+  assert.match(lookUp, /open_process\(0x1000, False, entry\.th32ProcessID\)/); /* the path, nothing else */
+  assert.match(lookUp, /if kernel32 is None and os\.name != "nt":\n {8}return None/);
+  assert.match(lookUp, /\n {4}except Exception as e:[^\n]*\n(?: {8}[^\n]*\n)+? {8}return None\n/);
+  assert.match(bridge, /\n_TERMINAL_EXE = "terminal64\.exe"/);
+
+  /* The label the app shows under "Test bridge" and every attach message ends with: which bridge file answered. */
+  const label = bridge.match(/^BRIDGE_BUNDLE = "([0-9]+[a-z])"/m);
+  assert.ok(label, 'BRIDGE_BUNDLE is not set the way this test reads it');
+  assert.equal(label[1], '22a');
+  assert.match(bridge, /return f"Bridge version \{BRIDGE_BUNDLE\}, running from \{_last_two\(_BRIDGE_DIR\)\}\."/);
+  assert.match(bridge, /f"Terminal tried: \{label\}\. \{_version_note\(\)\}"\)/);
+  assert.match(bridge, /\n {4}log\.info\("bridge version %s, started from %s", BRIDGE_BUNDLE, _BRIDGE_DIR\)\n/);
+  assert.match(bridgeJs, /'socket answered \\u00b7 bridge ' \+ \(r3\.m && r3\.m\.bridge \? r3\.m\.bridge :/);
+});
+
 function findPython() {
   for (const command of [['python3'], ['python'], ['py', '-3']]) {
     const probe = spawnSync(command[0], [...command.slice(1), '--version'], { encoding: 'utf8' });
@@ -181,9 +219,14 @@ test('the Python tests of the PC bridge pass', (t) => {
   assert.equal(run.status, 0, output.slice(-3000));
   assert.match(output, /\nOK\b/);
   const ran = output.match(/Ran (\d+) tests? in/);
-  assert.ok(ran && Number(ran[1]) >= 59, `Python tests run: ${ran ? ran[1] : 'none'}`);
+  assert.ok(ran && Number(ran[1]) >= 83, `Python tests run: ${ran ? ran[1] : 'none'}`);
   assert.match(output, /test_a_failed_attach_reports_the_reason_and_not_code_1_success .*ok/);
   assert.match(output, /test_a_terminal_that_is_not_logged_in_is_given_the_account_entered_in_the_app .*ok/);
   assert.match(output, /test_a_connector_that_takes_no_waiting_time_is_not_given_the_account .*ok/);
+  assert.match(output, /test_without_a_saved_location_the_bridge_attaches_to_the_metatrader_that_is_open .*ok/);
+  assert.match(output, /test_the_look_up_of_running_metatraders_reads_windows_and_never_stands_in_the_way .*ok/);
+  /* against the model of the package */
+  assert.match(output, /test_connect_logs_in_a_metatrader_that_is_open_and_logged_in_to_no_account .*ok/);
+  assert.match(output, /test_a_login_that_takes_longer_than_four_seconds_succeeds_at_the_next_press .*ok/);
   assert.match(output, /test_the_pc_serves_the_built_page_and_its_files_byte_for_byte .*ok/);
 });
