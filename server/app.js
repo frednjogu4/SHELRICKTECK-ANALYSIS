@@ -512,11 +512,37 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         if (isResumed(closed)) return Object.assign(resumedAnswer(symbol, 'Deriv public candles', latestCandleTime, closed), { ts: Date.now() });
         const det = runDeterministicAnalysis(symbol, closed.sets);
         const dec = localDecision(det);
+        const scanDirection = String(dec.signal || '').toUpperCase();
+        const scanAster = validateAsterSignal({
+          symbol,
+          direction: scanDirection === 'BUY' ? 'LONG' : scanDirection === 'SELL' ? 'SHORT' : scanDirection,
+          setupDetected: scanDirection === 'BUY' || scanDirection === 'SELL' || scanDirection === 'LONG' || scanDirection === 'SHORT',
+          evidence: {
+            symbolValid: true, marketDataFresh: det.ok === true,
+            candleCloseConfirmed: closed.current === true,
+            bidAskValid: null, spreadValid: null, ohlcValid: null,
+            d1Trend: null, h4Trend: null, h1Setup: null, m15Confirmation: null,
+            indicatorsValid: null, structureValid: null, newsValidated: null,
+            stopLossValid: null, measuredTargetsValid: null, positionSizingValid: null,
+            brokerConstraintsValid: null, riskWithinLimit: null
+          },
+          confluence: {
+            htfStructure: null, priceAction: null, setupQuality: null,
+            indicators: null, entryConfirmation: null, newsConditions: null
+          },
+          rrAtTp1: dec.rrr == null ? null : Number(dec.rrr),
+          accountRiskPercent: null,
+          configuredRiskLimitPercent: Number(process.env.ASTER_MAX_ACCOUNT_RISK_PERCENT)
+        }, {
+          minimumConfluenceScore: Number(process.env.ASTER_MIN_CONFLUENCE_SCORE || 70)
+        });
         const price = det.analyses.m1?.currentPrice ?? null;
         const wr = dec.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
         return {
           symbol, price, mtf_signal: det.mtfSignal, data_ok: det.ok,
-          signal: dec.signal, bias: dec.bias, votes: votesSummary(det.analyses),
+          signal: scanAster.publishable ? dec.signal : 'WAIT',
+          aster: scanAster,
+          bias: dec.bias, votes: votesSummary(det.analyses),
           wait_reason: wr ? wr.code : null, wait_detail: wr ? wr.detail : null,
           confidence: dec.confidence,
           entry: dec.entry, stop_loss: dec.stop_loss, tp1: dec.tp1, tp2: dec.tp2,
