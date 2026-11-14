@@ -1193,7 +1193,7 @@ function renderAuthDaily(){
        newest bar belongs to. It is never ranked against the live markets. */
 const BEST_PICK_INDICES=['NAS100','US30','SPX500'];
 const BEST_PICK_EVERY_MS=10*60*1000;
-let bestPick={at:0,item:null,daily:null,dailyRead:[],dailyUnread:'',busy:false,unread:'',readable:0,unreachable:0};
+let bestPick={at:0,item:null,daily:null,dailyRead:[],dailyUnread:'',busy:false,unread:'',readable:0,unreachable:0,blocked:0};
 /* Reads the panel's markets once. It runs at start-up, on every tick of the 10-minute
    timer near the end of this file, and once more when the visitor enters the workspace:
    the timer is the schedule. (A second condition used to stand here, "at least 10 minutes
@@ -1208,7 +1208,9 @@ async function refreshBestPick(){
      that reading. Should the scan itself fail, the panel is filled from an empty list. */
   let results=[];
   try{ results=await scanSignalsPreferred(syms); }catch(e){}
-  const pick=splitBestPick(results,BEST_PICK_INDICES);
+  bestPick.blocked=results.filter(r=>!r.error&&isDirectionalCandidate(r)&&!isAsterPublishable(r)).length;
+  const eligible=results.filter(r=>r.error||String(r.tf||'').toUpperCase().includes('DAILY')||isAsterPublishable(r));
+  const pick=splitBestPick(eligible,BEST_PICK_INDICES);
   bestPick.item=pick.live; bestPick.daily=pick.daily; bestPick.dailyRead=pick.dailyRead;
   /* Cloud viewer: a market that could not be read (stale, no data, unavailable) is not a market
      without a setup. Each line reports its own unread markets when it has nothing to show.
@@ -1231,12 +1233,17 @@ function repickAfterEntering(){
   if(bestPick.busy){ setTimeout(repickAfterEntering,1500); return; }
   refreshBestPick();
 }
+function isAsterPublishable(reading){
+  return !!(reading && reading.aster && reading.aster.publishable === true && reading.aster.publicationBlocked !== true && reading.aster.publicationDecision !== 'BLOCK_PUBLICATION');
+}
+function isDirectionalCandidate(reading){return !!(reading && (reading.signal==='BUY'||reading.signal==='SELL'));}
 const INDEX_ONLY=['NAS100','US30','SPX500','US100','NASDAQ'];
 const INDEX_BADGE=' <span class="badge gray">index CFD · analysis only</span>';
 const DAILY_TREND_NOTE='A once-a-day reading from daily closing prices. It changes only while the index\u2019s own market is open, and its score (50 + 8 per check) is not comparable with the live markets above.';
 /* First line: the strongest live reading, or why there is none. */
 function bestPickLiveHtml(){
   const it=bestPick.item;
+  if(!it&&bestPick.blocked)return '<span class="tiny faint">ASTER withheld '+bestPick.blocked+' technical candidate(s). Required validation evidence is missing, unknown or not approved; no signal is published.</span>';
   if(!it&&!bestPick.unread)return '<span class="tiny faint">No directional setup right now \u2014 the pick appears the moment the live scan finds one.</span>';
   if(!it){
     /* Sign-in screen of the cloud viewer: every reading there is the cloud's (no connection to
@@ -1342,7 +1349,8 @@ function renderSignals(){
   g.innerHTML='';
   state.signals.forEach(sig=>{
     const I=bySym[sig.symbol]||{n:sig.symbol,d:4};
-    const cls=sig.signal==='BUY'?'buy':sig.signal==='SELL'?'sell':'neutral';
+    const approved=isAsterPublishable(sig),directional=isDirectionalCandidate(sig);
+    const cls=approved?(sig.signal==='BUY'?'buy':sig.signal==='SELL'?'sell':'neutral'):'neutral';
     const card=document.createElement('div');
     card.className='sig-card';
     card.innerHTML=
@@ -1367,15 +1375,14 @@ function renderSignals(){
     card.querySelector('.sym-avatar').textContent=sig.symbol.replace(/[^A-Z0-9]/g,'').slice(0,3);
     card.querySelector('.sym-name').textContent=sig.symbol;
     card.querySelector('.sym-full').textContent=I.n;
-    card.querySelector('.badge').textContent=sig.signal;
-    const score=liveScore(sig);
-    const cb=card.querySelector('.conf-bar i'); cb.style.width=score+'%'; setLiveData(cb,sig,'Bar');
-    const cv=card.querySelector('.row.between b'); cv.textContent=score+'%'; setLiveData(cv,sig,'Conf');
-    const cn=card.querySelector('.sig-live'); cn.textContent=liveNoteFor(sig); setLiveData(cn,sig,'Note');
-    card.querySelector('.sig-measured').textContent=measuredText(sig);
-    card.querySelector('[data-l="e"]').textContent=fmtPx(sig.entry,I.d);
-    card.querySelector('[data-l="s"]').textContent=fmtPx(sig.stop_loss,I.d);
-    card.querySelector('[data-l="t"]').textContent=fmtPx(sig.tp1,I.d);
+    card.querySelector('.badge').textContent=directional&&!approved?'ASTER BLOCKED':sig.signal;
+    const score=approved?liveScore(sig):null; cb.style.width=(score||0)+'%'; if(approved)setLiveData(cb,sig,'Bar');
+    const cv=card.querySelector('.row.between b'); cv.textContent=approved?score+'%':'WITHHELD'; if(approved)setLiveData(cv,sig,'Conf');
+    const cn=card.querySelector('.sig-live'); cn.textContent=directional&&!approved?'Technical candidate withheld: ASTER has not approved publication.':liveNoteFor(sig); if(approved)setLiveData(cn,sig,'Note');
+    card.querySelector('.sig-measured').textContent=approved?measuredText(sig):'';
+    card.querySelector('[data-l="e"]').textContent=approved?fmtPx(sig.entry,I.d):'—';
+    card.querySelector('[data-l="s"]').textContent=approved?fmtPx(sig.stop_loss,I.d):'—';
+    card.querySelector('[data-l="t"]').textContent=approved?fmtPx(sig.tp1,I.d):'—';
     card.querySelector('.sig-why').textContent=String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase()+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
     const ps=sig.pro_scalper, pi=ps&&ps.indicators, proEl=card.querySelector('.sig-pro');
     if(ps&&ps.ok&&pi){
@@ -1386,7 +1393,9 @@ function renderSignals(){
     const ag=sig.aster, asterEl=card.querySelector('.sig-aster');
     asterEl.textContent='ASTER · '+(ag?.publishable===true?'READY FOR MANUAL REVIEW':ag?.status==='NOT_VALIDATED'?'NOT VALIDATED · publication blocked':'BLOCKED · '+String(ag?.status||'missing evidence'))+(ag?.rejectionReasons?.length?' · '+ag.rejectionReasons.slice(0,2).join('; '):'');
     card.querySelector('.sig-chart').onclick=()=>openSignalSymbol(sig.symbol);
-    card.querySelector('.sig-use').onclick=()=>{
+    const useButton=card.querySelector('.sig-use');
+    useButton.hidden=!approved;
+    if(approved)useButton.onclick=()=>{
       state.side=sig.signal==='SELL'?'SELL':'BUY';
       $('#orderSL').value=sig.stop_loss!=null?Number(sig.stop_loss).toFixed(I.d):'';
       $('#orderTP').value=sig.tp1!=null?Number(sig.tp1).toFixed(I.d):'';
@@ -1597,18 +1606,19 @@ function emitSignalAlerts(results){
     if(!symbol)continue;
     if(atTimer&&sniperWatchSymbols.has(symbol))continue; /* watched markets use the dedicated Sniper entry/exit alerts */
     const source=String(r.data_source||r.source||'source unavailable');
-    const signal=String(r.signal||'WAIT');
+    const approved=isAsterPublishable(r),directional=isDirectionalCandidate(r);
+    const signal=directional&&!approved?'ASTER_BLOCKED':String(r.signal||'WAIT');
     const digits=(bySym[symbol]&&bySym[symbol].d)||2;
     const level=(key)=>{const n=Number(r[key]);return Number.isFinite(n)&&n>0?fmtPx(n,digits):'—';};
     const fingerprint=[signal,source,'levels-v1'].join('|');
     const key='signalAlert_'+symbol,previous=store.get(key,'');
     if(previous===fingerprint)continue;
     store.set(key,fingerprint);
-    if(signal==='BUY'||signal==='SELL'){
+    if(approved&&(signal==='BUY'||signal==='SELL')){
       const details='Market: '+symbol+' · '+signal+' '+(Number(r.confidence)||0)+'% ('+(r.tf||'technical scan')+')\nEntry reference: '+level('entry')+' · SL: '+level('stop_loss')+' · TP1: '+level('tp1')+' · TP2 / exit reference: '+level('tp2')+'\nSource: '+source+'\nAnalysis only — no order was placed. Verify current price and spread before acting.'+(measuredLine(r)?'\n'+measuredLine(r):'');
       notify('Signal update · '+symbol,details,{tag:'signal-'+symbol+'-'+signal,kind:signal==='BUY'?'ok':'warn'});
     }else if(previous&&(String(previous).startsWith('BUY|')||String(previous).startsWith('SELL|'))){
-      notify('Signal withdrawn · '+symbol,'The latest scan is WAIT. Source: '+source+'. Recheck before acting.',{tag:'signal-'+symbol+'-wait',kind:'warn'});
+      notify('Signal withdrawn · '+symbol,signal==='ASTER_BLOCKED'?'ASTER did not approve publication. The technical candidate is withheld until every required check passes. Source: '+source+'.':'The latest scan is WAIT. Source: '+source+'. Recheck before acting.',{tag:'signal-'+symbol+'-wait',kind:'warn'});
     }
   }
 }
@@ -1646,7 +1656,7 @@ function scanLevelsHtml(I){
   const f=(v)=>Number.isFinite(Number(v))?Number(v).toFixed(I.d):null;
   /* Entry, stop and targets belong to a Buy or Sell reading only. A Wait carries placeholder numbers
      (always a stop below and targets above the price, whichever way the market leans): they are not shown. */
-  if(r.signal!=='BUY'&&r.signal!=='SELL')return '';
+  if(!isAsterPublishable(r)||(r.signal!=='BUY'&&r.signal!=='SELL'))return '';
   const e=f(r.entry), sl=f(r.stop_loss), t1=f(r.tp1), t2=f(r.tp2);
   if(!e&&!sl)return '';
   return '<div class="tiny market-levels mono" title="Entry '+(e||'—')+' · Stop loss '+(sl||'—')+' · Take profit 1 '+(t1||'—')+(t2?' · Take profit 2 '+t2:'')+'" style="margin-top:3px;white-space:nowrap">'
@@ -1667,8 +1677,9 @@ function signalBadge(I){
     }
     const v=escHtml(r.votes||'');
     const partial=r.data_ok===false?' (some timeframes lack data — not confirmable)':'';
-    if(r.signal==='BUY')  return '<span class="badge buy" title="MTF confirmed — '+v+'">Buy '+liveScoreHtml(r,'span')+'</span>';
-    if(r.signal==='SELL') return '<span class="badge sell" title="MTF confirmed — '+v+'">Sell '+liveScoreHtml(r,'span')+'</span>';
+    if(isDirectionalCandidate(r)&&!isAsterPublishable(r))return '<span class="badge gray" title="Technical candidate withheld because ASTER has not approved publication.">ASTER blocked</span>';
+    if(r.signal==='BUY')  return '<span class="badge buy" title="ASTER approved · MTF confirmed — '+v+'">Buy '+liveScoreHtml(r,'span')+'</span>';
+    if(r.signal==='SELL') return '<span class="badge sell" title="ASTER approved · MTF confirmed — '+v+'">Sell '+liveScoreHtml(r,'span')+'</span>';
     if(r.bias==='bullish') return '<span class="badge lean lean-up" title="Direction leans up but timeframes are not fully confirmed'+partial+' — '+v+'">▲ Lean up</span>';
     if(r.bias==='bearish')return '<span class="badge lean lean-dn" title="Direction leans down but timeframes are not fully confirmed'+partial+' — '+v+'">▼ Lean down</span>';
     const wr=r.wait_reason?(' ['+r.wait_reason+']'):'';
