@@ -82,19 +82,19 @@ export function buildAsterCandleEvidence({ candleSets = {}, direction, now = Dat
     : dir === 'SHORT'
       ? Boolean(frames.d1.structure?.lowerHighs && frames.d1.structure?.lowerLows && frames.h4.structure?.lowerHighs && frames.h4.structure?.lowerLows)
       : null;
-  const h1Setup = aligned('h1') && (dir === 'LONG' ? h1.rsi >= 45 && h1.rsi <= 75 : h1.rsi >= 25 && h1.rsi <= 55);
+  const h1Setup = aligned('h1') && Number.isFinite(h1.rsi);
   const m15Confirmation = aligned('m15') && (dir === 'LONG'
     ? m15.lastClosed.close > m15.previousClosed.high && m15.lastClosed.close > m15.lastClosed.open
     : m15.lastClosed.close < m15.previousClosed.low && m15.lastClosed.close < m15.lastClosed.open);
   const indicatorsValid = complete && Object.values(frames).every(f => f.indicatorsValid);
   const evidence = {
     ohlcValid: present ? complete : null,
-    marketDataFresh: complete ? Object.values(frames).every(f => f.fresh) : null,
+    marketDataFresh: present ? (complete ? Object.values(frames).every(f => f.fresh) : false) : null,
     d1Trend: frames.d1.valid ? aligned('d1') : null,
     h4Trend: frames.h4.valid ? aligned('h4') : null,
     h1Setup: frames.h1.valid ? h1Setup : null,
     m15Confirmation: frames.m15.valid ? m15Confirmation : null,
-    indicatorsValid: complete ? indicatorsValid : null,
+    indicatorsValid: present ? (complete ? indicatorsValid : false) : null,
     structureValid: frames.d1.valid && frames.h4.valid ? structureValid : null,
     // These require independent sources not represented by OHLC bars.
     bidAskValid: null, spreadValid: null, newsValidated: null,
