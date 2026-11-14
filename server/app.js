@@ -25,7 +25,7 @@ import { makeDecision, availableEngines, newsBriefViaPerplexity, newsBriefAny } 
 import { waSend, waStatus, waRateOk } from './lib/wa.js';
 import { evaluateRisk, bossVerdict } from './lib/riskgate.js';
 import { validateAsterSignal } from './lib/astergate.js';
-import { buildAsterCandleEvidence } from './lib/asterevidence.js';
+import { buildAsterCandleEvidence, buildAsterPlanEvidence } from './lib/asterevidence.js';
 import { isTradingKilled, setTradingKilled, requireTrading } from './lib/killswitch.js';
 import { runPipeline } from './lib/pipeline/index.js';
 import { parseRss, biasFor, calendarTodayUtc, parseFfCalendar, RSS_SOURCES } from './lib/news.js';
@@ -445,23 +445,35 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
       const rawDirection = String(payload.signal || '').toUpperCase();
       const asterDirection = rawDirection === 'BUY' ? 'LONG' : rawDirection === 'SELL' ? 'SHORT' : rawDirection;
       const candleEvidence = buildAsterCandleEvidence({ candleSets, direction: asterDirection });
+      const planEvidence = buildAsterPlanEvidence({
+        direction: asterDirection, entry: payload.entry, stopLoss: payload.stop_loss,
+        tp1: payload.tp1, tp2: payload.tp2
+      });
       const aster = validateAsterSignal({
         symbol,
         direction: asterDirection,
         setupDetected: ['BUY', 'SELL', 'LONG', 'SHORT'].includes(rawDirection),
         evidence: Object.assign({}, candleEvidence.evidence, {
           symbolValid: true,
-          candleCloseConfirmed: closed.current === true
+          candleCloseConfirmed: closed.current === true,
+          stopLossValid: planEvidence.stopLossValid,
+          measuredTargetsValid: planEvidence.measuredTargetsValid
         }),
         confluence: candleEvidence.confluence,
-        rrAtTp1: Number.isFinite(Number(payload.rrr)) ? Number(payload.rrr) : null,
+        rrAtTp1: planEvidence.rrAtTp1,
         accountRiskPercent: null,
         configuredRiskLimitPercent: Number(process.env.ASTER_MAX_ACCOUNT_RISK_PERCENT)
       }, {
         minimumConfluenceScore: Number.isFinite(Number(process.env.ASTER_MIN_CONFLUENCE_SCORE))
           ? Number(process.env.ASTER_MIN_CONFLUENCE_SCORE) : 70
       });
-      payload.aster = Object.assign({}, aster, { strategyEvaluation: asterStrategyEvaluation, candleEvidence: candleEvidence.frames, evidenceSource: candleEvidence.source });
+      payload.aster = Object.assign({}, aster, {
+        strategyEvaluation: asterStrategyEvaluation,
+        candleEvidence: candleEvidence.frames,
+        planEvidence: planEvidence.diagnostics,
+        evidenceSource: candleEvidence.source,
+        unresolvedEvidence: aster.checks.filter((check) => check.status === 'UNKNOWN').map((check) => check.name)
+      });
       /* Keep the deterministic technical reading byte-for-byte compatible with
          the browser and Worker. ASTER is a separate publication decision: it
          may block publication, but must never rewrite signal/levels/wait fields. */
