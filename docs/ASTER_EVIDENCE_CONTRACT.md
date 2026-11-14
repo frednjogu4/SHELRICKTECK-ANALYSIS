@@ -2,7 +2,7 @@
 
 ## Purpose
 
-ASTER is a deterministic, read-only pre-publication validation gate. It may allow a result to be presented for manual review only when every mandatory check is verified. It never authorizes or places real trades.
+ASTER is a deterministic, read-only pre-publication validation gate. It may allow a result to be presented for manual review only when every mandatory check is verified. It never authorizes or places real trades or orders.
 
 ## Evidence currently derived from candle data
 
@@ -50,8 +50,8 @@ Do not treat browser-submitted values, an AI-generated summary, heuristic headli
 - The weighted confluence score cannot override a failed or unknown mandatory check.
 - A directional technical reading is not a validated signal.
 - The only positive ASTER outcome is READY FOR MANUAL REVIEW.
-- executionAuthorized must remain false. Real-money execution is outside this gate and remains disabled.
+- `executionAuthorized` remains false. Real-money execution is outside this gate and remains disabled.
 
 ## Verification status
 
-Unit and API tests have been added for candle evidence, missing evidence, malformed candles, plan geometry, RR recomputation, and evidence-gap explanations. They have not been run in this work session.
+Unit and API tests cover candle evidence, missing evidence, malformed and stale candles, plan geometry, RR recomputation, and evidence-gap explanations. They have not been run in this work session.
