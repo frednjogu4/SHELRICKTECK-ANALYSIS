@@ -299,18 +299,43 @@ export function createCandleClient({
     pump();
   }
 
-  /** Candles for a Deriv market code. Resolves with at least one validated candle or rejects with a CandleError. */
-  function fetchCandlesByCode(code, granularity = 60, count = 120) {
+  /**
+   * Candles for a Deriv market code. Resolves with at least one validated candle or rejects with a CandleError.
+   *
+   * Deriv counts back in time, not in candles. Asked for `count` candles up
+   * to `latest`, it returns the candles that started within the last
+   * `count * granularity` seconds. Hours in which the market was closed are
+   * part of that time and hold no candles, so after a weekend the answer is
+   * shorter than `count`: on Saturday 14 November 2026, 600 candles of
+   * EUR/USD were asked for and 526 (5 minutes), 468 (15 minutes), 440
+   * (1 hour) and 431 (4 hours) came back, the oldest of them cut off at the
+   * second the look-back began. That is the request every caller gets
+   * without options.
+   *
+   * With `acrossClosures` the request names the beginning of the feed's
+   * history as its start. Deriv then returns the newest `count` candles
+   * there are, however long ago the oldest started, each of them whole: 600
+   * on all four timeframes at the same moment. `adjust_start_time` makes a
+   * closed market end with the last candle before its close.
+   *
+   * @param {object}  [options]
+   * @param {boolean} [options.acrossClosures]  the newest `count` candles, reaching back across closed hours
+   */
+  function fetchCandlesByCode(code, granularity = 60, count = 120, { acrossClosures = false } = {}) {
     const dsym = String(code || '');
     const g = Number(granularity), n = Number(count);
     if (!CODE_RE.test(dsym)) return Promise.reject(new CandleError('invalid', 'Invalid Deriv market code.'));
     if (!GRANULARITIES.includes(g) || !Number.isInteger(n) || n < 1 || n > 1000) return Promise.reject(new CandleError('invalid', 'Invalid Deriv candle request.'));
-    const key = dsym + '|' + g + '|' + n;
+    /* The two kinds of request are different series: neither is handed out in place of the other. */
+    const key = dsym + '|' + g + '|' + n + (acrossClosures ? '|across' : '');
     const hit = cache.get(key);
     if (hit && now() - hit.at < ttlFor(g) && sameCandle(hit.at, now(), g)) return Promise.resolve(hit.candles);
     if (inFlight.has(key)) return inFlight.get(key);
+    const payload = acrossClosures
+      ? { ticks_history: dsym, adjust_start_time: 1, count: n, end: 'latest', start: 1, style: 'candles', granularity: g }
+      : { ticks_history: dsym, count: n, end: 'latest', style: 'candles', granularity: g };
     const promise = new Promise((resolve, reject) => {
-      enqueue({ payload: { ticks_history: dsym, count: n, end: 'latest', style: 'candles', granularity: g }, resolve, reject, attempts: 0, timer: null, reqId: 0 });
+      enqueue({ payload, resolve, reject, attempts: 0, timer: null, reqId: 0 });
     }).then((candles) => {
       cache.delete(key);
       cache.set(key, { at: now(), candles });
@@ -321,11 +346,11 @@ export function createCandleClient({
     return promise;
   }
 
-  /** Candles for one of the built-in AURUM symbols (EUR/USD, VOL 75, ...). */
-  function fetchCandles(symbol, granularity = 60, count = 120) {
+  /** Candles for one of the built-in AURUM symbols (EUR/USD, VOL 75, ...). `options` as for fetchCandlesByCode. */
+  function fetchCandles(symbol, granularity = 60, count = 120, options = {}) {
     const code = DERIV_CODE_MAP[symbol];
     if (!code) return Promise.reject(new CandleError('unmapped', 'No verified Deriv candle mapping for ' + symbol + '.'));
-    return fetchCandlesByCode(code, granularity, count);
+    return fetchCandlesByCode(code, granularity, count, options);
   }
 
   /** Counters for diagnostics. Holds no market data and nothing that identifies a person. */

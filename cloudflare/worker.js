@@ -310,11 +310,16 @@ function createReadOnlyWorker({
     return calendarKept;
   }
 
-  async function fetchCandlesByCode(code, granularity, count) {
-    const key = 'c:' + code + ':' + granularity + ':' + count;
+  /* Deriv counts back in time: without a start it answers with the candles of the last `count` candle
+     widths, which are fewer than `count` when the market was closed in that time. `acrossClosures`
+     asks for the newest `count` candles there are (see fetchCandlesByCode in src/derivhistory.js). */
+  async function fetchCandlesByCode(code, granularity, count, acrossClosures = false) {
+    const key = 'c:' + code + ':' + granularity + ':' + count + (acrossClosures ? ':across' : '');
     const hit = cache.get(key);
     if (hit && now() - hit.at < (granularity <= 60 ? 20000 : granularity <= 300 ? 60000 : 300000)) return hit.value;
-    const message = await derivRequest({ ticks_history: code, count, end: 'latest', style: 'candles', granularity, req_id: 1 }, 10000);
+    const message = await derivRequest(acrossClosures
+      ? { ticks_history: code, adjust_start_time: 1, count, end: 'latest', start: 1, style: 'candles', granularity, req_id: 1 }
+      : { ticks_history: code, count, end: 'latest', style: 'candles', granularity, req_id: 1 }, 10000);
     const candles = normalizeCandles(message && (message.candles || message.history?.candles));
     if (!candles.length) throw new Error('Deriv returned no usable candles');
     cache.set(key, { at: now(), value: candles });
@@ -613,7 +618,7 @@ function createReadOnlyWorker({
         if (!symbol || !DERIV_CODE_MAP[symbol]) return responseJson({ error: 'unknown_symbol' }, 400);
         if (![60, 180, 300, 900, 1800, 3600, 14400, 86400].includes(granularity)) return responseJson({ error: 'bad_granularity' }, 400);
         try {
-          const candles = freshCandles(await fetchCandlesByCode(DERIV_CODE_MAP[symbol], granularity, count), 30);
+          const candles = freshCandles(await fetchCandlesByCode(DERIV_CODE_MAP[symbol], granularity, count, body.across_closures === true), 30);
           return responseJson({ source: 'deriv-public', instrument: symbol, granularity, count: candles.length, fetched_at: new Date(now()).toISOString(), candles });
         } catch (e) {
           logProviderFailure(url.pathname, e, startedAt, symbol);

@@ -83,6 +83,12 @@ before(async () => {
  *   yahooBars     options for the Yahoo fixture: { newestBarAt, session } (see market-fixtures.mjs)
  *   candleRows    (code, granularity, count, nowSec) => rows, a market written by the test in place of
  *                 the built-in series, whose candles do not keep their content from one minute to the next
+ *   closedHours   (epochSec) => true while the market was closed. Deriv then answers the way its public
+ *                 feed does (measured on 14 November 2026): closed hours hold no candles; a request
+ *                 without `start` gets the candles of the last `count` candle widths of time, so fewer
+ *                 than `count` when the market was closed in that time; a request with `start: 1` gets
+ *                 the newest `count` candles there are. Without `closedHours` the market never closes
+ *                 and both kinds of request get `count` candles.
  *   rewriteScan   (results) => results, applied to what the Worker answers to /api/signals/scan:
  *                 lets a test hand the page a reading of its own writing for one market
  *   scanTakesMs   page time that passes while a scan request is answered
@@ -108,14 +114,29 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcSer
   let closing = false;
 
   const symbolOf = (code) => DERIV_INSTRUMENTS.find((instrument) => instrument.deriv === code);
-  const rows = (code, granularity, count) => (state.candleRows
-    ? state.candleRows(code, granularity, count, nowSec() + clock.shiftMs / 1000 - state.candleAgeSec)
-    : derivCandleRows({ count, granularity, end: nowSec() + clock.shiftMs / 1000 - state.candleAgeSec, base: basePriceFor(code) }));
+  /* What Deriv answers to a candle request. `request` is the request as it was sent; the PC's own
+     feed passes none, as server/lib/derivfeed.js sends no `start`. */
+  const rows = (code, granularity, count, request = {}) => {
+    const end = nowSec() + clock.shiftMs / 1000 - state.candleAgeSec;
+    /* The newest `width` candle widths of time, one candle in each. */
+    const span = (width) => (state.candleRows
+      ? state.candleRows(code, granularity, width, end)
+      : derivCandleRows({ count: width, granularity, end, base: basePriceFor(code) }));
+    if (!state.closedHours) return span(count);
+    const traded = (list) => list.filter((row) => !state.closedHours(row.epoch));
+    if (Number(request.start) !== 1) return traded(span(count));
+    /* From the start of the feed's history: reach back until `count` candles are found. */
+    let width = count, found = traded(span(width));
+    while (found.length < count && width < count * 16) { width *= 2; found = traded(span(width)); }
+    return found.slice(-count);
+  };
+  /* Every candle request the Worker sent to Deriv, as sent. */
+  const cloudAsked = [];
 
   const worker = createReadOnlyWorker({
     requestImpl: async (payload) => {
       if (state.cloudDeriv !== 'ok') throw new Error('Deriv public WebSocket connection failed');
-      if (payload.ticks_history) return { candles: rows(payload.ticks_history, payload.granularity, payload.count) };
+      if (payload.ticks_history) { cloudAsked.push(payload); return { candles: rows(payload.ticks_history, payload.granularity, payload.count, payload) }; }
       throw new Error('unexpected Deriv request in this test');
     },
     fetchImpl: async (address) => {
@@ -229,7 +250,7 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcSer
             if (state.browserDeriv === 'down') { this.readyState = 3; if (this.onclose) this.onclose({ code: 1006 }); return; }
             if (!this.onmessage) return;
             if (message.style === 'candles') {
-              const candles = state.browserDeriv === 'empty' ? [] : rows(message.ticks_history, message.granularity, message.count);
+              const candles = state.browserDeriv === 'empty' ? [] : rows(message.ticks_history, message.granularity, message.count, message);
               this.onmessage({ data: JSON.stringify({ msg_type: 'candles', req_id: message.req_id, echo_req: message, candles }) });
             } else if (state.ticks && message.subscribe === 1) {
               this.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: message.ticks_history, quote: basePriceFor(message.ticks_history), epoch: nowSec() } }) });
@@ -325,7 +346,7 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcSer
     return { text: el ? el.textContent : '', ready: !!liveLine, live: describe(liveLine), daily: describe(dailyLine), hasDaily: !!dailyLine };
   };
   return {
-    window, doc, state, requests, sockets, problems, warnings, click, waitFor, row, panel,
+    window, doc, state, requests, sockets, cloudAsked, problems, warnings, click, waitFor, row, panel,
     /** Moves the page's clock forward. */
     advanceClock(ms) { clock.shiftMs += ms; },
     /** Runs the page's repeating timers of the given period once, as if the period had passed. */
@@ -452,6 +473,9 @@ test('one candle connection serves the whole table: the browser opens two socket
     assert.ok(prices.sent.every((message) => message.subscribe === 1 && message.style === 'ticks'), 'the first socket is the price stream');
     assert.ok(candles.sent.length >= 60, 'the second socket carried the 20 x 3 candle requests');
     assert.ok(candles.sent.every((message) => message.style === 'candles' && message.subscribe === undefined), 'history requests only, no subscription');
+    /* The readings are asked for as they always were: 120 candles up to the latest, without a start.
+       Only the Market state view asks for candles across closed hours. */
+    for (const message of candles.sent) assert.deepEqual(Object.keys(message).sort(), ['count', 'end', 'granularity', 'req_id', 'style', 'ticks_history'], message.ticks_history + ' ' + message.granularity);
     const asked = new Set(candles.sent.map((message) => message.ticks_history + '|' + message.granularity));
     for (const instrument of DERIV_INSTRUMENTS) for (const granularity of [60, 300, 3600]) {
       assert.ok(asked.has(instrument.deriv + '|' + granularity), `${instrument.s} ${granularity}s was requested as ${instrument.deriv}`);
@@ -2989,14 +3013,14 @@ test('the same candles at the same moment: the PC app (Exness not connected) and
 /* ---------------------------------------------------------------- Market state: a description on four timeframes */
 
 /* A market that swings. Its price is a function of time (three waves), so a candle keeps its content whenever
-   it is asked for and the four timeframes are views of one market. `frozenAt` makes it a closed market: its
-   newest candle stays the one of that moment, however far the page's clock moves on. */
-function swingingMarket({ frozenAt = 0, without = [] } = {}) {
+   and in whatever number it is asked for, and the four timeframes are views of one market. It never closes
+   by itself: a test that needs closed hours names them in `world.closedHours`. */
+function swingingMarket({ without = [] } = {}) {
   const anchor = nowSec();
   const priceAt = (base, t) => { const x = (t - anchor) / 60; return base * (1 + 0.004 * Math.sin(x / 190) + 0.0015 * Math.sin(x / 23) + 0.0006 * Math.sin(x / 3.1)); };
   return (code, granularity, count, now) => {
     if (without.includes(granularity)) return [];
-    const end = frozenAt || now, base = basePriceFor(code), newest = Math.floor(end / granularity) * granularity;
+    const end = now, base = basePriceFor(code), newest = Math.floor(end / granularity) * granularity;
     return Array.from({ length: count }, (_unused, i) => {
       const start = newest - (count - 1 - i) * granularity, stop = Math.min(start + granularity, end);
       let high = -Infinity, low = Infinity;
@@ -3170,15 +3194,20 @@ test('Market state: a timeframe that cannot be read has no state, and nothing is
     assert.deepEqual(h4.badges, []);
     assert.deepEqual(view.cards.slice(1).map((card) => card.state), ['ok', 'ok', 'ok']);
     assert.equal(view.summary, view.market + ' \u00b7 No summary: H4 has no state.');
-    /* This browser got nothing for that series, so the AURUM cloud was asked for it, and for it alone. */
-    assert.deepEqual(historyCalls(app).map((request) => [request.body.sym, request.body.granularity, request.body.count]), [[view.market, 14400, STATE_CANDLES]]);
+    /* This browser got nothing for that series, so the AURUM cloud was asked for it, and for it alone:
+       600 candles across closed hours, as this browser had asked Deriv. */
+    assert.deepEqual(historyCalls(app).map((request) => request.body), [{ sym: view.market, granularity: 14400, count: STATE_CANDLES, across_closures: true }]);
     assert.deepEqual(app.problems.filter((line) => !/Failed to load resource|502/.test(line)), []);
   } finally { await app.close(); }
 });
 
 test('Market state on a closed market: every state is the one at its last close, the page says so, and only the 5-minute series is asked again', async () => {
-  const frozenAt = nowSec() - 2 * 86400 - 1234;
-  const app = await bootApp({ world: { candleRows: swingingMarket({ frozenAt }) } });
+  /* Closed for two days, the way Deriv shows a closed market: no candle has started since. A request
+     without a start would get the candles of the last 600 candle widths of time, which on the 5-minute
+     chart is 50 hours and holds under two hours of trading here: no state. (A moment that is no
+     5-minute boundary, so the candle it lies in is the newest on every timeframe.) */
+  const twoDaysAgo = nowSec() - 2 * 86400 - 1234, frozenAt = twoDaysAgo % 300 === 0 ? twoDaysAgo + 1 : twoDaysAgo;
+  const app = await bootApp({ world: { candleRows: swingingMarket(), closedHours: (epoch) => epoch >= frozenAt } });
   try {
     const clock = pageClock(app);
     clock.settle();
@@ -3210,6 +3239,66 @@ test('Market state on a closed market: every state is the one at its last close,
     assert.equal(stateView(app).feed, 'Market closed or feed paused');
     assert.deepEqual(stateView(app).cards.map((card) => withoutDate(card.asOf)), view.cards.map((card) => withoutDate(card.asOf)), 'the states are still the ones of the last close');
     assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+/* The market was closed for 54 hours and opened again six hours ago: a Monday morning. Of the last 600
+   candle widths of time the 5-minute chart then holds six hours of candles and the 15-minute chart 96
+   hours: 72 and 384 candles, both under the 400 a state needs. */
+function weekendBehind() {
+  const reopened = nowSec() - 6 * 3600, shut = reopened - 54 * 3600;
+  return (epoch) => epoch >= shut && epoch < reopened;
+}
+const STATE_REQUEST = { adjust_start_time: 1, count: STATE_CANDLES, end: 'latest', start: 1, style: 'candles' };
+
+test('Market state after a weekend: the closed hours hold no candles, and every timeframe is still read from 600 of them', async () => {
+  const app = await bootApp({ world: { candleRows: swingingMarket(), closedHours: weekendBehind() } });
+  try {
+    const clock = pageClock(app);
+    clock.settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read');
+    const now = clock.now(), view = stateView(app);
+    assert.deepEqual(view.cards.map((card) => [card.timeframe, card.state]), [['h4', 'ok'], ['h1', 'ok'], ['m15', 'ok'], ['m5', 'ok']]);
+    for (const card of view.cards) assert.ok(card.asOf.endsWith(' \u00b7 ' + (STATE_CANDLES - 1) + ' finished candles'), card.timeframe + ': ' + card.asOf);
+    /* The market is open: the two short timeframes are as of the close just past. */
+    for (const timeframe of STATE_TIMEFRAMES.slice(0, 2)) {
+      const card = view.cards.find((entry) => entry.timeframe === timeframe.key);
+      assert.equal(card.asOf, 'as of ' + eatMoment(Math.floor(now / timeframe.seconds) * timeframe.seconds, now) + ' EAT \u00b7 ' + (STATE_CANDLES - 1) + ' finished candles', timeframe.label);
+    }
+    assert.match(view.feed, /^Feed current \u00b7 read \d\d:\d\d EAT$/);
+    assert.ok(!view.summary.includes('No summary'), view.summary);
+
+    /* Each of the four requests names the start of the feed's history, so Deriv counts candles and not hours. */
+    const sent = app.sockets.flatMap((socket) => socket.sent).filter((message) => message.count === STATE_CANDLES);
+    assert.deepEqual(sent.map(({ req_id: _id, ticks_history: _code, granularity: _width, ...rest }) => rest), STATE_TIMEFRAMES.map(() => STATE_REQUEST));
+    assert.deepEqual(sent.map((message) => message.granularity).sort((a, b) => a - b), STATE_TIMEFRAMES.map((timeframe) => timeframe.seconds));
+    assert.equal(historyCalls(app).length, 0, 'this browser read them itself');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Market state after a weekend, read through the AURUM cloud: the cloud asks Deriv across the closed hours as well', async () => {
+  const app = await bootApp({ world: { browserDeriv: 'down', candleRows: swingingMarket(), closedHours: weekendBehind() } });
+  try {
+    pageClock(app).settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read through the cloud');
+    const view = stateView(app);
+    assert.deepEqual(view.cards.map((card) => [card.timeframe, card.state]), [['h4', 'ok'], ['h1', 'ok'], ['m15', 'ok'], ['m5', 'ok']]);
+    for (const card of view.cards) {
+      assert.ok(card.asOf.endsWith(' \u00b7 ' + (STATE_CANDLES - 1) + ' finished candles'), card.timeframe + ': ' + card.asOf);
+      assert.ok(card.text.includes('Deriv public candles, read through the AURUM API'), card.timeframe);
+    }
+    /* The page tells the cloud which kind of series it wants, and the cloud asks Deriv for that kind. */
+    assert.deepEqual(historyCalls(app).map((request) => request.body).sort((a, b) => a.granularity - b.granularity),
+      STATE_TIMEFRAMES.map((timeframe) => ({ sym: view.market, granularity: timeframe.seconds, count: STATE_CANDLES, across_closures: true })));
+    const asked = app.cloudAsked.filter((payload) => payload.count === STATE_CANDLES);
+    assert.deepEqual(asked.map(({ req_id: _id, ticks_history: _code, granularity: _width, ...rest }) => rest), STATE_TIMEFRAMES.map(() => STATE_REQUEST));
+    /* Every other request of the cloud is as it was: no start. */
+    for (const payload of app.cloudAsked.filter((entry) => entry.count !== STATE_CANDLES)) assert.equal(payload.start, undefined, payload.ticks_history + ' ' + payload.granularity);
   } finally { await app.close(); }
 });
 

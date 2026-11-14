@@ -170,6 +170,56 @@ test('identical requests share one fetch; a series is reused for its period and 
   } finally { client.close(); }
 });
 
+test('acrossClosures: the request names the start of the feed\'s history, and its series is kept apart from the plain one', async () => {
+  const clock = manualClock();
+  const { FakeSocket, sockets } = answeringFeed();
+  const client = createCandleClient({ WebSocketImpl: FakeSocket, now: clock.now, lingerMs: 5 });
+  const sent = () => sockets.flatMap((socket) => socket.sent).map(({ req_id: _id, ...request }) => request);
+  try {
+    const plain = await client.fetchCandles('EUR/USD', 900, 600);
+    const across = await client.fetchCandles('EUR/USD', 900, 600, { acrossClosures: true });
+    /* Without a start Deriv counts back in time, with `start: 1` in candles: two different series. */
+    assert.deepEqual(sent(), [
+      { ticks_history: 'frxEURUSD', count: 600, end: 'latest', style: 'candles', granularity: 900 },
+      { ticks_history: 'frxEURUSD', adjust_start_time: 1, count: 600, end: 'latest', start: 1, style: 'candles', granularity: 900 }
+    ]);
+    assert.notEqual(across, plain, 'neither is handed out in place of the other');
+
+    /* Each is reused for its own kind of request; no options, empty options and `false` are the plain one. */
+    assert.equal(await client.fetchCandles('EUR/USD', 900, 600, { acrossClosures: true }), across);
+    assert.equal(await client.fetchCandles('EUR/USD', 900, 600), plain);
+    assert.equal(await client.fetchCandles('EUR/USD', 900, 600, {}), plain);
+    assert.equal(await client.fetchCandles('EUR/USD', 900, 600, { acrossClosures: false }), plain);
+    assert.equal(sent().length, 2);
+
+    await client.fetchCandlesByCode('frxXAUUSD', 14400, 600, { acrossClosures: true });
+    assert.deepEqual(sent()[2], { ticks_history: 'frxXAUUSD', adjust_start_time: 1, count: 600, end: 'latest', start: 1, style: 'candles', granularity: 14400 });
+  } finally { client.close(); }
+});
+
+test('the Cloudflare Worker passes the same choice on to Deriv, only for `across_closures: true`, and keeps the two series apart', async () => {
+  const asked = [];
+  const worker = createReadOnlyWorker({
+    requestImpl: async (payload) => { asked.push(payload); return { candles: derivCandleRows({ count: payload.count, granularity: payload.granularity, base: 1.2 }) }; },
+    fetchImpl: async () => { throw new Error('not used'); }, log: () => {}
+  });
+  const allow = { limit: async () => ({ success: true }) };
+  const post = (body) => worker.fetch(new Request('https://aurum-test.workers.dev/api/history/candles', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+  }), { AURUM_SIGNAL_LIMITER: allow, AURUM_MARKET_LIMITER: allow });
+  const plain = { ticks_history: 'frxEURUSD', count: 600, end: 'latest', style: 'candles', granularity: 900, req_id: 1 };
+  const across = { ticks_history: 'frxEURUSD', adjust_start_time: 1, count: 600, end: 'latest', start: 1, style: 'candles', granularity: 900, req_id: 1 };
+
+  assert.equal((await post({ sym: 'EUR/USD', granularity: 900, count: 600 })).status, 200);
+  assert.deepEqual(asked, [plain]);
+  assert.equal((await post({ sym: 'EUR/USD', granularity: 900, count: 600, across_closures: true })).status, 200);
+  assert.deepEqual(asked, [plain, across], 'the copy of the plain series is not handed out for it');
+  /* Anything but `true` is the plain request, answered here from the copy kept of it. */
+  for (const value of ['true', 1, 'yes', null, false]) assert.equal((await post({ sym: 'EUR/USD', granularity: 900, count: 600, across_closures: value })).status, 200);
+  assert.equal((await post({ sym: 'EUR/USD', granularity: 900, count: 600, across_closures: true })).status, 200);
+  assert.deepEqual(asked, [plain, across], 'and each kind is served from its own copy afterwards');
+});
+
 test('a copy taken before a candle closed is not reused after the close, however young it is', async () => {
   /* The manual clock starts on a full hour. */
   const clock = manualClock();
