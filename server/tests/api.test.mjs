@@ -107,6 +107,11 @@ test('analyze returns the full decision contract (technical, no keys, live stub 
   assert.equal(d.candle_close, STUB_CLOSE);
   assert.equal(d.candle_current, true);
   assert.equal(d.latest_candle_time, STUB_CLOSE + 120);
+  assert.equal(d.aster.evidenceSource, 'closed OHLC candles; quote/news/account evidence not supplied');
+  assert.equal(d.aster.checks.find(c => c.name === 'd1Trend').status, 'PASSED');
+  assert.equal(d.aster.checks.find(c => c.name === 'bidAskValid').status, 'UNKNOWN');
+  assert.equal(d.aster.checks.find(c => c.name === 'newsValidated').status, 'UNKNOWN');
+  assert.equal(d.aster.checks.find(c => c.name === 'positionSizingValid').status, 'UNKNOWN');
 });
 
 test('ASTER publication block never rewrites the deterministic PC technical reading', async () => {
