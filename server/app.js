@@ -25,6 +25,7 @@ import { makeDecision, availableEngines, newsBriefViaPerplexity, newsBriefAny } 
 import { waSend, waStatus, waRateOk } from './lib/wa.js';
 import { evaluateRisk, bossVerdict } from './lib/riskgate.js';
 import { validateAsterSignal } from './lib/astergate.js';
+import { buildAsterCandleEvidence } from './lib/asterevidence.js';
 import { isTradingKilled, setTradingKilled, requireTrading } from './lib/killswitch.js';
 import { runPipeline } from './lib/pipeline/index.js';
 import { parseRss, biasFor, calendarTodayUtc, parseFfCalendar, RSS_SOURCES } from './lib/news.js';
@@ -75,11 +76,13 @@ function cleanSuppliedCandleSets(supplied) {
       return { time, open, high, low, close, volume: Number(c.volume) || 0 };
     }).sort((a, b) => a.time - b.time);
     const last = clean[clean.length - 1].time, now = Date.now() / 1000;
-    const maxAge = tf === 'm1' ? 180 : tf === 'm5' ? 660 : 7260;
+    const maxAge = ({ m1: 180, m5: 660, h1: 7260, m15: 1860, h4: 28860, d1: 172860 })[tf] || 7260;
     if (last > now + 30 || now - last > maxAge) throw new Error('Exness ' + tf + ' candles are stale.');
     return clean;
   };
-  return { m1: cleanRows(supplied.m1, 'm1'), m5: cleanRows(supplied.m5, 'm5'), h1: cleanRows(supplied.h1, 'h1') };
+  const out = { m1: cleanRows(supplied.m1, 'm1'), m5: cleanRows(supplied.m5, 'm5'), h1: cleanRows(supplied.h1, 'h1') };
+  for (const tf of ['m15', 'h4', 'd1']) if (supplied[tf] != null) out[tf] = cleanRows(supplied[tf], tf);
+  return out;
 }
 
 /* A market that has only just resumed after a pause (the weekend, the daily break of gold): the
@@ -335,6 +338,21 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         }
       }
 
+      /* ASTER independently requests its D1/H4/H1/M15 evidence. If a timeframe
+         is unavailable, it remains absent and the evidence builder reports UNKNOWN;
+         the technical PC-parity reading continues to use its original M1/M5/H1 sets. */
+      if (dataSource === 'Deriv public candles') {
+        const extra = await Promise.allSettled([
+          dataFeed.fetchCandles(symbol, GRAN['15m'], 120),
+          dataFeed.fetchCandles(symbol, GRAN['4h'], 120),
+          dataFeed.fetchCandles(symbol, GRAN['1d'], 120)
+        ]);
+        for (const [i, tf] of ['m15', 'h4', 'd1'].entries()) {
+          const result = extra[i];
+          if (result.status === 'fulfilled' && Array.isArray(result.value)) candleSets[tf] = result.value;
+        }
+      }
+
       /* One reading per finished 5-minute candle, the same one the Cloudflare site and the
          browser make from these candles (lib/closedcandles.js). `latest_candle_time` stays the
          newest 1-minute candle the feed returned, finished or not: it says whether the feed is
@@ -425,26 +443,18 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         };
       }
       const rawDirection = String(payload.signal || '').toUpperCase();
+      const rawDirection = String(payload.signal || '').toUpperCase();
+      const asterDirection = rawDirection === 'BUY' ? 'LONG' : rawDirection === 'SELL' ? 'SHORT' : rawDirection;
+      const candleEvidence = buildAsterCandleEvidence({ candleSets, direction: asterDirection });
       const aster = validateAsterSignal({
         symbol,
-        direction: rawDirection === 'BUY' ? 'LONG' : rawDirection === 'SELL' ? 'SHORT' : rawDirection,
-        setupDetected: rawDirection === 'BUY' || rawDirection === 'SELL' || rawDirection === 'LONG' || rawDirection === 'SHORT',
-        evidence: {
+        direction: asterDirection,
+        setupDetected: ['BUY', 'SELL', 'LONG', 'SHORT'].includes(rawDirection),
+        evidence: Object.assign({}, candleEvidence.evidence, {
           symbolValid: true,
-          marketDataFresh: det.ok === true,
-          candleCloseConfirmed: closed.current === true,
-          /* The current analysis path does not yet provide these independently verified inputs.
-             They remain UNKNOWN rather than being inferred from a directional indicator. */
-          bidAskValid: null, spreadValid: null, ohlcValid: null,
-          d1Trend: null, h4Trend: null, h1Setup: null, m15Confirmation: null,
-          indicatorsValid: null, structureValid: null, newsValidated: null,
-          stopLossValid: null, measuredTargetsValid: null, positionSizingValid: null,
-          brokerConstraintsValid: null, riskWithinLimit: null
-        },
-        confluence: {
-          htfStructure: null, priceAction: null, setupQuality: null,
-          indicators: null, entryConfirmation: null, newsConditions: null
-        },
+          candleCloseConfirmed: closed.current === true
+        }),
+        confluence: candleEvidence.confluence,
         rrAtTp1: Number.isFinite(Number(payload.rrr)) ? Number(payload.rrr) : null,
         accountRiskPercent: null,
         configuredRiskLimitPercent: Number(process.env.ASTER_MAX_ACCOUNT_RISK_PERCENT)
@@ -452,7 +462,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         minimumConfluenceScore: Number.isFinite(Number(process.env.ASTER_MIN_CONFLUENCE_SCORE))
           ? Number(process.env.ASTER_MIN_CONFLUENCE_SCORE) : 70
       });
-      payload.aster = Object.assign({}, aster, { strategyEvaluation: asterStrategyEvaluation });
+      payload.aster = Object.assign({}, aster, { strategyEvaluation: asterStrategyEvaluation, candleEvidence: candleEvidence.frames, evidenceSource: candleEvidence.source });
       /* Keep the deterministic technical reading byte-for-byte compatible with
          the browser and Worker. ASTER is a separate publication decision: it
          may block publication, but must never rewrite signal/levels/wait fields. */
