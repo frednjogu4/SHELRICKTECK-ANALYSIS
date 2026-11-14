@@ -63,3 +63,14 @@ test('ASTER exposes weighted confluence breakdown', () => {
   assert.equal(r.score, 90);
   assert.equal(r.scoreBreakdown.newsConditions, 0);
 });
+
+test('ASTER treats null RR and account risk as UNKNOWN, never as zero risk', () => {
+  const r = validateAsterSignal({
+    ...valid, rrAtTp1: null, accountRiskPercent: null,
+    configuredRiskLimitPercent: 1
+  });
+  assert.equal(r.status, 'VALIDATING');
+  assert.ok(r.rejectionReasons.includes('minimum_rr_at_tp1: UNKNOWN'));
+  assert.ok(r.rejectionReasons.includes('account_risk_percent: UNKNOWN'));
+  assert.equal(r.publishable, false);
+});
