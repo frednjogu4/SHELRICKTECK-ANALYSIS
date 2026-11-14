@@ -4202,6 +4202,7 @@ function updateGoldConfidence(){
   const d=state.goldAnalysis;
   if(measured)measured.textContent=d?measuredText(goldReading(d)):'';
   if(!d){el.textContent='—';if(bar)bar.style.width='0%';if(note)note.textContent='No current analysis, so no score is shown.';return;}
+  if(!isAsterPublishable(goldReading(d))){el.textContent='WITHHELD';if(bar)bar.style.width='0%';if(note)note.textContent='ASTER has not approved publication; the technical confidence score is withheld.';if(measured)measured.textContent='';return;}
   const live=goldRuns.read(GOLD_SYMBOL,goldLivePrice()),score=live?live.confidence:(Number(d.confidence)||0),dig=goldDisplayDigits();
   el.textContent=score+'%';if(bar)bar.style.width=score+'%';
   if(note)note.textContent=live?describeLive(live,{time:timeStr,price:v=>fmtPx(v,dig)}):'No confirmed direction, so there is no entry, stop or target to follow.';
@@ -4209,6 +4210,7 @@ function updateGoldConfidence(){
 function goldDisplayDigits(){const raw=goldMt5Quote&&goldMt5Quote.digits,d=raw==null?NaN:Number(raw);return Number.isInteger(d)&&d>=0&&d<=8?d:((bySym[GOLD_SYMBOL]&&bySym[GOLD_SYMBOL].d)||2);}
 function goldFmtLevel(value,digits){return value==null||!Number.isFinite(Number(value))?'—':fmtPx(Number(value),digits);}
 function goldSignalMessage(d){
+  if(!isAsterPublishable(goldReading(d)))return 'Gold/USD technical candidate withheld by ASTER. Required evidence has not passed validation. No directional signal or levels are published.';
   const dig=goldDisplayDigits();
   return '🟡 Gold/USD technical signal · '+d.signal+'\nSource: '+(d.data_source||'verified live candles')+'\nMTF: '+(d.mtf_signal||'—')+' · quality score '+(d.confidence??'—')+' (not probability of profit)\nEntry '+goldFmtLevel(d.entry,dig)+' · SL '+goldFmtLevel(d.stop_loss,dig)+' · TP1 '+goldFmtLevel(d.tp1,dig)+' · TP2 '+goldFmtLevel(d.tp2,dig)+'\n'+(d.signal==='WAIT'?'No 2-of-3 confirmation; stand aside.':'Levels are technical references only; verify spread, news and broker terms.')+'\nAnalysis-only; no order was sent.'+(measuredLine(goldReading(d))?'\n'+measuredLine(goldReading(d)):'');
 }
@@ -4216,22 +4218,30 @@ function goldSignalMessage(d){
 function goldReading(d){return Object.assign({},d,{symbol:GOLD_SYMBOL});}
 function renderGoldAnalysis(){
   const d=state.goldAnalysis;if(!d)return;
-  const dig=goldDisplayDigits();
-  const badge=$('#goldSignalBadge');badge.textContent=d.signal||'WAIT';badge.className='badge '+(d.signal==='BUY'?'buy':d.signal==='SELL'?'sell':'gray');
-  $('#goldSignal').textContent=d.signal||'WAIT';$('#goldSignal').className=d.signal==='BUY'?'up':d.signal==='SELL'?'down':'faint';
-  $('#goldVotes').textContent='Analysis timeframe: M1 / M5 / H1 · '+(d.mtf_signal||'no confirmation')+' · '+(d.data_source||'');
+  const approved=isAsterPublishable(goldReading(d)),directional=isDirectionalCandidate(d),dig=goldDisplayDigits();
+  const badge=$('#goldSignalBadge');
+  badge.textContent=directional&&!approved?'ASTER BLOCKED':(d.signal||'WAIT');
+  badge.className='badge '+(approved?(d.signal==='BUY'?'buy':d.signal==='SELL'?'sell':'gray'):'gray');
+  $('#goldSignal').textContent=directional&&!approved?'WITHHELD':(d.signal||'WAIT');
+  $('#goldSignal').className=approved&&d.signal==='BUY'?'up':approved&&d.signal==='SELL'?'down':'faint';
+  $('#goldVotes').textContent=approved?'Analysis timeframe: M1 / M5 / H1 · '+(d.mtf_signal||'no confirmation')+' · '+(d.data_source||''):'ASTER publication blocked · timeframe direction is withheld until required evidence passes.';
   $('#goldSignalUpdated').textContent=(closeText(d)?'Reading of the '+closeText(d)+' candle close · checked ':'Last analysis: ')+(d.updatedAt?new Date(d.updatedAt).toLocaleString():'—')+(closeText(d)?' · the next reading comes with the next 5-minute close; no fixed expiry.':' · review after next M5 candle; no fixed expiry.');
-  $('#goldEntry').textContent=goldFmtLevel(d.entry,dig);$('#goldSL').textContent=goldFmtLevel(d.stop_loss,dig);$('#goldTP1').textContent=goldFmtLevel(d.tp1,dig);$('#goldTP2').textContent=goldFmtLevel(d.tp2,dig);
-  const votes=String(d.votes||'');const buy=(votes.match(/\bBUY\b/g)||[]).length,sell=(votes.match(/\bSELL\b/g)||[]).length,wait=(votes.match(/\bWAIT\b/g)||[]).length;
-  $('#goldPressure').textContent='Timeframe vote tally: '+buy+' BUY · '+sell+' SELL · '+wait+' WAIT. '+(d.signal==='BUY'?'Bullish technical confluence is confirmed.':d.signal==='SELL'?'Bearish technical confluence is confirmed.':'No directional majority; the monitor stands aside.');
-  $('#goldRationale').textContent=d.rationale||d.technical_summary||'No rationale returned.';
+  $('#goldEntry').textContent=approved?goldFmtLevel(d.entry,dig):'—';$('#goldSL').textContent=approved?goldFmtLevel(d.stop_loss,dig):'—';$('#goldTP1').textContent=approved?goldFmtLevel(d.tp1,dig):'—';$('#goldTP2').textContent=approved?goldFmtLevel(d.tp2,dig):'—';
+  const votes=String(d.votes||''),buy=(votes.match(/\\bBUY\\b/g)||[]).length,sell=(votes.match(/\\bSELL\\b/g)||[]).length,wait=(votes.match(/\\bWAIT\\b/g)||[]).length;
+  $('#goldPressure').textContent=approved?'Timeframe vote tally: '+buy+' BUY · '+sell+' SELL · '+wait+' WAIT. '+(d.signal==='BUY'?'Bullish technical confluence is confirmed.':d.signal==='SELL'?'Bearish technical confluence is confirmed.':'No directional majority; the monitor stands aside.'):'Technical vote details are withheld because ASTER has not approved publication.';
+  $('#goldRationale').textContent=approved?(d.rationale||d.technical_summary||'No rationale returned.'):'Technical rationale is withheld until ASTER validates all mandatory evidence.';
   $('#goldRisks').innerHTML=(Array.isArray(d.risks)?d.risks:[]).map(x=>'<li>'+escHtml(x)+'</li>').join('')||'<li>No additional risk detail supplied.</li>';
-  const key=[d.signal,d.mtf_signal,d.data_source].join('|');
+  const key=[approved?d.signal:'ASTER_BLOCKED',d.mtf_signal,d.data_source].join('|');
   if(goldLastNotifiedKey!==key){
-    const first=!goldLastNotifiedKey;goldLastNotifiedKey=key;try{localStorage.setItem('aurum_gold_signal_last',key);}catch(_e){}
-    const msg=goldSignalMessage(d);
-    notify(first?'Gold/USD signal ready':'Gold/USD signal changed',msg,{tag:'gold-signal-'+key,kind:d.signal==='BUY'?'ok':d.signal==='SELL'?'warn':''});
-    pushWA(msg);
+    const previous=goldLastNotifiedKey;
+    goldLastNotifiedKey=key;try{localStorage.setItem('aurum_gold_signal_last',key);}catch(_e){}
+    if(approved&&directional){
+      const msg=goldSignalMessage(d);
+      notify(previous?'Gold/USD signal changed':'Gold/USD signal ready',msg,{tag:'gold-signal-'+key,kind:d.signal==='BUY'?'ok':'warn'});
+      pushWA(msg);
+    }else if(!approved&&(String(previous||'').startsWith('BUY|')||String(previous||'').startsWith('SELL|'))){
+      notify('Gold/USD candidate withheld','ASTER no longer approves publication. The technical candidate and its levels are withheld until all required checks pass.',{tag:'gold-signal-aster-blocked',kind:'warn'});
+    }
   }
 }
 function goldAnalysisNoticeText(){
