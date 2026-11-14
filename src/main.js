@@ -1396,7 +1396,7 @@ function renderSignals(){
     card.querySelector('.sig-chart').onclick=()=>openSignalSymbol(sig.symbol);
     const useButton=card.querySelector('.sig-use');
     useButton.hidden=!(approved&&directional);
-    if(approved)useButton.onclick=()=>{
+    if(approved&&directional)useButton.onclick=()=>{
       state.side=sig.signal==='SELL'?'SELL':'BUY';
       $('#orderSL').value=sig.stop_loss!=null?Number(sig.stop_loss).toFixed(I.d):'';
       $('#orderTP').value=sig.tp1!=null?Number(sig.tp1).toFixed(I.d):'';
@@ -1681,8 +1681,10 @@ function signalBadge(I){
     if(isDirectionalCandidate(r)&&!isAsterPublishable(r))return '<span class="badge gray" title="Technical candidate withheld because ASTER has not approved publication.">ASTER blocked</span>';
     if(r.signal==='BUY')  return '<span class="badge buy" title="ASTER approved · MTF confirmed — '+v+'">Buy '+liveScoreHtml(r,'span')+'</span>';
     if(r.signal==='SELL') return '<span class="badge sell" title="ASTER approved · MTF confirmed — '+v+'">Sell '+liveScoreHtml(r,'span')+'</span>';
-    if(r.bias==='bullish') return '<span class="badge lean lean-up" title="Direction leans up but timeframes are not fully confirmed'+partial+' — '+v+'">▲ Lean up</span>';
-    if(r.bias==='bearish')return '<span class="badge lean lean-dn" title="Direction leans down but timeframes are not fully confirmed'+partial+' — '+v+'">▼ Lean down</span>';
+    if(r.bias==='bullish'&&!isAsterPublishable(r))return '<span class="badge gray" title="Directional bias is withheld until ASTER validates the evidence.">ASTER pending</span>';
+    if(r.bias==='bullish') return '<span class="badge lean lean-up" title="ASTER approved · direction leans up but timeframes are not fully confirmed'+partial+' — '+v+'">▲ Lean up</span>';
+    if(r.bias==='bearish'&&!isAsterPublishable(r))return '<span class="badge gray" title="Directional bias is withheld until ASTER validates the evidence.">ASTER pending</span>';
+    if(r.bias==='bearish')return '<span class="badge lean lean-dn" title="ASTER approved · direction leans down but timeframes are not fully confirmed'+partial+' — '+v+'">▼ Lean down</span>';
     const wr=r.wait_reason?(' ['+r.wait_reason+']'):'';
     const short={MTF_CONFLICT:'TFs disagree',MTF_NO_ALIGNMENT:'no alignment',MTF_LEAN_NOT_CONFIRMED:'lean unconfirmed',INSUFFICIENT_CANDLES:'data short',STALE_DATA:'stale feed',FEED_ERROR:'feed error'}[r.wait_reason]||'';
     return '<span class="badge wait" title="Wait'+wr+partial+' — '+(r.wait_detail||('no alignment — '+v))+'">Wait'+(short?' · '+escHtml(short):'')+'</span>';
@@ -5134,11 +5136,15 @@ function emitSniperSignalAlerts(qualified,allResults){
   for(const symbol of Object.keys(active)){
     if(!subscribed.has(symbol)){delete active[symbol];continue;}
     const setup=active[symbol],r=latest.get(symbol);if(!r||started.has(symbol))continue;
-    if(!isAsterPublishable(r)||!isDirectionalCandidate(r)){
+    if(setup.closed){if(!current.has(symbol))delete active[symbol];continue;}
+    if(!isAsterPublishable(r)){
       notify('Sniper setup withdrawn · '+symbol,'The latest ASTER gate no longer approves this candidate. Entry/exit monitoring has stopped; no order was placed.',{tag:'sniper-'+symbol+'-aster-blocked',kind:'warn'});
       delete active[symbol];continue;
     }
-    if(setup.closed){if(!current.has(symbol))delete active[symbol];continue;}
+    if(!isDirectionalCandidate(r)){
+      notify('Sniper setup withdrawn · '+symbol,'The latest reading is no longer directional. Entry/exit monitoring has stopped; no order was placed.',{tag:'sniper-'+symbol+'-withdrawn',kind:'warn'});
+      delete active[symbol];continue;
+    }
     const isDaily=String(r.tf||'').toUpperCase().includes('DAILY')||String(r.data_source||r.source||'').startsWith('Yahoo Finance');
     const price=Number(r.price);
     if(!isDaily&&price>0){
