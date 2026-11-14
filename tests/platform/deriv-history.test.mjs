@@ -9,12 +9,23 @@
  *
  * The socket is a stand-in driven by the test; nothing reaches the network.
  * Candle values are fixtures and no assertion looks at an analysis result.
+ *
+ * Deriv is asked for candles in three places: by this client, by the
+ * Cloudflare Worker and by the PC's server (server/lib/derivfeed.js). The
+ * tests about the two kinds of request (with and without a start) cover all
+ * three, so that the Market state view reads the same candles everywhere.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createCandleClient, normalizeCandles, isFeedFailure, ttlFor, sameCandle, CandleError, GRANULARITIES } from '../../src/derivhistory.js';
 import { DERIV_PUBLIC_URL } from '../../src/marketdata.js';
 import { createReadOnlyWorker } from '../../cloudflare/worker.js';
+import { createCandleFetcher } from '../../server/lib/derivfeed.js';
+import { createApp, configFromEnv } from '../../server/app.js';
+import { createStore } from '../../server/lib/store.js';
 import { DERIV_INSTRUMENTS, INDEX_INSTRUMENTS, derivCandleRows, basePriceFor, fakeSocketClass, nowSec } from './helpers/market-fixtures.mjs';
 
 const SCAN_GRANULARITIES = [60, 300, 3600];
@@ -218,6 +229,118 @@ test('the Cloudflare Worker passes the same choice on to Deriv, only for `across
   for (const value of ['true', 1, 'yes', null, false]) assert.equal((await post({ sym: 'EUR/USD', granularity: 900, count: 600, across_closures: value })).status, 200);
   assert.equal((await post({ sym: 'EUR/USD', granularity: 900, count: 600, across_closures: true })).status, 200);
   assert.deepEqual(asked, [plain, across], 'and each kind is served from its own copy afterwards');
+});
+
+test('the PC\'s candle feed sends the same two requests, and its series across closed hours is kept apart from the plain one', async () => {
+  const asked = [];
+  const feed = createCandleFetcher({
+    requestImpl: async (payload) => { asked.push(payload); return derivCandleRows({ count: payload.count, granularity: payload.granularity, base: 1.2 }); }
+  });
+  const plainRequest = { ticks_history: 'frxEURUSD', count: 600, end: 'latest', style: 'candles', granularity: 900 };
+  const acrossRequest = { ticks_history: 'frxEURUSD', adjust_start_time: 1, count: 600, end: 'latest', start: 1, style: 'candles', granularity: 900 };
+
+  /* The fourth argument is the feed's number of retries; `undefined` leaves it at its own. */
+  const plain = await feed.fetchCandles('EUR/USD', 900, 600);
+  const across = await feed.fetchCandles('EUR/USD', 900, 600, undefined, { acrossClosures: true });
+  assert.deepEqual(asked, [plainRequest, acrossRequest]);
+  assert.equal(plain.length, 600);
+  assert.equal(across.length, 600);
+  assert.notEqual(across, plain, 'neither is handed out in place of the other');
+
+  /* Each is reused for its own kind of request. No options, empty options and anything but `true` are the plain one. */
+  assert.equal(await feed.fetchCandles('EUR/USD', 900, 600, undefined, { acrossClosures: true }), across);
+  for (const options of [undefined, {}, { acrossClosures: false }, { acrossClosures: 'true' }, { acrossClosures: 1 }, null]) {
+    assert.equal(await feed.fetchCandles('EUR/USD', 900, 600, 2, options), plain, JSON.stringify(options));
+  }
+  assert.equal(asked.length, 2);
+
+  /* By market code, as the market catalogue asks. */
+  await feed.fetchCandlesByCode('frxXAUUSD', 14400, 600, 0, { acrossClosures: true });
+  assert.deepEqual(asked[2], { ticks_history: 'frxXAUUSD', adjust_start_time: 1, count: 600, end: 'latest', start: 1, style: 'candles', granularity: 14400 });
+});
+
+test('the PC\'s candle feed never answers one kind of request with the other: when the request across closed hours fails, it fails', async () => {
+  const asked = [];
+  const feed = createCandleFetcher({
+    requestImpl: async (payload) => {
+      asked.push(payload);
+      if (payload.start === 1) throw new Error('deriv timeout');
+      return derivCandleRows({ count: payload.count, granularity: payload.granularity, base: 1.2 });
+    }
+  });
+  const plain = await feed.fetchCandles('EUR/USD', 900, 600);
+  await assert.rejects(() => feed.fetchCandles('EUR/USD', 900, 600, 0, { acrossClosures: true }), /deriv timeout/);
+  /* The failure is not kept either: the next request of that kind asks Deriv again, and the plain copy is untouched. */
+  await assert.rejects(() => feed.fetchCandles('EUR/USD', 900, 600, 0, { acrossClosures: true }), /deriv timeout/);
+  assert.deepEqual(asked.map((payload) => payload.start), [undefined, 1, 1]);
+  assert.equal(await feed.fetchCandles('EUR/USD', 900, 600), plain);
+});
+
+/** The PC's server (server/app.js) with the given candle feed, listening on this machine for one test. */
+async function pcServerWith(feed) {
+  const folder = mkdtempSync(join(tmpdir(), 'aurum-pc-history-'));
+  const config = Object.assign(configFromEnv({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', PERPLEXITY_API_KEY: '' }), { apiKey: '', backtestRatePerMin: 1000 });
+  const listening = createApp({ store: createStore(join(folder, 'store.json')), config, feed }).listen(0, '127.0.0.1');
+  await new Promise((resolve) => listening.once('listening', resolve));
+  const address = 'http://127.0.0.1:' + listening.address().port + '/api/history/candles';
+  return {
+    post: (body) => fetch(address, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+    async close() {
+      await new Promise((resolve) => { listening.close(resolve); if (typeof listening.closeAllConnections === 'function') listening.closeAllConnections(); });
+      rmSync(folder, { recursive: true, force: true });
+    }
+  };
+}
+
+test('the PC\'s server passes the same choice on to Deriv, only for `across_closures: true`, and keeps the two series apart', async () => {
+  const asked = [];
+  const fetcher = createCandleFetcher({
+    requestImpl: async (payload) => { asked.push(payload); return derivCandleRows({ count: payload.count, granularity: payload.granularity, base: 1.2 }); }
+  });
+  const pc = await pcServerWith({ symbols: { 'EUR/USD': 'frxEURUSD' }, fetchCandles: fetcher.fetchCandles });
+  /* The same two requests as the Worker's, without its req_id: the PC's feed opens a connection per request. */
+  const plain = { ticks_history: 'frxEURUSD', count: 600, end: 'latest', style: 'candles', granularity: 900 };
+  const across = { ticks_history: 'frxEURUSD', adjust_start_time: 1, count: 600, end: 'latest', start: 1, style: 'candles', granularity: 900 };
+  try {
+    const first = await pc.post({ sym: 'EUR/USD', granularity: 900, count: 600 });
+    assert.equal(first.status, 200);
+    assert.deepEqual(asked, [plain]);
+    const second = await pc.post({ sym: 'EUR/USD', granularity: 900, count: 600, across_closures: true });
+    assert.equal(second.status, 200);
+    assert.deepEqual(asked, [plain, across], 'the copy of the plain series is not handed out for it');
+    const answer = await second.json();
+    assert.equal(answer.source, 'deriv-public');
+    assert.equal(answer.instrument, 'EUR/USD');
+    assert.equal(answer.count, 600);
+    assert.equal(answer.candles.length, 600);
+    /* Anything but `true` is the plain request, answered here from the copy kept of it. */
+    for (const value of ['true', 1, 'yes', null, false]) assert.equal((await pc.post({ sym: 'EUR/USD', granularity: 900, count: 600, across_closures: value })).status, 200, String(value));
+    assert.equal((await pc.post({ sym: 'EUR/USD', granularity: 900, count: 600, across_closures: true })).status, 200);
+    assert.deepEqual(asked, [plain, across], 'and each kind is served from its own copy afterwards');
+  } finally { await pc.close(); }
+});
+
+test('the PC\'s server keeps its own copy of each kind as well, and asks its feed for the plain series exactly as before', async () => {
+  /* A feed that keeps no copies, so that every call the server makes is seen. */
+  const calls = [];
+  const pc = await pcServerWith({
+    symbols: { 'EUR/USD': 'frxEURUSD' },
+    fetchCandles: async (...args) => {
+      calls.push(args);
+      return derivCandleRows({ count: args[2], granularity: args[1], base: 1.2 }).map((row) => ({ time: row.epoch, open: row.open, high: row.high, low: row.low, close: row.close, volume: 0 }));
+    }
+  });
+  try {
+    for (const body of [
+      { sym: 'EUR/USD', granularity: 900, count: 600 },
+      { sym: 'EUR/USD', granularity: 900, count: 600, across_closures: true },
+      { sym: 'EUR/USD', granularity: 900, count: 600 },
+      { sym: 'EUR/USD', granularity: 900, count: 600, across_closures: true },
+      { sym: 'EUR/USD', granularity: 900, count: 600, across_closures: 'true' }
+    ]) assert.equal((await pc.post(body)).status, 200, JSON.stringify(body));
+    /* Three arguments for the plain series, as every feed written for this server expects; the choice comes fifth. */
+    assert.deepEqual(calls, [['EUR/USD', 900, 600], ['EUR/USD', 900, 600, undefined, { acrossClosures: true }]]);
+  } finally { await pc.close(); }
 });
 
 test('a copy taken before a candle closed is not reused after the close, however young it is', async () => {

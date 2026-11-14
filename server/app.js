@@ -929,7 +929,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
 
   /* ---- historical candles for the educational analytics (verified live feed,
          server-fetched, cached 60s; feeds the Learn/Calculator lab) ---- */
-  const histCache = new Map(); /* sym|g|count -> {at, payload} */
+  const histCache = new Map(); /* sym|g|count, with |across for the other kind of series -> {at, payload} */
   app.post('/api/history/candles', rateLimit({ max: config.backtestRatePerMin, name: 'history' }), async (req, res) => {
     try {
       const wanted = String(req.body.sym || '').toUpperCase();
@@ -938,10 +938,17 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
       const granularity = parseGranularity(req.body.granularity);
       if (!granularity) return res.status(400).json({ error: 'bad_granularity', allowed: GRANULARITIES });
       const count = parseIntInRange(req.body.count, 50, 2000, 400);
-      const key = known + '|' + granularity + '|' + count;
+      /* `across_closures: true` asks for the newest `count` candles there are, reaching back across
+         the hours in which the market was closed (the Market state view; see fetchCandlesByCode in
+         lib/derivfeed.js). Anything else is the request as it always was. The two are different
+         series, so each has its own copy. */
+      const acrossClosures = req.body.across_closures === true;
+      const key = known + '|' + granularity + '|' + count + (acrossClosures ? '|across' : '');
       const hit = histCache.get(key);
       if (hit && Date.now() - hit.at < 60000) return res.json(hit.payload);
-      const raw = await dataFeed.fetchCandles(known, granularity, count);
+      const raw = acrossClosures
+        ? await dataFeed.fetchCandles(known, granularity, count, undefined, { acrossClosures: true }) /* undefined: the feed's own number of retries */
+        : await dataFeed.fetchCandles(known, granularity, count);
       /* validate the provider response before it can be displayed (brief Phase 3.3) */
       const candles = (Array.isArray(raw) ? raw : [])
         .map((c) => ({ time: Number(c && c.time), open: Number(c && c.open), high: Number(c && c.high), low: Number(c && c.low), close: Number(c && c.close), volume: Number(c && c.volume) || 0 }))

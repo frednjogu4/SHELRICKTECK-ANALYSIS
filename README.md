@@ -797,16 +797,24 @@ one card empty the sentence above the cards says nothing. A market that
 trades round the clock gets all 600 either way (measured the same day on
 VOL 75 and BTC/USD).
 
-Two things stay as they were. The signal pages ask for 120 candles without a
-start, as before, so their readings are made from the same candles as on the
-day before this change. By the same rule they get fewer than 120 for some
-hours after a market opens (on that Saturday a request for 120 five-minute
-candles of EUR/USD brought 44); whether they should ask across closed hours
-too is a question about the signals, not about this view. And the PC's server
-asks Deriv without a start as well (`server/lib/derivfeed.js`), so in the PC
-app the cards can still be empty at the times named above; the page tells the
-server which kind it wants (`across_closures: true`), and the server does not
-act on it yet.
+The PC's server asks the same way. The page tells it which kind of series it
+wants (`across_closures: true` in the request to `/api/history/candles`, sent
+by this view only), and for that kind the server names `start: 1` to Deriv
+(`acrossClosures` in `server/lib/derivfeed.js`); the two kinds are kept as
+separate copies. It did not at first: a `server` folder whose
+`lib\derivfeed.js` does not contain the word `acrossClosures` answers the view
+with the candles of the last 600 candle widths of time, and on such a PC the
+cards can be empty at the times named above until the folder is replaced
+([Bringing the PC app up to date](#bringing-the-pc-app-up-to-date)). How to
+tell on the PC: after a weekend each card of a currency pair still says
+`599 finished candles`.
+
+One thing stays as it was, on the website and on the PC. The signal pages ask
+for 120 candles without a start, as before, so their readings are made from
+the same candles as on the day before this change. By the same rule they get
+fewer than 120 for some hours after a market opens (on that Saturday a request
+for 120 five-minute candles of EUR/USD brought 44); whether they should ask
+across closed hours too is a question about the signals, not about this view.
 
 **When it is read.** When the view is opened, when the market is changed, with
 **Read again**, and a few seconds after every 5-minute close while it stays
@@ -937,15 +945,20 @@ holds a later one (the rule of the signal pages), so on a closed market the
 last candle before the close is left out until the market opens again, and a
 chart elsewhere shows one candle more than the card was read from.
 
-Checked against Deriv's live feed once: on the website on Saturday
-14 November 2026, with the market closed, EUR/USD showed a state on all four
-timeframes and the note that the market is closed. That look is how the short
-answers described under "Which 600" were found. Not checked: the view while
-a market is open, the view in the PC app on Windows, and its figures against
-a TradingView chart of the same candles. The tests use written candles; their
-stand-in for Deriv returns as many candles as were asked for unless a test
-gives the market closed hours, and then it answers the two kinds of request
-the way Deriv did on that day.
+Checked against Deriv's live feed twice, both times on the website on
+Saturday 14 November 2026 with the market closed. At the first look EUR/USD
+showed a state on all four timeframes and the note that the market is closed,
+read from 430 (4 hours), 440, 468 and 528 (5 minutes) finished candles: that
+look is how the short answers described under "Which 600" were found. At the
+second, after the request had been changed, each of the four cards said
+`599 finished candles`. Not checked: the view while a market is open, its
+figures against a TradingView chart of the same candles, and the view in the
+PC app on Windows. The PC's server sends Deriv the request the website sends,
+and the tests run that server, but against written candles: its request has
+not been sent to Deriv from a PC. The tests use written candles throughout;
+their stand-in for Deriv returns as many candles as were asked for unless a
+test gives the market closed hours, and then it answers the two kinds of
+request the way Deriv did on that day.
 
 ### Before any deployment
 

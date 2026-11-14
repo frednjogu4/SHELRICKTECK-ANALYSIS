@@ -92,10 +92,22 @@ export function createCandleFetcher({ requestImpl = derivRequest, maxActive = 4,
   }
   function stats() { return { cached: cache.size, inFlight: inFlight.size, active }; }
 
-  async function fetchCandlesByCode(code, granularity = 300, count = 120, retries = 2) {
+  /* Deriv counts back in time, not in candles. Asked for `count` candles up to `latest`, it answers
+     with the candles that started within the last `count * granularity` seconds. Hours in which the
+     market was closed are part of that time and hold no candles, so after a weekend the answer is
+     shorter than `count` (measured on Saturday 14 November 2026: 468 of 600 fifteen-minute candles
+     of EUR/USD). That is the request every caller gets without options.
+
+     With `acrossClosures: true` the request names the beginning of the feed's history as its start.
+     Deriv then answers with the newest `count` candles there are, however long ago the oldest
+     started (600 of 600 at the same moment), and `adjust_start_time` makes a closed market end with
+     the last candle before its close. The two are different series: each has its own copy here.
+     The website sends the same two requests (src/derivhistory.js, cloudflare/worker.js). */
+  async function fetchCandlesByCode(code, granularity = 300, count = 120, retries = 2, options = {}) {
     const dsym = String(code || '');
     if (!/^[A-Za-z0-9_]{2,32}$/.test(dsym)) throw new Error('invalid Deriv market code');
-    const key = dsym + '|' + granularity + '|' + count;
+    const acrossClosures = !!options && options.acrossClosures === true;
+    const key = dsym + '|' + granularity + '|' + count + (acrossClosures ? '|across' : '');
     const ttl = ttlOverrideMs != null ? ttlOverrideMs : ttlFor(granularity);
     const hit = cache.get(key);
     if (hit && Date.now() - hit.t < ttl) return hit.candles;
@@ -104,7 +116,9 @@ export function createCandleFetcher({ requestImpl = derivRequest, maxActive = 4,
       let raw = null, lastErr = null;
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-          raw = await requestImpl({ ticks_history: dsym, count, end: 'latest', style: 'candles', granularity });
+          raw = await requestImpl(acrossClosures
+            ? { ticks_history: dsym, adjust_start_time: 1, count, end: 'latest', start: 1, style: 'candles', granularity }
+            : { ticks_history: dsym, count, end: 'latest', style: 'candles', granularity });
           if (Array.isArray(raw) && raw.length) break;
           lastErr = new Error('empty candles for ' + dsym);
         } catch (e) { lastErr = e; }
@@ -120,10 +134,11 @@ export function createCandleFetcher({ requestImpl = derivRequest, maxActive = 4,
     inFlight.set(key, p);
     return p;
   }
-  async function fetchCandles(sym, granularity = 300, count = 120, retries = 2) {
+  /* `options` as for fetchCandlesByCode. */
+  async function fetchCandles(sym, granularity = 300, count = 120, retries = 2, options = {}) {
     const dsym = DERIV_SYMBOLS[sym];
     if (!dsym) throw new Error('no live feed for ' + sym);
-    return fetchCandlesByCode(dsym, granularity, count, retries);
+    return fetchCandlesByCode(dsym, granularity, count, retries, options);
   }
   return { fetchCandles, fetchCandlesByCode, stats, clear: () => { cache.clear(); inFlight.clear(); } };
 }

@@ -98,7 +98,8 @@ before(async () => {
  * and `pcApi(path, body)` answers its API requests with { status, body }.
  * `pcServer: true` puts the PC's own server behind the page instead: the real
  * server/app.js, whose candle feed is the one of `world` (cloudDeriv 'down'
- * makes it fail). What that server fetches itself is answered here as well:
+ * makes it fail; `closedHours` shortens its answers the way Deriv's are, unless
+ * the server asks across closed hours). What that server fetches itself is answered here as well:
  * Yahoo's daily series with the fixture the Worker gets, every other address
  * (the news sources) as offline. That server answers any number of requests a
  * minute here; `pcConfig` sets its configuration back for a test about its limits.
@@ -115,7 +116,8 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcSer
 
   const symbolOf = (code) => DERIV_INSTRUMENTS.find((instrument) => instrument.deriv === code);
   /* What Deriv answers to a candle request. `request` is the request as it was sent; the PC's own
-     feed passes none, as server/lib/derivfeed.js sends no `start`. */
+     feed names what server/lib/derivfeed.js would send: `start: 1` when the server asks across
+     closed hours, no start otherwise. */
   const rows = (code, granularity, count, request = {}) => {
     const end = nowSec() + clock.shiftMs / 1000 - state.candleAgeSec;
     /* The newest `width` candle widths of time, one candle in each. */
@@ -132,6 +134,8 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcSer
   };
   /* Every candle request the Worker sent to Deriv, as sent. */
   const cloudAsked = [];
+  /* Every candle request the PC's server made of its feed: { symbol, granularity, count, acrossClosures }. */
+  const pcAsked = [];
 
   const worker = createReadOnlyWorker({
     requestImpl: async (payload) => {
@@ -173,9 +177,11 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcSer
     const notInThisTest = async () => { throw new Error('not part of this test'); };
     const feed = {
       symbols: Object.fromEntries(DERIV_INSTRUMENTS.map((instrument) => [instrument.s, instrument.deriv])),
-      fetchCandles: async (symbol, granularity, count) => {
+      fetchCandles: async (symbol, granularity, count, _retries, options) => {
         if (state.cloudDeriv !== 'ok') throw new Error('deriv timeout');
-        return rows(DERIV_INSTRUMENTS.find((instrument) => instrument.s === symbol).deriv, granularity, count)
+        const acrossClosures = !!options && options.acrossClosures === true;
+        pcAsked.push({ symbol, granularity, count, acrossClosures });
+        return rows(DERIV_INSTRUMENTS.find((instrument) => instrument.s === symbol).deriv, granularity, count, acrossClosures ? { start: 1 } : {})
           .map((c) => ({ time: c.epoch, open: +c.open, high: +c.high, low: +c.low, close: +c.close, volume: 0 }));
       },
       fetchCandlesByCode: notInThisTest, fetchActiveSymbols: notInThisTest, fetchTickByCode: notInThisTest
@@ -346,7 +352,7 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcSer
     return { text: el ? el.textContent : '', ready: !!liveLine, live: describe(liveLine), daily: describe(dailyLine), hasDaily: !!dailyLine };
   };
   return {
-    window, doc, state, requests, sockets, cloudAsked, problems, warnings, click, waitFor, row, panel,
+    window, doc, state, requests, sockets, cloudAsked, pcAsked, problems, warnings, click, waitFor, row, panel,
     /** Moves the page's clock forward. */
     advanceClock(ms) { clock.shiftMs += ms; },
     /** Runs the page's repeating timers of the given period once, as if the period had passed. */
@@ -3329,6 +3335,32 @@ test('Market state in the PC app: the same view, with the candles read through t
     await app.waitFor(() => historyCalls(app).length > STATE_TIMEFRAMES.length && stateSettled(app), 'the look after the 5-minute close');
     assert.deepEqual(historyCalls(app).slice(STATE_TIMEFRAMES.length).map((request) => [request.body.sym, request.body.granularity, request.status]), [[view.market, 300, 200]]);
     assert.deepEqual(stateView(app).cards.map((card) => card.state), ['ok', 'ok', 'ok', 'ok']);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Market state after a weekend in the PC app: the PC\'s server asks for the candles across the closed hours as well', async () => {
+  const app = await bootApp({ origin: PC_ORIGIN, pcServer: true, world: { candleRows: swingingMarket(), closedHours: weekendBehind() } });
+  try {
+    pageClock(app).settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read through the PC\'s server');
+    const view = stateView(app);
+    assert.deepEqual(view.cards.map((card) => [card.timeframe, card.state]), [['h4', 'ok'], ['h1', 'ok'], ['m15', 'ok'], ['m5', 'ok']]);
+    for (const card of view.cards) {
+      assert.ok(card.asOf.endsWith(' \u00b7 ' + (STATE_CANDLES - 1) + ' finished candles'), card.timeframe + ': ' + card.asOf);
+      assert.ok(card.text.includes('Deriv public candles, read through the AURUM API'), card.timeframe);
+    }
+    assert.ok(!view.summary.includes('No summary'), view.summary);
+    /* The page tells the PC's server which kind of series it wants, and the server asks its feed for that kind. */
+    assert.deepEqual(historyCalls(app).map((request) => request.body).sort((a, b) => a.granularity - b.granularity),
+      STATE_TIMEFRAMES.map((timeframe) => ({ sym: view.market, granularity: timeframe.seconds, count: STATE_CANDLES, across_closures: true })));
+    assert.deepEqual(app.pcAsked.filter((request) => request.count === STATE_CANDLES).sort((a, b) => a.granularity - b.granularity),
+      STATE_TIMEFRAMES.map((timeframe) => ({ symbol: view.market, granularity: timeframe.seconds, count: STATE_CANDLES, acrossClosures: true })));
+    /* Every other request of the PC's server is as it was: no start. */
+    for (const request of app.pcAsked.filter((entry) => entry.count !== STATE_CANDLES)) assert.equal(request.acrossClosures, false, request.symbol + ' ' + request.granularity);
+    assert.deepEqual(stateRequests(app), [], 'the PC app does not open its own candle connection for this view');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
