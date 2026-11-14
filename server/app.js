@@ -65,7 +65,7 @@ export function configFromEnv(env = process.env) {
 }
 
 const SYM_RE = /^[A-Z0-9/._ -]{1,24}$/;
-const GRAN = { '1m': 60, '5m': 300, '1h': 3600 };
+const GRAN = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
 function cleanSuppliedCandleSets(supplied) {
   if (!supplied || typeof supplied !== 'object') throw new Error('Candle sets are required.');
   const cleanRows = (rows, tf) => {
