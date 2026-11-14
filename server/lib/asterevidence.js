@@ -120,3 +120,41 @@ export function buildAsterCandleEvidence({ candleSets = {}, direction, now = Dat
     source: 'closed OHLC candles; quote/news/account evidence not supplied'
   };
 }
+
+
+/**
+ * Validate the geometry of the proposed analysis levels. This is a structural
+ * check only: it does not establish execution price, broker stop distance,
+ * tick value, slippage, or account-specific risk.
+ */
+export function buildAsterPlanEvidence({ direction, entry, stopLoss, tp1, tp2 } = {}) {
+  const dir = String(direction || '').toUpperCase();
+  const values = [entry, stopLoss, tp1, tp2].map(Number);
+  const supplied = values.every((v) => Number.isFinite(v) && v > 0);
+  if (!supplied || !['LONG', 'SHORT'].includes(dir)) {
+    return {
+      stopLossValid: supplied && !['LONG', 'SHORT'].includes(dir) ? false : null,
+      measuredTargetsValid: null,
+      rrAtTp1: null,
+      diagnostics: { supplied, directionValid: ['LONG', 'SHORT'].includes(dir) }
+    };
+  }
+  const [e, sl, first, second] = values;
+  const stopValid = dir === 'LONG' ? sl < e : sl > e;
+  const targetOrderValid = dir === 'LONG'
+    ? first > e && second > first
+    : first < e && second < first;
+  const risk = Math.abs(e - sl);
+  const reward = Math.abs(first - e);
+  const rrAtTp1 = risk > 0 ? reward / risk : null;
+  const rrValid = Number.isFinite(rrAtTp1) && rrAtTp1 >= 2;
+  return {
+    stopLossValid: stopValid,
+    measuredTargetsValid: stopValid && targetOrderValid && rrValid,
+    rrAtTp1: Number.isFinite(rrAtTp1) ? Math.round(rrAtTp1 * 100) / 100 : null,
+    diagnostics: {
+      supplied: true, directionValid: true, stopValid,
+      targetOrderValid, rrValid, riskDistance: risk, rewardDistance: reward
+    }
+  };
+}
