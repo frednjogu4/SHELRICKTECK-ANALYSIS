@@ -24,6 +24,7 @@ import { closedCandleSets } from './lib/closedcandles.js';
 import { makeDecision, availableEngines, newsBriefViaPerplexity, newsBriefAny } from './lib/decision.js';
 import { waSend, waStatus, waRateOk } from './lib/wa.js';
 import { evaluateRisk, bossVerdict } from './lib/riskgate.js';
+import { validateAsterSignal } from './lib/astergate.js';
 import { isTradingKilled, setTradingKilled, requireTrading } from './lib/killswitch.js';
 import { runPipeline } from './lib/pipeline/index.js';
 import { parseRss, biasFor, calendarTodayUtc, parseFfCalendar, RSS_SOURCES } from './lib/news.js';
@@ -293,7 +294,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
 
       /* 5-min active-signal cache (cost guard) unless force */
       const active = store.getActive(user, symbol);
-      if (!technicalOnly && active && !force) {
+      if (!technicalOnly && active && active.payload?.aster?.publishable === true && !force) {
         return res.json(Object.assign({}, active.payload, { meta: Object.assign({}, active.meta, { cached: true }) }));
       }
 
@@ -374,9 +375,47 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         candle_close: closed.close,
         candle_current: closed.current
       });
+      const rawDirection = String(payload.signal || '').toUpperCase();
+      const aster = validateAsterSignal({
+        symbol,
+        direction: rawDirection === 'BUY' ? 'LONG' : rawDirection === 'SELL' ? 'SHORT' : rawDirection,
+        setupDetected: rawDirection === 'BUY' || rawDirection === 'SELL' || rawDirection === 'LONG' || rawDirection === 'SHORT',
+        evidence: {
+          symbolValid: true,
+          marketDataFresh: det.ok === true,
+          candleCloseConfirmed: closed.current === true,
+          /* The current analysis path does not yet provide these independently verified inputs.
+             They remain UNKNOWN rather than being inferred from a directional indicator. */
+          bidAskValid: null, spreadValid: null, ohlcValid: null,
+          d1Trend: null, h4Trend: null, h1Setup: null, m15Confirmation: null,
+          indicatorsValid: null, structureValid: null, newsValidated: null,
+          stopLossValid: null, measuredTargetsValid: null, positionSizingValid: null,
+          brokerConstraintsValid: null, riskWithinLimit: null
+        },
+        confluence: {
+          htfStructure: null, priceAction: null, setupQuality: null,
+          indicators: null, entryConfirmation: null, newsConditions: null
+        },
+        rrAtTp1: Number.isFinite(Number(payload.rrr)) ? Number(payload.rrr) : null,
+        accountRiskPercent: null,
+        configuredRiskLimitPercent: Number(process.env.ASTER_MAX_ACCOUNT_RISK_PERCENT)
+      }, {
+        minimumConfluenceScore: Number.isFinite(Number(process.env.ASTER_MIN_CONFLUENCE_SCORE))
+          ? Number(process.env.ASTER_MIN_CONFLUENCE_SCORE) : 70
+      });
+      payload.aster = aster;
+      if (!aster.publishable) {
+        payload.signal = 'WAIT';
+        payload.wait_reason = 'aster_validation_blocked';
+        payload.wait_detail = aster.finalInstruction;
+      }
+      log.info('aster.validation', {
+        symbol, status: aster.status, score: aster.score,
+        checks: aster.checks, rejectionReasons: aster.rejectionReasons
+      });
       const fullMeta = Object.assign({}, meta, { cached: false, at: new Date().toISOString() });
 
-      if (!technicalOnly) store.addSignal({
+      if (!technicalOnly && aster.publishable) store.addSignal({
         user, symbol, timeframe: 'MTF',
         signal: payload.signal, confidence: payload.confidence, entry: payload.entry,
         active: true, created_at: new Date().toISOString(),
