@@ -107,6 +107,7 @@ function resumedAnswer(symbol, source, latestCandleTime, closed) {
 
 export function createApp({ store, config, feed, derivConn = null, patDeps = {} }) {
   const app = express();
+  const analysisCache = new Map();
   app.set('trust proxy', 1); /* behind the Railway LB: req.ip = real client so per-IP rate limits key correctly */
   const dataFeed = feed || { fetchCandles: derivFetchCandles, symbols: DERIV_SYMBOLS };
   const marketFeed = feed || { fetchCandlesByCode: derivFetchCandlesByCode, fetchActiveSymbols: derivFetchActiveSymbols, fetchTickByCode: derivFetchTickByCode };
@@ -292,10 +293,19 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
       const user = userOf(req);
       const reqKeys = aiKeysOf(req);
 
-      /* 5-min active-signal cache (cost guard) unless force */
+      /* Five-minute technical-analysis cache (cost guard) unless force. A cached
+         technical reading may carry an ASTER publication block; it is never
+         relabelled as validated or made active merely because it is cached. */
       const active = store.getActive(user, symbol);
       if (!technicalOnly && active && active.payload?.aster?.publishable === true && !force) {
         return res.json(Object.assign({}, active.payload, { meta: Object.assign({}, active.meta, { cached: true }) }));
+      }
+      const analysisCacheKey = user + ':' + symbol;
+      const cachedAnalysis = analysisCache.get(analysisCacheKey);
+      if (!technicalOnly && !force && cachedAnalysis && Date.now() - cachedAnalysis.at < 5 * 60 * 1000) {
+        return res.json(Object.assign({}, cachedAnalysis.payload, {
+          meta: Object.assign({}, cachedAnalysis.payload.meta, { cached: true })
+        }));
       }
 
       /* Prefer validated read-only MT5 candles supplied by the local browser bridge.
@@ -456,12 +466,18 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
       });
       const fullMeta = Object.assign({}, meta, { cached: false, at: new Date().toISOString() });
 
-      if (!technicalOnly && aster.publishable) store.addSignal({
-        user, symbol, timeframe: 'MTF',
-        signal: payload.signal, confidence: payload.confidence, entry: payload.entry,
-        active: true, created_at: new Date().toISOString(),
-        model: payload.model, meta: fullMeta, payload
-      });
+      if (!technicalOnly) {
+        /* Keep an auditable history row for every completed analysis, but only
+           ASTER-approved results are active. The cache stores the technical
+           reading separately so fail-closed publication does not break parity. */
+        store.addSignal({
+          user, symbol, timeframe: 'MTF',
+          signal: payload.signal, confidence: payload.confidence, entry: payload.entry,
+          active: aster.publishable, created_at: new Date().toISOString(),
+          model: payload.model, meta: fullMeta, payload
+        });
+        analysisCache.set(analysisCacheKey, { at: Date.now(), payload: Object.assign({}, payload, { meta: fullMeta }) });
+      }
 
       res.json(Object.assign({}, payload, { meta: fullMeta }));
     } catch (e) {
