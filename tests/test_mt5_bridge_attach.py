@@ -6,6 +6,12 @@ error" the way the package documents it: every call sets it, a successful call
 sets (1, 'Success'). That is the behaviour that made the bridge report
 "code 1: Success" for a failed attach: it read the error after mt5.shutdown().
 
+The stand-in also takes an account in initialize(), as MetaQuotes documents it
+(login, password, server; MetaTrader 5 then logs in to that account as part of
+the attach), and answers "Authorization failed" (-6) to an attach without an
+account while it is logged in to none. How a real terminal behaves there has
+not been run: the package and the terminal exist for Windows only.
+
 Nothing here contacts a terminal, a broker or the network, and nothing asserts
 what a trade analysis concludes.
 """
@@ -27,6 +33,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_DIR = ROOT / "bridge"
 LOGIN = {"login": 123456, "password": "local-only", "server": "Exness-MT5Trial"}
+ACCOUNT = (LOGIN["login"], LOGIN["password"], LOGIN["server"])
+NOT_LOGGED_IN = (-6, "Terminal: Authorization failed")
 
 
 class StandInTerminal(types.ModuleType):
@@ -46,6 +54,9 @@ class StandInTerminal(types.ModuleType):
         self.while_initializing = None  # called from inside initialize(), as a second request would arrive
         self.account = None
         self.takes_timeout = True  # False: a connector whose initialize() has no 'timeout' keyword
+        self.accepts = None  # (login, password, server): initialize() logs in when it is given exactly this account
+        self.account_error = None  # the answer to an account that is not accepted (None: init_error)
+        self.account_raises = None  # raised by an initialize() that is given an account
 
     def initialize(self, *args, **kwargs):
         self.calls.append(("initialize", args, kwargs))
@@ -58,6 +69,14 @@ class StandInTerminal(types.ModuleType):
         if self.init_ok:
             self.attached, self.error = True, (1, "Success")
             return True
+        if "login" in kwargs:  # MetaTrader 5 is asked to log in to this account as part of the attach
+            if self.account_raises is not None:
+                raise self.account_raises
+            if (kwargs["login"], kwargs.get("password"), kwargs.get("server")) == self.accepts:
+                self.attached, self.error = True, (1, "Success")
+                return True
+            self.error = self.account_error or self.init_error
+            return False
         self.error = self.init_error
         return False
 
@@ -145,8 +164,10 @@ class AttachMessageTests(unittest.TestCase):
         terminal.while_initializing = None
         terminal.account = None
         terminal.takes_timeout = True
+        terminal.accepts = terminal.account_error = terminal.account_raises = None
         terminal.calls = []
         bridge._ATTACH_FAILURE = None
+        bridge._CONNECTOR_TAKES_TIMEOUT = True
         bridge._ATTACH_STATE.update(wait_ms=bridge._LOGIN_ATTACH_WAIT_MS, since=0.0, limit_s=0.0)
         bridge._CONFIGURED_MT5_PATH = ""
         bridge.CANDIDATE_PATHS = [None]
@@ -171,6 +192,21 @@ class AttachMessageTests(unittest.TestCase):
         self.assertEqual(reply["type"], "error")
         return reply["message"]
 
+    def not_logged_in(self, accepts=ACCOUNT):
+        """MetaTrader 5 is open and logged in to no account: it attaches only when it is given an account it accepts."""
+        self.terminal.init_error = NOT_LOGGED_IN
+        self.terminal.accepts = accepts
+
+    def account_as_metatrader_reports_it(self):
+        self.terminal.login_ok = True
+        self.terminal.account = types.SimpleNamespace(
+            login=LOGIN["login"], server=LOGIN["server"], company="Exness (KE) Limited", currency="USD",
+            balance=250.0, equity=250.0, margin_free=250.0, leverage=200)
+
+    def attach_calls(self):
+        """Every initialize() so far: (the path given, the named arguments)."""
+        return [(args, kwargs) for name, args, kwargs in self.terminal.calls if name == "initialize"]
+
     def assert_reaches_the_user(self, message):
         """The app must show this text itself: none of the words it replaces, and plain ASCII."""
         for word in self.replaced:
@@ -193,7 +229,7 @@ class AttachMessageTests(unittest.TestCase):
 
     def test_every_kind_of_failure_gets_its_own_instruction(self):
         cases = [
-            ((-6, "Terminal: Authorization failed"), "not logged in to a trading account", "File > Login to Trade Account"),
+            (NOT_LOGGED_IN, "did not log in with the account number, password and server entered in the app", "compare them with your Exness Personal Area"),
             ((-10003, "IPC initialize failed, MetaTrader 5 x64 not found"), "no MetaTrader 5 desktop program was found", "Exness Personal Area"),
             ((-10003, "IPC initialize failed, Pipe server didn't answer in 60 sec"), "did not open its connection for Python", "'Python integration' box"),
             ((-10003, "IPC initialize failed, Process create failed 'C:\\x\\terminal64.exe'"), "could not be started from its saved location", "START_ALL_LOCAL.bat"),
@@ -215,17 +251,257 @@ class AttachMessageTests(unittest.TestCase):
                 seen.add(message)
         self.assertEqual(len(seen), len(cases))
 
-    def test_a_terminal_that_is_not_logged_in_gets_the_login_step_and_what_to_do_if_it_is_logged_in(self):
-        self.terminal.init_error = (-6, "Terminal: Authorization failed")
+    # ------------------------------------------------------------ a terminal that is not logged in
+    def test_a_terminal_that_is_not_logged_in_is_given_the_account_entered_in_the_app(self):
+        path = self.use_terminal_file("ExnessKE MT5 Terminal", "terminal64.exe")
+        self.not_logged_in()
+        self.account_as_metatrader_reports_it()
+        reply = self.bridge.handle_login(dict(LOGIN))
+        self.assertEqual(reply["type"], "logged", reply)
+        # first as always, without an account; MetaTrader 5 answers -6; then once more with the account of the login
+        self.assertEqual(self.attach_calls(), [
+            ((path,), {"timeout": 5000}),
+            ((path,), {"timeout": 4000, "login": 123456, "password": "local-only", "server": "Exness-MT5Trial"}),
+        ])
+        self.assertEqual([call[0] for call in self.terminal.calls],
+                         ["terminal_info", "initialize", "shutdown", "initialize", "terminal_info", "login", "account_info"])
+        self.assertIsNone(self.bridge._ATTACH_FAILURE)
+        # what follows the attach is what always followed it: MetaTrader's own login() and the identity checks
+        self.assertEqual(self.terminal.calls[5], ("login", (123456,), {"server": "Exness-MT5Trial"}))
+        self.assertEqual(reply["server"], "Exness-MT5Trial")
+        self.assertNotIn("123456", reply["account"])
+        self.assertEqual((self.bridge._LOCKED_LOGIN, self.bridge._LOCKED_SERVER), (123456, "Exness-MT5Trial"))
+
+    def test_once_metatrader_has_said_not_logged_in_the_next_login_gives_it_the_account_at_once(self):
+        self.not_logged_in()
+        self.account_as_metatrader_reports_it()
+        self.bridge._ATTACH_STATE["wait_ms"] = self.bridge._START_ATTACH_WAIT_MS
+        self.assertFalse(self.bridge.attach_terminal())  # the attach at bridge start: no account to give
+        self.bridge._ATTACH_STATE["wait_ms"] = self.bridge._LOGIN_ATTACH_WAIT_MS
+        self.assertEqual(self.attach_calls(), [((), {"timeout": 60000})])
+        self.assertFalse(self.bridge._ATTACH_FAILURE.get("with_account"))
+
+        # A login a moment later is no repeat of that attempt: it brings the account, and only that attach is made.
+        self.assertLess(time.time() - self.bridge._ATTACH_FAILURE["at"], self.bridge._ATTACH_REPEAT_QUIET_S)
+        reply = self.bridge.handle_login(dict(LOGIN))
+        self.assertEqual(reply["type"], "logged", reply)
+        self.assertEqual(self.attach_calls()[1:], [((), {"timeout": 4000, "login": 123456, "password": "local-only", "server": "Exness-MT5Trial"})])
+
+    def test_an_account_metatrader_does_not_accept_is_reported_as_that_and_the_next_login_tries_only_the_account(self):
+        path = self.use_terminal_file("ExnessKE MT5 Terminal", "terminal64.exe")
+        self.not_logged_in(accepts=(LOGIN["login"], "another password", LOGIN["server"]))
         message = self.login_message()
+        self.assertEqual(
+            message,
+            "Cannot attach to MetaTrader 5: MetaTrader 5 did not log in with the account number, password and server "
+            "entered in the app, or it has no connection to Exness (step terminal, code -6: Terminal: Authorization "
+            "failed). Look at the bottom-right corner of MetaTrader 5. If it shows a connection speed, MetaTrader 5 has "
+            "logged in by now: press Connect again. If it says 'Invalid account', Exness did not accept the three: "
+            "compare them with your Exness Personal Area (the account must be an MT5 account, the password is the one "
+            "of that trading account and not the one of the Exness website, the server is written exactly as shown "
+            "there) and press Connect again. If it says 'No connection', MetaTrader 5 cannot get through to Exness: "
+            "check the internet connection of this PC. If Connect fails although the corner shows a speed: start "
+            "MetaTrader 5 with a normal double-click, not 'Run as administrator', keep only that one MetaTrader 5 open, "
+            "then run START_ALL_LOCAL.bat again. "
+            'Terminal tried: "ExnessKE MT5 Terminal\\terminal64.exe".')
+        self.assert_reaches_the_user(message)
+        self.assertEqual(len(self.attach_calls()), 2)
+        self.assertEqual(self.terminal.count("login"), 0)  # not attached: nothing further is asked of MetaTrader 5
+        self.assertTrue(self.bridge._ATTACH_FAILURE["with_account"])
+
+        # the repeat the app sends at once: same words, MetaTrader 5 is left alone
+        self.assertEqual(self.login_message(), message)
+        self.assertEqual(len(self.attach_calls()), 2)
+
+        # Later, with the password put right: the attach without an account is not made a second time.
+        self.bridge._ATTACH_FAILURE["at"] = time.time() - self.bridge._ATTACH_REPEAT_QUIET_S - 0.1
+        self.terminal.accepts = ACCOUNT
+        self.account_as_metatrader_reports_it()
+        reply = self.bridge.handle_login(dict(LOGIN))
+        self.assertEqual(reply["type"], "logged", reply)
+        self.assertEqual(self.attach_calls()[2:], [((path,), {"timeout": 4000, "login": 123456, "password": "local-only", "server": "Exness-MT5Trial"})])
+
+    def slow_first_attach(self, seconds):
+        """The attach without an account takes this long on the bridge's clock; the one with the account takes none."""
+        clock = {"now": 1000.0}
+        def takes_time():
+            if len(self.attach_calls()) == 1:
+                clock["now"] += seconds
+        self.terminal.while_initializing = takes_time
+        return unittest.mock.patch.object(self.bridge, "_now", lambda: clock["now"])
+
+    def test_the_attach_with_the_account_ends_four_seconds_after_the_login_began_to_attach(self):
+        self.not_logged_in()
+        self.account_as_metatrader_reports_it()
+        with self.slow_first_attach(1.2):
+            self.assertEqual(self.bridge.handle_login(dict(LOGIN))["type"], "logged")
+        waits = [kwargs["timeout"] for _, kwargs in self.attach_calls()]
+        self.assertEqual(waits, [5000, 2800])  # 4 s less the 1.2 s the answer "not logged in" took
+        self.assertEqual((self.bridge._ACCOUNT_ATTACH_END_MS, self.bridge._ACCOUNT_ATTACH_MIN_MS), (4000, 2000))
+        # MetaTrader's own login() follows the attach in the same answer, and the app waits 6 s for that answer
+        self.assertLess(self.bridge._ACCOUNT_ATTACH_END_MS, self.bridge._LOGIN_ATTACH_WAIT_MS)
+
+        self.setUp()  # an account that is not accepted in that time: the message names the time it had
+        self.not_logged_in(accepts=None)
+        self.terminal.account_error = (-10005, "IPC timeout")
+        with self.slow_first_attach(1.2):
+            message = self.login_message()
+        self.assertIn("did not answer within 2.8 seconds", message)
+
+    def test_when_too_little_time_is_left_the_next_login_makes_the_attach_with_the_account(self):
+        self.not_logged_in()
+        self.account_as_metatrader_reports_it()
+        with self.slow_first_attach(2.5):  # 1.5 s would be left: under the 2 s the attach with the account needs
+            first = self.login_message()
+        self.assertEqual(self.attach_calls(), [((), {"timeout": 5000})])
+        self.assertIn("is open, but it is not logged in to a trading account", first)
+        self.assertIn("Press Connect in the app with the account number, the password and the exact server", first)
+        self.assert_reaches_the_user(first)
+        # The app repeats a failed login at once. This repeat is not held back: it makes the attach that was not made.
+        self.assertLess(time.time() - self.bridge._ATTACH_FAILURE["at"], self.bridge._ATTACH_REPEAT_QUIET_S)
+        self.terminal.while_initializing = None
+        reply = self.bridge.handle_login(dict(LOGIN))
+        self.assertEqual(reply["type"], "logged", reply)
+        self.assertEqual(self.attach_calls()[1:], [((), {"timeout": 4000, "login": 123456, "password": "local-only", "server": "Exness-MT5Trial"})])
+
+        self.setUp()  # exactly 2 s left is enough
+        self.not_logged_in()
+        self.account_as_metatrader_reports_it()
+        with self.slow_first_attach(2.0):
+            self.assertEqual(self.bridge.handle_login(dict(LOGIN))["type"], "logged")
+        self.assertEqual([kwargs["timeout"] for _, kwargs in self.attach_calls()], [5000, 2000])
+
+    def test_the_attach_at_bridge_start_has_no_account_and_says_that_connect_brings_one(self):
+        self.not_logged_in()
+        self.bridge._ATTACH_STATE["wait_ms"] = self.bridge._START_ATTACH_WAIT_MS
+        self.assertFalse(self.bridge.attach_terminal())
+        self.assertEqual(self.attach_calls(), [((), {"timeout": 60000})])
+        message = self.bridge._attach_failure_message()
+        self.assertEqual(
+            message,
+            "Cannot attach to MetaTrader 5: MetaTrader 5 is open, but it is not logged in to a trading account or has "
+            "no connection to Exness (step terminal, code -6: Terminal: Authorization failed). Press Connect in the app "
+            "with the account number, the password and the exact server: the bridge passes them to MetaTrader 5, which "
+            "then logs in. To log in yourself instead: 1) in MetaTrader 5 use File > Login to Trade Account (account "
+            "number, password and the exact server) and wait until the bottom-right corner shows a connection speed and "
+            "not 'No connection'; 2) press Connect. If MetaTrader 5 shows your account already: start MetaTrader 5 with "
+            "a normal double-click, not 'Run as administrator', keep only that one MetaTrader 5 open, then run "
+            "START_ALL_LOCAL.bat again. Terminal tried: the default MetaTrader 5 of this PC (no location is saved).")
+        self.assert_reaches_the_user(message)
+
+    def test_only_not_logged_in_makes_the_bridge_give_metatrader_the_account(self):
+        answers = [(-10005, "IPC timeout"), (-10003, "IPC initialize failed, MetaTrader 5 x64 not found"),
+                   (-10003, "IPC initialize failed, Pipe server didn't answer in 60 sec"), (-5, "Terminal: Invalid version"),
+                   (-10001, "IPC send failed"), (1, "Success")]
+        for error in answers:
+            with self.subTest(error=error):
+                self.setUp()
+                self.terminal.init_error, self.terminal.accepts = error, ACCOUNT
+                self.login_message()
+                self.assertEqual(self.attach_calls(), [((), {"timeout": 5000})])
+        self.setUp()  # an exception from the connector is no answer from MetaTrader 5 either
+        self.terminal.init_raises, self.terminal.accepts = RuntimeError("Authorization failed"), ACCOUNT
+        self.login_message()
+        self.assertEqual(self.attach_calls(), [((), {"timeout": 5000})])
+
+    def test_a_bridge_bound_to_one_account_does_not_ask_metatrader_to_log_in_to_another(self):
+        self.not_logged_in()
+        self.bridge._LOCKED_LOGIN, self.bridge._LOCKED_SERVER = 654321, LOGIN["server"]
+        message = self.login_message()
+        self.assertIn("already bound to a different Exness account/server", message)
+        self.assertEqual(self.terminal.count("initialize"), 0)
+        self.assertEqual(self.terminal.count("login"), 0)
+
+        self.setUp()  # the same account, another server: the same
+        self.not_logged_in()
+        self.bridge._LOCKED_LOGIN, self.bridge._LOCKED_SERVER = LOGIN["login"], "Exness-MT5Real"
+        self.assertIn("already bound to a different Exness account/server", self.login_message())
+        self.assertEqual(self.terminal.count("initialize"), 0)
+
+        self.setUp()  # the account it is bound to (the server in other capitals) may bring MetaTrader 5 back
+        self.not_logged_in()
+        self.account_as_metatrader_reports_it()
+        self.bridge._LOCKED_LOGIN, self.bridge._LOCKED_SERVER = LOGIN["login"], LOGIN["server"].upper()
+        self.assertEqual(self.bridge.handle_login(dict(LOGIN))["type"], "logged")
+        self.assertEqual(len(self.attach_calls()), 2)
+
+    def test_the_password_is_in_no_message_and_no_log_line(self):
+        logging.disable(logging.NOTSET)
+        with self.assertLogs(self.bridge.log, level="DEBUG") as written:
+            # MetaTrader 5 accepts the account
+            self.not_logged_in()
+            self.account_as_metatrader_reports_it()
+            self.assertEqual(self.bridge.handle_login(dict(LOGIN))["type"], "logged")
+            # it does not, and repeats the password in its answer
+            self.setUp()
+            logging.disable(logging.NOTSET)
+            self.not_logged_in(accepts=None)
+            self.terminal.account_error = (-6, "Terminal: Authorization failed for local-only")
+            refused = self.login_message()
+            # the connector raises, with the password in its text
+            self.setUp()
+            logging.disable(logging.NOTSET)
+            self.not_logged_in(accepts=None)
+            self.terminal.account_raises = RuntimeError("cannot log in 123456 with local-only")
+            raised = self.login_message()
+        lines = [record.getMessage() for record in written.records]
+        self.assertTrue(any("with the account entered in the app" in line for line in lines), lines)
+        for text in lines + [refused, raised]:
+            self.assertNotIn("local-only", text)
+            self.assertNotIn("123456", text)  # nor the account number
+        self.assertIn("code -6: Terminal: Authorization failed for [password]", refused)
+        self.assertIn("cannot log in [account number] with [password]", raised)
+        self.assertIn("could not be contacted", raised)
+        self.assert_reaches_the_user(refused)
+        self.assert_reaches_the_user(raised)
+
+    def test_a_login_that_arrives_during_the_attach_with_the_account_is_told_to_wait(self):
+        self.not_logged_in()
+        self.account_as_metatrader_reports_it()
+        answers = []
+        def another_login():
+            if len(self.attach_calls()) == 2:  # the attach with the account is the one in progress
+                answers.append(self.bridge.handle_login(dict(LOGIN))["message"])
+        self.terminal.while_initializing = another_login
+        self.assertEqual(self.bridge.handle_login(dict(LOGIN))["type"], "logged")
+        self.assertEqual(len(answers), 1)
+        self.assertIn("still contacting MetaTrader 5", answers[0])
+        self.assertTrue(answers[0].endswith("Press Connect again in about 4 seconds."), answers[0])
+        self.assertEqual(len(self.attach_calls()), 2)  # the waiting login made no attach of its own
+
+    def test_a_connector_that_takes_no_waiting_time_is_not_given_the_account(self):
+        # Such a connector waits its own 60 s. The attach with the account has to end within the time the app
+        # waits, so it is not made: Connect answers as it did before the bridge could pass an account on.
+        self.not_logged_in()
+        self.account_as_metatrader_reports_it()
+        self.terminal.takes_timeout = False
+        message = self.login_message()
+        self.assertEqual(self.attach_calls(), [((), {"timeout": 5000}), ((), {})])
+        self.assertFalse(self.bridge._CONNECTOR_TAKES_TIMEOUT)
+        self.assertIn("is open, but it is not logged in to a trading account", message)
         self.assertIn("Do this: 1) in MetaTrader 5 use File > Login to Trade Account (account number, password and the "
                       "exact server) and wait until the bottom-right corner shows a connection speed and not "
                       "'No connection'; 2) press Connect again.", message)
-        self.assertIn("If MetaTrader 5 shows your account already: start MetaTrader 5 with a normal double-click, "
-                      "not 'Run as administrator', keep only that one MetaTrader 5 open, then run START_ALL_LOCAL.bat again.",
-                      message)
-        self.assertTrue(message.endswith("Terminal tried: the default MetaTrader 5 of this PC (no location is saved)."))
+        self.assertNotIn("the bridge passes them to MetaTrader 5", message)
         self.assert_reaches_the_user(message)
+
+        # nor later: the next login does not start with the account either
+        self.bridge._ATTACH_FAILURE["at"] = time.time() - self.bridge._ATTACH_REPEAT_QUIET_S - 0.1
+        self.login_message()
+        self.assertEqual(self.attach_calls()[2:], [((), {"timeout": 5000}), ((), {})])
+
+        # A TypeError about something else is no sign of such a connector, and with an account it is reported at once.
+        self.setUp()
+        self.terminal.init_raises = TypeError("path must be str")
+        self.login_message()
+        self.assertTrue(self.bridge._CONNECTOR_TAKES_TIMEOUT)
+        self.setUp()
+        self.not_logged_in(accepts=None)
+        self.terminal.account_raises = TypeError("server must be str")
+        message = self.login_message()
+        self.assertEqual(len(self.attach_calls()), 2)  # the one without the account, the one with it; no third call
+        self.assertIn("could not be contacted (step terminal, server must be str)", message)
+        self.assertTrue(self.bridge._CONNECTOR_TAKES_TIMEOUT)
 
     def test_a_terminal_that_does_not_answer_in_time_is_given_the_way_to_a_full_minute(self):
         self.terminal.init_error = (-10005, "IPC timeout")
@@ -251,8 +527,8 @@ class AttachMessageTests(unittest.TestCase):
 
     def test_the_code_alone_or_the_text_alone_is_enough_to_recognise_a_failure(self):
         cases = [
-            ((-6, "something else"), "not logged in to a trading account"),
-            ((-1, "Terminal: Authorization failed"), "not logged in to a trading account"),
+            ((-6, "something else"), "did not log in with the account number, password and server entered in the app"),
+            ((-1, "Terminal: Authorization failed"), "did not log in with the account number, password and server entered in the app"),
             ((-10005, "something else"), "did not answer within 5 seconds"),
             ((-10000, "IPC timeout"), "did not answer within 5 seconds"),
             ((-10000, "IPC time-out"), "did not answer within 5 seconds"),
@@ -390,7 +666,7 @@ class AttachMessageTests(unittest.TestCase):
         self.assertIn("could not be contacted (step terminal, path must be str)", message)
 
     def test_a_login_that_finds_the_terminal_attached_by_another_request_carries_on_with_it(self):
-        def attached_by_another_request():
+        def attached_by_another_request(account=None):
             self.terminal.attached = True  # the other request's attach succeeded in the meantime
             return False  # ... and this request did not get the lock
         with unittest.mock.patch.object(self.bridge, "attach_terminal", attached_by_another_request):
@@ -401,13 +677,14 @@ class AttachMessageTests(unittest.TestCase):
         self.assertNotIn("Cannot attach", message)
 
         self.setUp()  # no attach running, none failed, and still no terminal: said as it is
-        with unittest.mock.patch.object(self.bridge, "attach_terminal", lambda: False):
+        with unittest.mock.patch.object(self.bridge, "attach_terminal", lambda account=None: False):
             message = self.login_message()
         self.assertEqual(self.terminal.count("login"), 0)
         self.assertIn("MT5 terminal not responding (step terminal, code -10004: No IPC connection)", message)
 
         self.setUp()  # the other request's attach began just after this login looked: answered, not left waiting
-        def lock_taken_by_another_request():
+        def lock_taken_by_another_request(account=None):
+            self.assertEqual(account, ACCOUNT)  # a login offers its account to the attach
             self.assertTrue(self.bridge._ATTACH_LOCK.acquire(blocking=False))
             return False
         try:
@@ -425,10 +702,10 @@ class AttachMessageTests(unittest.TestCase):
         self.assertEqual(self.terminal.count("initialize"), 1)
         # once the quiet time is over a login tries again
         self.bridge._ATTACH_FAILURE["at"] = time.time() - self.bridge._ATTACH_REPEAT_QUIET_S - 0.1
-        self.terminal.init_error = (-6, "Terminal: Authorization failed")
+        self.terminal.init_error = (-5, "Terminal: Invalid version")
         third = self.login_message()
         self.assertEqual(self.terminal.count("initialize"), 2)
-        self.assertIn("code -6", third)
+        self.assertIn("code -5", third)
 
     def test_a_login_during_an_attach_is_answered_at_once_and_leaves_metatrader_alone(self):
         self.bridge._ATTACH_STATE.update(since=time.time() - 10, limit_s=60.0)
