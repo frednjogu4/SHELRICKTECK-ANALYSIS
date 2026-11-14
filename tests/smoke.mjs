@@ -930,7 +930,7 @@ async function run() {
   {
     const pyB = readFileSync(join(root, 'bridge', 'mt5_bridge.py'), 'utf8');
     const h = pyB.slice(pyB.indexOf('def handle_login(msg):'), pyB.indexOf('def handle_order(msg):'));
-    check('20k: Exness login reuses an attached terminal and retries only through configured terminal selection', h.indexOf('term = mt5.terminal_info()') < h.indexOf('if not attach_terminal():') && h.includes('reusing the MT5 terminal already attached at bridge startup'));
+    check('20k: Exness login reuses an attached terminal and retries only through configured terminal selection', h.indexOf('term = mt5.terminal_info()') < h.indexOf('if not attach_terminal(') && h.includes('reusing the MT5 terminal already attached at bridge startup'));
     check('20k: disconnected MT5 retries configured attach and reports AURUM_MT5_PATH diagnostics', h.includes('if term is None:') && h.includes('Check AURUM_MT5_PATH') && h.includes('start the Exness MT5 terminal normally'));
   }
 

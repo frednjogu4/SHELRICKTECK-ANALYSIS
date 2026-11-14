@@ -223,15 +223,44 @@ def _last_error():
 # last_error() after attach_terminal() therefore reported "code 1: Success"
 # for every failed attach. The reason is now stored at the moment of the
 # failure (_ATTACH_FAILURE) and handle_login() reports that.
+#
+# The account. initialize() without an account attaches to the account
+# MetaTrader 5 is logged in to, and MetaTrader 5 answers "Authorization failed"
+# (-6) when it is logged in to none. initialize() also takes an account
+# (login, password, server) and MetaTrader 5 then logs in to it as part of the
+# attach (MetaQuotes' documentation of initialize()). A login brings exactly
+# those three, so when the attach without an account is answered with -6,
+# handle_login() has it made once more with the account entered in the app.
+# At bridge start there is no account to give: that attach stays as it was.
 _ATTACH_LOCK = threading.Lock()  # one initialize() at a time: bridge start, websocket and HTTP logins alike
 _ATTACH_FAILURE = None  # why the last attach failed (dict); None after a successful attach
 # The app waits 8 s for the answer to a login (src/bridge.js) and repeats a
 # failed login once over HTTP straight away. An attach asked for by a login
 # therefore gets 5 s, and the repeat gets the same answer without a second try.
+#
+# The attach with the account has to fit into the same answer, and when it
+# succeeds MetaTrader's own login() still follows it. So it ends 4 s after the
+# login began to attach. An attach without the account that came first in the
+# same login has used part of that; when under 2 s are left, the attach with
+# the account is not begun: the login is answered "not logged in", and the
+# next login (the app's repeat, at once) starts with the account. That repeat
+# is no second attempt at the same thing, so it is not held back.
 _LOGIN_ATTACH_WAIT_MS = 5000
 _START_ATTACH_WAIT_MS = 60000  # MetaTrader5.initialize() default; a terminal that was only just started needs it
+_ACCOUNT_ATTACH_END_MS = 4000  # the attach with the account ends this long after the login began to attach
+_ACCOUNT_ATTACH_MIN_MS = 2000  # with less than this left it is made by the next login
 _ATTACH_REPEAT_QUIET_S = 3.0
 _ATTACH_STATE = {"wait_ms": _LOGIN_ATTACH_WAIT_MS, "since": 0.0, "limit_s": 0.0}
+
+
+_BOUND_ELSEWHERE = ("This bridge is already bound to a different Exness account/server. PC and phone must use the same "
+                    "account and exact server; restart the bridge only when safely disconnected to change identity.")
+
+
+def _bound_to_another_account(login, server):
+    """True when this bridge has verified one account and a login names another account or server."""
+    with _LOGIN_LOCK:  # re-entrant: handle_login() asks again while it holds the lock
+        return _LOCKED_LOGIN is not None and (_LOCKED_LOGIN != login or (_LOCKED_SERVER or "").casefold() != server.casefold())
 
 
 def handle_login(msg):
@@ -260,7 +289,11 @@ def handle_login(msg):
         return {**err(busy)}
     term = mt5.terminal_info()
     if term is None:
-        if not attach_terminal():
+        # The attach may give MetaTrader 5 the account of this login. A bridge that is bound to
+        # another account says so first, before MetaTrader 5 is asked to log in to this one.
+        if _bound_to_another_account(login, server):
+            return {**err(_BOUND_ELSEWHERE)}
+        if not attach_terminal((login, password, server)):
             busy = _attach_busy_message()
             if busy or _ATTACH_FAILURE is not None:
                 return {**err(busy or _attach_failure_message())}
@@ -274,8 +307,8 @@ def handle_login(msg):
     if not term.trade_allowed:
         log.info("terminal reports read-only trade permissions; compatible with this verification build")
     with _LOGIN_LOCK:
-        if _LOCKED_LOGIN is not None and (_LOCKED_LOGIN != login or (_LOCKED_SERVER or "").casefold() != server.casefold()):
-            return {**err("This bridge is already bound to a different Exness account/server. PC and phone must use the same account and exact server; restart the bridge only when safely disconnected to change identity.")}
+        if _bound_to_another_account(login, server):
+            return {**err(_BOUND_ELSEWHERE)}
         ok = mt5.login(login, password=password, server=server)
         if not ok:
             code, desc = _last_error()
@@ -358,6 +391,14 @@ _FULL_MINUTE_STEP = ("run START_ALL_LOCAL.bat again with MetaTrader 5 open and l
                      "the bridge then waits a full minute for it")
 _PYTHON_BOX_STEP = "if Tools > Options > Community has a 'Python integration' box, tick it and restart MetaTrader 5"
 _START_AGAIN = "run START_ALL_LOCAL.bat again"
+# MetaTrader 5 was given the account entered in the app and answered "Authorization failed" all the same. Its own
+# status in the bottom-right corner tells the three reasons apart; the bridge cannot.
+_ACCOUNT_NOT_ACCEPTED = (
+    "Look at the bottom-right corner of MetaTrader 5. If it shows a connection speed, MetaTrader 5 has logged in by "
+    "now: press Connect again. If it says 'Invalid account', Exness did not accept the three: compare them with your "
+    "Exness Personal Area (the account must be an MT5 account, the password is the one of that trading account and "
+    "not the one of the Exness website, the server is written exactly as shown there) and press Connect again. If it "
+    "says 'No connection', MetaTrader 5 cannot get through to Exness: check the internet connection of this PC.")
 
 
 def _steps(*steps):
@@ -390,9 +431,18 @@ def _attach_failure_message():
         what = "the program that was found is MetaTrader 4, and this app needs MetaTrader 5"
         do = ("Install the MetaTrader 5 desktop program from your Exness Personal Area, open it and log in, "
               f"quit MetaTrader 4, then {_START_AGAIN}.")
+    elif (code == -6 or "authorization" in low) and failure.get("with_account"):
+        what = ("MetaTrader 5 did not log in with the account number, password and server entered in the app, "
+                "or it has no connection to Exness")
+        do = (f"{_ACCOUNT_NOT_ACCEPTED} If Connect fails although the corner shows a speed: {_NORMAL_START_STEP}, "
+              f"{_ONLY_ONE_STEP}, then {_START_AGAIN}.")
     elif code == -6 or "authorization" in low:
+        # The attach at bridge start ends here: it has no account to give. So does a login whose attach
+        # without the account left no time for the one with it; the app's repeat then makes that one.
         what = "MetaTrader 5 is open, but it is not logged in to a trading account or has no connection to Exness"
-        do = ("Do this: " + _steps(_LOG_IN_STEP, "press Connect again")
+        do = ("Press Connect in the app with the account number, the password and the exact server: the bridge passes "
+              "them to MetaTrader 5, which then logs in. To log in yourself instead: "
+              + _steps(_LOG_IN_STEP, "press Connect")
               + f" If MetaTrader 5 shows your account already: {_NORMAL_START_STEP}, {_ONLY_ONE_STEP}, then {_START_AGAIN}.")
     elif "not found" in low:
         what = "no MetaTrader 5 desktop program was found on this PC"
@@ -788,46 +838,107 @@ async def handler(ws, path=None):
 _CONFIGURED_MT5_PATH = os.environ.get("AURUM_MT5_PATH", "").strip()
 CANDIDATE_PATHS = [_CONFIGURED_MT5_PATH] if _CONFIGURED_MT5_PATH else [None]
 
-def attach_terminal():
+def _wants_account(failure):
+    """True when MetaTrader 5 itself answered an attach with 'Authorization failed' (-6): no account is logged in."""
+    if not failure or failure.get("kind") != "mt5":
+        return False
+    return failure.get("code") == -6 or "authorization" in str(failure.get("text") or "").lower()
+
+
+def _now():
+    """Seconds on a clock that only runs forward: for how long an attach has taken."""
+    return time.monotonic()
+
+
+def attach_terminal(account=None):
     """Attach to the MetaTrader 5 terminal; False when that fails or another attach is running.
 
     How long MetaTrader 5 may take is in _ATTACH_STATE["wait_ms"]: 5 s for an
     attach asked for by a login, 60 s at bridge start (main() sets that).
     The reason for a failure is left in _ATTACH_FAILURE.
+
+    `account` is (login, password, server) as entered in the app; the attach
+    at bridge start has none. The attach is first made without it, as it
+    always was. Only when MetaTrader 5 answers that it is not logged in (-6)
+    is the attach made with the account, and MetaTrader 5 logs in to it:
+    in the same call when there is time left for it, by the next login
+    otherwise. When the attach before this one ended with that answer, the
+    one without the account is not repeated: MetaTrader 5 gets the account
+    at once.
     """
     wait_ms = _ATTACH_STATE["wait_ms"]
     recent = _ATTACH_FAILURE
+    account_at_once = account is not None and _wants_account(recent)
     if recent is not None and time.time() - (recent.get("at") or 0.0) < _ATTACH_REPEAT_QUIET_S:
-        return False  # the app repeats a failed login at once over HTTP: same answer, no second attempt
+        # The app repeats a failed login at once over HTTP: same answer, no second attempt. One case is
+        # no repeat: MetaTrader 5 has just said "not logged in" to an attach without an account, and this
+        # login brings the account for the attach that has not been made yet.
+        if not account_at_once or recent.get("with_account"):
+            return False
     if not _ATTACH_LOCK.acquire(blocking=False):
         return False  # an attach is in progress; handle_login() says so
     try:
-        _ATTACH_STATE["since"], _ATTACH_STATE["limit_s"] = time.time(), wait_ms / 1000.0
-        return _attach_terminal_once(wait_ms)
+        began = _now()
+        if not account_at_once:
+            _ATTACH_STATE["since"], _ATTACH_STATE["limit_s"] = time.time(), wait_ms / 1000.0
+            if _attach_terminal_once(wait_ms, account_follows=account is not None):
+                return True
+            if account is None or not _wants_account(_ATTACH_FAILURE):
+                return False
+        left_ms = min(wait_ms, _ACCOUNT_ATTACH_END_MS) - (_now() - began) * 1000.0
+        if left_ms < _ACCOUNT_ATTACH_MIN_MS:
+            return False  # the answer "not logged in" stands; the next login starts with the account
+        account_wait_ms = int(round(left_ms / 100.0)) * 100  # in tenths of a second: the message names the time
+        _ATTACH_STATE["since"], _ATTACH_STATE["limit_s"] = time.time(), account_wait_ms / 1000.0
+        return _attach_terminal_once(account_wait_ms, account)
     finally:
         _ATTACH_STATE["since"] = 0.0
         _ATTACH_LOCK.release()
 
 
-def _initialize(path, wait_ms):
+def _initialize(path, wait_ms, account=None):
     """mt5.initialize() with a waiting time. Returns (ok, the waiting time in seconds).
 
     'timeout' is a documented keyword of MetaTrader5.initialize(). Should a
     connector not take it, the call is made the way it was made before, and
-    then the connector's own 60 seconds apply.
+    then the connector's own 60 seconds apply. `account` is (login, password,
+    server): MetaTrader 5 then logs in to that account as part of the attach.
     """
     where = (path,) if path else ()
+    named = {}
+    if account is not None:
+        login, password, server = account
+        named = {"login": int(login), "password": str(password), "server": str(server)}
     try:
-        return mt5.initialize(*where, timeout=int(wait_ms)), wait_ms / 1000.0
+        return mt5.initialize(*where, timeout=int(wait_ms), **named), wait_ms / 1000.0
     except TypeError:
-        return mt5.initialize(*where), 60.0
+        return mt5.initialize(*where, **named), 60.0
 
 
-def _attach_terminal_once(wait_ms):
+def _without_account(text, account):
+    """What MetaTrader 5 or its connector said, without the password and the account number,
+    should either ever repeat them: the text goes to the app and into the bridge window."""
+    said = str(text)
+    if account:
+        login, password = str(account[0]), str(account[1])
+        if password:
+            said = said.replace(password, "[password]")
+        if login:
+            said = said.replace(login, "[account number]")
+    return said
+
+
+def _attach_terminal_once(wait_ms, account=None, account_follows=False):
+    """One round of initialize(). With `account`, MetaTrader 5 is given the account to log in to.
+
+    `account_follows`: the caller makes the attach with the account next when MetaTrader 5 answers
+    "not logged in" to this one, so that answer is noted in the bridge window and not reported as a failure.
+    """
     global _ATTACH_FAILURE
     last = None
     failure = None
     limit_s = wait_ms / 1000.0
+    with_account = account is not None
     if not _CONFIGURED_MT5_PATH:
         log.warning("AURUM_MT5_PATH is not set; using the MetaTrader5 default terminal. Verify the connected server is Exness before login.")
     for p in CANDIDATE_PATHS:
@@ -837,20 +948,25 @@ def _attach_terminal_once(wait_ms):
             failure = {"kind": "missing", "path": p, "code": None, "text": "", "limit_s": limit_s}
             continue
         try:
-            ok, limit_s = _initialize(p, wait_ms)
+            ok, limit_s = _initialize(p, wait_ms, account)
         except Exception as e:
-            ok, last = False, str(e)
-            failure = {"kind": "exception", "path": p, "code": None, "text": str(e), "limit_s": limit_s}
+            text = _without_account(e, account)
+            ok, last = False, text
+            failure = {"kind": "exception", "path": p, "code": None, "text": text, "limit_s": limit_s, "with_account": with_account}
             continue
         if ok:
             if p:
                 log.info("attached to terminal: %s", p)
+            if with_account:
+                log.info("attached with the account entered in the app: MetaTrader 5 has logged in to it")
             _ATTACH_FAILURE = None
             return True
         code, text = _last_error()  # read it now: mt5.shutdown() below sets it back to (1, 'Success')
+        text = _without_account(text, account)
         last = str((code, text))
-        failure = {"kind": "mt5", "path": p, "code": code, "text": str(text), "limit_s": limit_s}
-        log.warning("initialize(%s) failed: %s", p or "default terminal", last)
+        failure = {"kind": "mt5", "path": p, "code": code, "text": text, "limit_s": limit_s, "with_account": with_account}
+        log.warning("initialize(%s%s) failed: %s", p or "default terminal",
+                    ", with the account entered in the app" if with_account else "", last)
         try:
             mt5.shutdown()
         except Exception:
@@ -858,6 +974,9 @@ def _attach_terminal_once(wait_ms):
     if failure is not None:
         failure["at"] = time.time()
     _ATTACH_FAILURE = failure
+    if account_follows and _wants_account(failure):
+        log.info("MetaTrader 5 is not logged in: the account entered in the app is tried next")
+        return False
     if last:
         log.error("MetaTrader5.initialize() failed: %s", last)
     if last and ("Authorization failed" in last or "(-6" in last):

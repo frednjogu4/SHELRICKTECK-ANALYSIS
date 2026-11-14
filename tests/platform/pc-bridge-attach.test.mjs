@@ -5,8 +5,13 @@
  *
  *   1. the Exness sign-in form replaces a bridge message that contains one of
  *      five words by its own "Bridge not reachable" help;
- *   2. the app waits 8 seconds for the answer to a login;
+ *   2. the app waits 8 seconds for the answer to a request, and 6 seconds from
+ *      opening its connection for the answer to the login;
  *   3. the app repeats a failed login once over HTTP straight away.
+ *
+ * The same facts decide how the bridge logs MetaTrader 5 in with the account
+ * entered in the app when MetaTrader 5 is not logged in: within one answer
+ * while there is time for it, otherwise at the app's repeat.
  *
  * The page the PC serves (bridge/app.html) is a copy of the built page
  * (tests/platform/pc-page.test.mjs), so the same facts are checked in their
@@ -60,7 +65,7 @@ test('the bridge rewords exactly the words for which the app shows its own help'
   assert.ok(builtPage.includes(sameCheck), 'dist/index.html replaces other words than src/main.js');
 });
 
-test('an attach asked for by a login is over before the app stops waiting for the answer', () => {
+test('the attaching one login asks for is over before the app stops waiting for the answer', () => {
   const loginWait = pythonNumber('_LOGIN_ATTACH_WAIT_MS');
   const startWait = pythonNumber('_START_ATTACH_WAIT_MS');
 
@@ -76,7 +81,23 @@ test('an attach asked for by a login is over before the app stops waiting for th
   assert.match(pcPage, /new Error\("bridge timeout"\)\)\},8e3\)/);
   assert.match(pcPage, /AbortSignal\.timeout\(8e3\)/);
 
-  /* both attach calls stay without an argument: the wait comes from _ATTACH_STATE */
+  /* The answer to the login over the socket has less: 6 seconds from the moment the app opens its
+     connection. After that the app gives the socket up and shows its own "Bridge not reachable" help. */
+  const socketLogin = bridgeJs.match(/t = setTimeout\(\(\) => fail\('Bridge timeout[^']*' \+ url \+ '\?'\), (\d+)\);/);
+  assert.ok(socketLogin, 'connectBridge() in src/bridge.js no longer has the timer this test reads');
+  assert.equal(Number(socketLogin[1]), 6000);
+  assert.match(pcPage, /Bridge timeout[^"]*"\+\w+\+"\?"\),6e3\)/);
+  assert.ok(loginWait < Number(socketLogin[1]), `login attach ${loginWait} ms, the app gives the socket up after ${socketLogin[1]} ms`);
+
+  /* The attach with the account entered in the app is part of that same answer, and MetaTrader's own
+     login() follows it: it ends before the attaching time is up, and is not begun without time for it. */
+  const accountEnd = pythonNumber('_ACCOUNT_ATTACH_END_MS');
+  const accountMin = pythonNumber('_ACCOUNT_ATTACH_MIN_MS');
+  assert.ok(accountEnd >= 3000 && accountEnd <= loginWait - 1000, `the attach with the account ends after ${accountEnd} ms`);
+  assert.ok(accountMin >= 1000 && accountMin <= accountEnd / 2, `the attach with the account needs ${accountMin} ms`);
+  assert.match(bridge, /left_ms = min\(wait_ms, _ACCOUNT_ATTACH_END_MS\) - \(_now\(\) - began\) \* 1000\.0\n {8}if left_ms < _ACCOUNT_ATTACH_MIN_MS:\n {12}return False/);
+
+  /* the attach at bridge start stays without an argument: its wait comes from _ATTACH_STATE, and it has no account to give */
   assert.match(bridge, /\n {4}_ATTACH_STATE\["wait_ms"\] = _START_ATTACH_WAIT_MS[^\n]*\n {4}attached = attach_terminal\(\)\n {4}_ATTACH_STATE\["wait_ms"\] = _LOGIN_ATTACH_WAIT_MS\n/);
   assert.match(bridge, /\n_ATTACH_STATE = \{"wait_ms": _LOGIN_ATTACH_WAIT_MS, /);
 });
@@ -87,19 +108,45 @@ test('the app repeats a failed login at once over HTTP, and the bridge does not 
   assert.match(fail[0], /if \(!usedHttp\) \{[^}]*usedHttp = true;[\s\S]*?loginSeq\(\);\s*return;/);
   const quiet = pythonNumber('_ATTACH_REPEAT_QUIET_S');
   assert.ok(quiet >= 1 && quiet <= 5, `quiet time ${quiet} s`);
-  assert.match(bridge, /time\.time\(\) - \(recent\.get\("at"\) or 0\.0\) < _ATTACH_REPEAT_QUIET_S:\n {8}return False/);
+  /* The one login that is not held back: MetaTrader 5 has just said "not logged in" to an attach without
+     an account, and the repeat brings the account for the attach that has not been made. */
+  assert.match(bridge, /time\.time\(\) - \(recent\.get\("at"\) or 0\.0\) < _ATTACH_REPEAT_QUIET_S:\n(?: {8}#[^\n]*\n)+ {8}if not account_at_once or recent\.get\("with_account"\):\n {12}return False/);
+  assert.match(bridge, /\n {4}account_at_once = account is not None and _wants_account\(recent\)\n/);
+});
+
+test('a login gives its account to the attach, a bound bridge is asked first, and the bridge start has no account', () => {
+  const login = bridge.slice(bridge.indexOf('def handle_login(msg):'), bridge.indexOf('def _app_safe(text):'));
+  const bound = login.indexOf('if _bound_to_another_account(login, server):');
+  const attach = login.indexOf('if not attach_terminal((login, password, server)):');
+  const ownLogin = login.indexOf('ok = mt5.login(login, password=password, server=server)');
+  assert.ok(bound > 0 && attach > bound, 'the bound account is checked before MetaTrader 5 can be given another one');
+  /* what follows the attach is unchanged: MetaTrader's own login() with the same three, then the identity checks */
+  assert.ok(ownLogin > attach);
+  assert.ok(login.indexOf('actual_server.casefold() != server.casefold()') > ownLogin);
+  assert.ok(login.indexOf('"exness" not in company.casefold()') > ownLogin);
+
+  /* only the login calls the attach with an account */
+  const calls = [...bridge.matchAll(/(?<!def )\battach_terminal\(([^)\n]*)\)?/g)].map((call) => call[1]);
+  assert.deepEqual(calls.filter((argument) => argument !== ''), ['(login, password, server']);
+  assert.ok(calls.includes(''), 'the attach at bridge start');
+
+  /* the account goes to MetaTrader 5 under the names MetaQuotes documents for initialize() */
+  assert.match(bridge, /named = \{"login": int\(login\), "password": str\(password\), "server": str\(server\)\}/);
+  assert.match(bridge, /return mt5\.initialize\(\*where, timeout=int\(wait_ms\), \*\*named\), wait_ms \/ 1000\.0/);
+  /* and neither the password nor the account number is passed on from what MetaTrader 5 or its connector says */
+  assert.equal((bridge.match(/_without_account\(/g) || []).length, 3);
 });
 
 test('the reason for a failed attach is read before mt5.shutdown() and reported by the login', () => {
-  const attach = bridge.slice(bridge.indexOf('def _attach_terminal_once(wait_ms):'), bridge.indexOf('try:\n    from websockets.datastructures import Headers'));
+  const attach = bridge.slice(bridge.indexOf('def _attach_terminal_once(wait_ms, account=None, account_follows=False):'), bridge.indexOf('try:\n    from websockets.datastructures import Headers'));
   assert.ok(attach.length > 200);
   const read = attach.indexOf('code, text = _last_error()');
   const shutdown = attach.indexOf('mt5.shutdown()');
   assert.ok(read > 0 && shutdown > read, 'the error must be read before mt5.shutdown() sets it back to (1, "Success")');
 
   const login = bridge.slice(bridge.indexOf('def handle_login(msg):'), bridge.indexOf('def _app_safe(text):'));
-  assert.match(login, /if not attach_terminal\(\):\n {12}busy = _attach_busy_message\(\)\n {12}if busy or _ATTACH_FAILURE is not None:\n {16}return \{\*\*err\(busy or _attach_failure_message\(\)\)\}/);
-  assert.doesNotMatch(login, /attach_terminal\(\):\n\s+code, desc = _last_error\(\)/);
+  assert.match(login, /if not attach_terminal\(\(login, password, server\)\):\n {12}busy = _attach_busy_message\(\)\n {12}if busy or _ATTACH_FAILURE is not None:\n {16}return \{\*\*err\(busy or _attach_failure_message\(\)\)\}/);
+  assert.doesNotMatch(login, /attach_terminal\([^\n]*\):\n\s+code, desc = _last_error\(\)/);
   assert.ok(!bridge.includes('Cannot attach to the configured MetaTrader 5 terminal (step terminal, code {code}: {desc})'));
 });
 
@@ -124,7 +171,8 @@ test('the Python tests of the PC bridge pass', (t) => {
   assert.equal(run.status, 0, output.slice(-3000));
   assert.match(output, /\nOK\b/);
   const ran = output.match(/Ran (\d+) tests? in/);
-  assert.ok(ran && Number(ran[1]) >= 49, `Python tests run: ${ran ? ran[1] : 'none'}`);
+  assert.ok(ran && Number(ran[1]) >= 59, `Python tests run: ${ran ? ran[1] : 'none'}`);
   assert.match(output, /test_a_failed_attach_reports_the_reason_and_not_code_1_success .*ok/);
+  assert.match(output, /test_a_terminal_that_is_not_logged_in_is_given_the_account_entered_in_the_app .*ok/);
   assert.match(output, /test_the_pc_serves_the_built_page_and_its_files_byte_for_byte .*ok/);
 });
