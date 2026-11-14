@@ -111,7 +111,14 @@ test('the app repeats a failed login at once over HTTP, and the bridge does not 
   /* The one login that is not held back: MetaTrader 5 has just said "not logged in" to an attach without
      an account, and the repeat brings the account for the attach that has not been made. */
   assert.match(bridge, /time\.time\(\) - \(recent\.get\("at"\) or 0\.0\) < _ATTACH_REPEAT_QUIET_S:\n(?: {8}#[^\n]*\n)+ {8}if not account_at_once or recent\.get\("with_account"\):\n {12}return False/);
-  assert.match(bridge, /\n {4}account_at_once = account is not None and _wants_account\(recent\)\n/);
+  assert.match(bridge, /\n {4}account_at_once = account is not None and _CONNECTOR_TAKES_TIMEOUT and _wants_account\(recent\)\n/);
+
+  /* That repeat has its own time. When the login over the socket is answered, with an error as well, the app
+     clears its 6-second timer before it repeats; the repeat is then limited by the 8 seconds of a request. */
+  const answered = bridgeJs.match(/\.catch\(\(e\) => \{ if \(t\) clearTimeout\(t\); fail\(String\(e\.message \|\| e\)\); \}\);/);
+  assert.ok(answered, 'connectBridge() in src/bridge.js no longer clears its timer before it repeats a failed login');
+  const repeatWait = Number(bridgeJs.match(/function httpFrame\(msg\) \{[\s\S]*?AbortSignal\.timeout\((\d+)\)/)[1]);
+  assert.ok(pythonNumber('_ACCOUNT_ATTACH_END_MS') <= repeatWait - 2000, `the repeat waits ${repeatWait} ms`);
 });
 
 test('a login gives its account to the attach, a bound bridge is asked first, and the bridge start has no account', () => {
@@ -133,6 +140,9 @@ test('a login gives its account to the attach, a bound bridge is asked first, an
   /* the account goes to MetaTrader 5 under the names MetaQuotes documents for initialize() */
   assert.match(bridge, /named = \{"login": int\(login\), "password": str\(password\), "server": str\(server\)\}/);
   assert.match(bridge, /return mt5\.initialize\(\*where, timeout=int\(wait_ms\), \*\*named\), wait_ms \/ 1000\.0/);
+  /* never without a waiting time: a connector that refuses 'timeout' is not given the account at all */
+  assert.match(bridge, /except TypeError:\n {8}if account is not None:\n {12}raise\n {8}ok = mt5\.initialize\(\*where\)[^\n]*\n {8}_CONNECTOR_TAKES_TIMEOUT = False\n/);
+  assert.match(bridge, /if account is None or not _CONNECTOR_TAKES_TIMEOUT or not _wants_account\(_ATTACH_FAILURE\):\n {16}return False/);
   /* and neither the password nor the account number is passed on from what MetaTrader 5 or its connector says */
   assert.equal((bridge.match(/_without_account\(/g) || []).length, 3);
 });
@@ -174,5 +184,6 @@ test('the Python tests of the PC bridge pass', (t) => {
   assert.ok(ran && Number(ran[1]) >= 59, `Python tests run: ${ran ? ran[1] : 'none'}`);
   assert.match(output, /test_a_failed_attach_reports_the_reason_and_not_code_1_success .*ok/);
   assert.match(output, /test_a_terminal_that_is_not_logged_in_is_given_the_account_entered_in_the_app .*ok/);
+  assert.match(output, /test_a_connector_that_takes_no_waiting_time_is_not_given_the_account .*ok/);
   assert.match(output, /test_the_pc_serves_the_built_page_and_its_files_byte_for_byte .*ok/);
 });

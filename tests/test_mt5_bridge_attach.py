@@ -167,6 +167,7 @@ class AttachMessageTests(unittest.TestCase):
         terminal.accepts = terminal.account_error = terminal.account_raises = None
         terminal.calls = []
         bridge._ATTACH_FAILURE = None
+        bridge._CONNECTOR_TAKES_TIMEOUT = True
         bridge._ATTACH_STATE.update(wait_ms=bridge._LOGIN_ATTACH_WAIT_MS, since=0.0, limit_s=0.0)
         bridge._CONFIGURED_MT5_PATH = ""
         bridge.CANDIDATE_PATHS = [None]
@@ -468,13 +469,39 @@ class AttachMessageTests(unittest.TestCase):
         self.assertTrue(answers[0].endswith("Press Connect again in about 4 seconds."), answers[0])
         self.assertEqual(len(self.attach_calls()), 2)  # the waiting login made no attach of its own
 
-    def test_a_connector_without_the_timeout_keyword_is_given_the_account_all_the_same(self):
+    def test_a_connector_that_takes_no_waiting_time_is_not_given_the_account(self):
+        # Such a connector waits its own 60 s. The attach with the account has to end within the time the app
+        # waits, so it is not made: Connect answers as it did before the bridge could pass an account on.
         self.not_logged_in()
         self.account_as_metatrader_reports_it()
         self.terminal.takes_timeout = False
-        self.assertEqual(self.bridge.handle_login(dict(LOGIN))["type"], "logged")
-        account = {"login": 123456, "password": "local-only", "server": "Exness-MT5Trial"}
-        self.assertEqual(self.attach_calls(), [((), {"timeout": 5000}), ((), {}), ((), {"timeout": 4000, **account}), ((), account)])
+        message = self.login_message()
+        self.assertEqual(self.attach_calls(), [((), {"timeout": 5000}), ((), {})])
+        self.assertFalse(self.bridge._CONNECTOR_TAKES_TIMEOUT)
+        self.assertIn("is open, but it is not logged in to a trading account", message)
+        self.assertIn("Do this: 1) in MetaTrader 5 use File > Login to Trade Account (account number, password and the "
+                      "exact server) and wait until the bottom-right corner shows a connection speed and not "
+                      "'No connection'; 2) press Connect again.", message)
+        self.assertNotIn("the bridge passes them to MetaTrader 5", message)
+        self.assert_reaches_the_user(message)
+
+        # nor later: the next login does not start with the account either
+        self.bridge._ATTACH_FAILURE["at"] = time.time() - self.bridge._ATTACH_REPEAT_QUIET_S - 0.1
+        self.login_message()
+        self.assertEqual(self.attach_calls()[2:], [((), {"timeout": 5000}), ((), {})])
+
+        # A TypeError about something else is no sign of such a connector, and with an account it is reported at once.
+        self.setUp()
+        self.terminal.init_raises = TypeError("path must be str")
+        self.login_message()
+        self.assertTrue(self.bridge._CONNECTOR_TAKES_TIMEOUT)
+        self.setUp()
+        self.not_logged_in(accepts=None)
+        self.terminal.account_raises = TypeError("server must be str")
+        message = self.login_message()
+        self.assertEqual(len(self.attach_calls()), 2)  # the one without the account, the one with it; no third call
+        self.assertIn("could not be contacted (step terminal, server must be str)", message)
+        self.assertTrue(self.bridge._CONNECTOR_TAKES_TIMEOUT)
 
     def test_a_terminal_that_does_not_answer_in_time_is_given_the_way_to_a_full_minute(self):
         self.terminal.init_error = (-10005, "IPC timeout")

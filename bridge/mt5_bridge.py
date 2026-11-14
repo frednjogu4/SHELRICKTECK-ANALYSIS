@@ -249,6 +249,9 @@ _LOGIN_ATTACH_WAIT_MS = 5000
 _START_ATTACH_WAIT_MS = 60000  # MetaTrader5.initialize() default; a terminal that was only just started needs it
 _ACCOUNT_ATTACH_END_MS = 4000  # the attach with the account ends this long after the login began to attach
 _ACCOUNT_ATTACH_MIN_MS = 2000  # with less than this left it is made by the next login
+# False once initialize() has refused the 'timeout' keyword. Such a connector waits its own 60 s, so the attach
+# with the account, which has to end in time for the app, is not made with it: everything stays as it was before.
+_CONNECTOR_TAKES_TIMEOUT = True
 _ATTACH_REPEAT_QUIET_S = 3.0
 _ATTACH_STATE = {"wait_ms": _LOGIN_ATTACH_WAIT_MS, "since": 0.0, "limit_s": 0.0}
 
@@ -440,10 +443,13 @@ def _attach_failure_message():
         # The attach at bridge start ends here: it has no account to give. So does a login whose attach
         # without the account left no time for the one with it; the app's repeat then makes that one.
         what = "MetaTrader 5 is open, but it is not logged in to a trading account or has no connection to Exness"
-        do = ("Press Connect in the app with the account number, the password and the exact server: the bridge passes "
-              "them to MetaTrader 5, which then logs in. To log in yourself instead: "
-              + _steps(_LOG_IN_STEP, "press Connect")
-              + f" If MetaTrader 5 shows your account already: {_NORMAL_START_STEP}, {_ONLY_ONE_STEP}, then {_START_AGAIN}.")
+        if _CONNECTOR_TAKES_TIMEOUT:
+            do = ("Press Connect in the app with the account number, the password and the exact server: the bridge "
+                  "passes them to MetaTrader 5, which then logs in. To log in yourself instead: "
+                  + _steps(_LOG_IN_STEP, "press Connect"))
+        else:  # the bridge does not log MetaTrader 5 in with this connector: the way there was before
+            do = "Do this: " + _steps(_LOG_IN_STEP, "press Connect again")
+        do += f" If MetaTrader 5 shows your account already: {_NORMAL_START_STEP}, {_ONLY_ONE_STEP}, then {_START_AGAIN}."
     elif "not found" in low:
         what = "no MetaTrader 5 desktop program was found on this PC"
         do = (f"If MetaTrader 5 is installed, open it and log in, then {_START_AGAIN}: the launcher saves where it is. "
@@ -864,11 +870,12 @@ def attach_terminal(account=None):
     in the same call when there is time left for it, by the next login
     otherwise. When the attach before this one ended with that answer, the
     one without the account is not repeated: MetaTrader 5 gets the account
-    at once.
+    at once. A connector that takes no waiting time gets no attach with the
+    account (_CONNECTOR_TAKES_TIMEOUT).
     """
     wait_ms = _ATTACH_STATE["wait_ms"]
     recent = _ATTACH_FAILURE
-    account_at_once = account is not None and _wants_account(recent)
+    account_at_once = account is not None and _CONNECTOR_TAKES_TIMEOUT and _wants_account(recent)
     if recent is not None and time.time() - (recent.get("at") or 0.0) < _ATTACH_REPEAT_QUIET_S:
         # The app repeats a failed login at once over HTTP: same answer, no second attempt. One case is
         # no repeat: MetaTrader 5 has just said "not logged in" to an attach without an account, and this
@@ -881,9 +888,9 @@ def attach_terminal(account=None):
         began = _now()
         if not account_at_once:
             _ATTACH_STATE["since"], _ATTACH_STATE["limit_s"] = time.time(), wait_ms / 1000.0
-            if _attach_terminal_once(wait_ms, account_follows=account is not None):
+            if _attach_terminal_once(wait_ms, account_follows=account is not None and _CONNECTOR_TAKES_TIMEOUT):
                 return True
-            if account is None or not _wants_account(_ATTACH_FAILURE):
+            if account is None or not _CONNECTOR_TAKES_TIMEOUT or not _wants_account(_ATTACH_FAILURE):
                 return False
         left_ms = min(wait_ms, _ACCOUNT_ATTACH_END_MS) - (_now() - began) * 1000.0
         if left_ms < _ACCOUNT_ATTACH_MIN_MS:
@@ -903,7 +910,10 @@ def _initialize(path, wait_ms, account=None):
     connector not take it, the call is made the way it was made before, and
     then the connector's own 60 seconds apply. `account` is (login, password,
     server): MetaTrader 5 then logs in to that account as part of the attach.
+    That attach is never made without a waiting time: with an account, the
+    error is the caller's to report.
     """
+    global _CONNECTOR_TAKES_TIMEOUT
     where = (path,) if path else ()
     named = {}
     if account is not None:
@@ -912,7 +922,11 @@ def _initialize(path, wait_ms, account=None):
     try:
         return mt5.initialize(*where, timeout=int(wait_ms), **named), wait_ms / 1000.0
     except TypeError:
-        return mt5.initialize(*where, **named), 60.0
+        if account is not None:
+            raise
+        ok = mt5.initialize(*where)  # a TypeError here as well was about something else: it goes to the caller
+        _CONNECTOR_TAKES_TIMEOUT = False
+        return ok, 60.0
 
 
 def _without_account(text, account):

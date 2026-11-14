@@ -217,6 +217,11 @@ starts without MetaTrader 5; there, code -6 reads "not logged in".
     once.
   - A bridge that is bound to one account refuses a login for another before
     MetaTrader 5 is asked to log in to it.
+  - A `MetaTrader5` package whose `initialize()` takes no `timeout` waits its
+    own 60 seconds. The attach with the account must end within the time the
+    app waits, so with such a package it is not made, and Connect answers as
+    before: log in inside MetaTrader 5. (MetaQuotes documents `timeout` for
+    the current package, which is the one `bridge/requirements.txt` asks for.)
   - When MetaTrader 5 does not accept the three, the message says so, and the
     bottom-right corner of MetaTrader 5 says why: a connection speed (it has
     logged in meanwhile: press Connect again), `Invalid account` (Exness did
