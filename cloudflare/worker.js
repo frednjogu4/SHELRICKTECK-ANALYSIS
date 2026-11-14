@@ -395,6 +395,8 @@ function createReadOnlyWorker({
           wait_detail: sig.signal === 'WAIT' ? 'Daily indicators are mixed — no directional edge today.' : null,
           confidence: sig.confidence, entry: null, stop_loss: null, tp1: null, tp2: null,
           tf: 'DAILY (index)', model: 'technical-daily', source, data_source: source,
+          pro_scalper: { ok: false, status: 'NOT_APPLICABLE_DAILY_INDEX_TIMEFRAME', executionAuthorized: false },
+          aster: { status: 'BLOCKED', publishable: false, publicationBlocked: true, publicationDecision: 'BLOCK_PUBLICATION', rejectionReasons: ['Daily index feed is not a scalping timeframe; full ASTER evidence is unavailable.'] },
           /* The day this reading speaks for: the newest daily bar it was computed
              from, and whether that bar was a close or still forming. `ts` is only
              the moment of this answer. */
