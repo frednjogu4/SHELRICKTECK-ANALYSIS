@@ -1379,8 +1379,9 @@ function renderSignals(){
     card.querySelector('.sig-why').textContent=String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase()+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
     const ps=sig.pro_scalper, pi=ps&&ps.indicators, proEl=card.querySelector('.sig-pro');
     if(ps&&ps.ok&&pi){
-      const k=pi.stochasticRsi;
-      proEl.textContent='PRO SCALPER · Stoch RSI '+(k?k.k.toFixed(1)+' / '+k.d.toFixed(1):'—')+' · CCI '+(Number.isFinite(pi.cci)?pi.cci.toFixed(1):'—')+' · Williams %R '+(Number.isFinite(pi.williamsR)?pi.williamsR.toFixed(1):'—')+' · Supertrend '+(pi.supertrend?.direction||'—')+' · Keltner '+(pi.keltner?pi.keltner.mid.toFixed(I.d):'—')+(ps.dataQuality?.volumeAvailable?' · volume metrics available':' · volume metrics unavailable');
+      const k=pi.stochasticRsi, ic=pi.ichimoku, vp=pi.volumeProfile;
+      const cloud=ic?(ic.spanA>ic.spanB?'bullish':'bearish'):'—';
+      proEl.textContent='PRO SCALPER · Stoch RSI '+(k?k.k.toFixed(1)+' / '+k.d.toFixed(1):'—')+' · CCI '+(Number.isFinite(pi.cci)?pi.cci.toFixed(1):'—')+' · Williams %R '+(Number.isFinite(pi.williamsR)?pi.williamsR.toFixed(1):'—')+' · Supertrend '+(pi.supertrend?.direction||'—')+' · Ichimoku '+cloud+' · Keltner '+(pi.keltner?pi.keltner.mid.toFixed(I.d):'—')+' · AVWAP '+(pi.anchoredVwap?pi.anchoredVwap.value.toFixed(I.d):'anchor not configured')+(ps.dataQuality?.volumeAvailable?' · OBV '+(Number.isFinite(pi.obv)?pi.obv.toFixed(0):'—')+' · MFI '+(Number.isFinite(pi.mfi)?pi.mfi.toFixed(1):'—')+' · VP POC '+(vp?vp.poc.toFixed(I.d):'—'):' · OBV/MFI/VP unavailable: real volume missing');
     }else proEl.textContent='PRO SCALPER · unavailable: '+String(ps?.status||'verified M5 candle snapshot not supplied').replaceAll('_',' ').toLowerCase();
     const ag=sig.aster, asterEl=card.querySelector('.sig-aster');
     asterEl.textContent='ASTER · '+(ag?.publishable===true?'READY FOR MANUAL REVIEW':ag?.status==='NOT_VALIDATED'?'NOT VALIDATED · publication blocked':'BLOCKED · '+String(ag?.status||'missing evidence'))+(ag?.rejectionReasons?.length?' · '+ag.rejectionReasons.slice(0,2).join('; '):'');
@@ -3199,18 +3200,26 @@ function renderProScalperDashboard(){
   const rows=Object.values(state.mktScan||{}).filter(r=>r&&!r.error&&r.pro_scalper?.ok&&r.data_state!=='daily').sort((a,b)=>(Number(b.confidence)||0)-(Number(a.confidence)||0));
   const best=rows[0];
   if(!best){ panel.innerHTML='<div class="row between wrap"><b>Pro Scalper indicators</b><span class="badge gray">Awaiting verified M5 data</span></div><p class="tiny faint" style="margin-top:6px">Indicator values appear when the scanner has enough closed candles. Missing volume and unsupported timeframes remain unavailable.</p>'; return; }
-  const p=best.pro_scalper, i=p.indicators||{}, k=i.stochasticRsi, a=best.aster;
+  const p=best.pro_scalper, i=p.indicators||{}, k=i.stochasticRsi, ic=i.ichimoku, kc=i.keltner, vp=i.volumeProfile, a=best.aster;
   const fmt=(v,d=2)=>Number.isFinite(Number(v))?Number(v).toFixed(d):'—';
   const gate=a?.publishable===true?'READY FOR MANUAL REVIEW':a?.status==='NOT_VALIDATED'?'NOT VALIDATED · BLOCKED':'BLOCKED · '+String(a?.status||'missing evidence');
+  const volume=p.dataQuality?.volumeAvailable===true;
+  const metrics=[
+    ['Stochastic RSI',k?fmt(k.k,1)+' / '+fmt(k.d,1):'unavailable'],
+    ['CCI',fmt(i.cci,1)],
+    ['Williams %R',fmt(i.williamsR,1)],
+    ['Supertrend',i.supertrend?i.supertrend.direction+' · '+fmt(i.supertrend.value,4):'unavailable'],
+    ['Ichimoku',ic?'Tenkan '+fmt(ic.conversion,4)+' · Kijun '+fmt(ic.base,4)+' · Cloud '+(ic.spanA>ic.spanB?'bullish':'bearish'):'unavailable'],
+    ['Keltner',kc?'L '+fmt(kc.lower,4)+' · M '+fmt(kc.mid,4)+' · U '+fmt(kc.upper,4):'unavailable'],
+    ['OBV',volume&&Number.isFinite(i.obv)?fmt(i.obv,0):'unavailable · real volume required'],
+    ['MFI',volume&&Number.isFinite(i.mfi)?fmt(i.mfi,1):'unavailable · real volume required'],
+    ['Anchored VWAP',i.anchoredVwap?fmt(i.anchoredVwap.value,4):'anchor not configured'],
+    ['Volume Profile',volume&&vp?'POC '+fmt(vp.poc,4)+' · VA '+fmt(vp.valueAreaLow,4)+'–'+fmt(vp.valueAreaHigh,4):'unavailable · real volume required']
+  ];
   panel.innerHTML='<div class="row between wrap"><div><b>Pro Scalper indicators</b><div class="tiny faint">'+escHtml(best.symbol)+' · closed M5 candles · '+escHtml(best.data_source||best.source||'source unavailable')+'</div></div><span class="badge gray">ASTER '+escHtml(gate)+'</span></div>'
-    +'<div class="row wrap" style="gap:8px 16px;margin-top:10px;font-size:12px">'
-    +'<span>Stoch RSI <b class="mono">'+(k?fmt(k.k,1)+' / '+fmt(k.d,1):'—')+'</b></span>'
-    +'<span>CCI <b class="mono">'+fmt(i.cci,1)+'</b></span>'
-    +'<span>Williams %R <b class="mono">'+fmt(i.williamsR,1)+'</b></span>'
-    +'<span>Supertrend <b>'+escHtml(i.supertrend?.direction||'—')+'</b></span>'
-    +'<span>Keltner mid <b class="mono">'+fmt(i.keltner?.mid,4)+'</b></span>'
-    +'<span>Volume metrics <b>'+(p.dataQuality?.volumeAvailable?'available':'unavailable')+'</b></span></div>'
-    +'<p class="tiny faint" style="margin-top:8px">Analysis only. ASTER blocks publication when required evidence is missing, unknown, stale or invalid. No order authorization.</p>';
+    +'<div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;margin-top:10px">'
+    +metrics.map(([label,value])=>'<div style="padding:8px 10px;border:1px solid var(--border-soft);border-radius:7px;background:var(--surface-2)"><div class="tiny faint">'+label+'</div><div class="small mono" style="margin-top:3px">'+escHtml(value)+'</div></div>').join('')
+    +'</div><p class="tiny faint" style="margin-top:8px">Volume Profile is a bar-close OHLCV approximation, not tick-level volume-at-price. Anchored VWAP requires an explicit market/session anchor. Analysis only; ASTER blocks publication when required evidence is missing, unknown, stale or invalid. No order authorization.</p>';
 }
 function renderOverview(){
   updateKpis();
