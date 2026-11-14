@@ -133,7 +133,7 @@ export function buildAsterPlanEvidence({ direction, entry, stopLoss, tp1, tp2 } 
   const supplied = values.every((v) => Number.isFinite(v) && v > 0);
   if (!supplied || !['LONG', 'SHORT'].includes(dir)) {
     return {
-      stopLossValid: supplied && !['LONG', 'SHORT'].includes(dir) ? false : null,
+      stopLossValid: null,
       measuredTargetsValid: null,
       rrAtTp1: null,
       diagnostics: { supplied, directionValid: ['LONG', 'SHORT'].includes(dir) }
