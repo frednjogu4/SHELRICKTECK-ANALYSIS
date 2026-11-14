@@ -72,7 +72,8 @@ export function buildAsterCandleEvidence({ candleSets = {}, direction, now = Dat
   const dir = String(direction || '').toUpperCase();
   const nowSec = Number(now) / 1000;
   const frames = Object.fromEntries(Object.keys(PERIODS).map(tf => [tf, analyzeFrame(candleSets[tf], tf, nowSec)]));
-  const complete = Object.values(frames).every(f => f.valid);
+  const present = Object.keys(PERIODS).every(tf => Array.isArray(candleSets[tf]));
+  const complete = present && Object.values(frames).every(f => f.valid);
   const aligned = (tf) => frames[tf].valid && frames[tf].direction === dir && (dir === 'LONG' || dir === 'SHORT');
   const htfAligned = aligned('d1') && aligned('h4');
   const h1 = frames.h1, m15 = frames.m15;
@@ -87,8 +88,8 @@ export function buildAsterCandleEvidence({ candleSets = {}, direction, now = Dat
     : m15.lastClosed.close < m15.previousClosed.low && m15.lastClosed.close < m15.lastClosed.open);
   const indicatorsValid = complete && Object.values(frames).every(f => f.indicatorsValid);
   const evidence = {
-    ohlcValid: complete,
-    marketDataFresh: complete && Object.values(frames).every(f => f.fresh),
+    ohlcValid: present ? complete : null,
+    marketDataFresh: complete ? Object.values(frames).every(f => f.fresh) : null,
     d1Trend: frames.d1.valid ? aligned('d1') : null,
     h4Trend: frames.h4.valid ? aligned('h4') : null,
     h1Setup: frames.h1.valid ? h1Setup : null,
