@@ -1670,7 +1670,7 @@ function signalBadge(I){
       if(st==='stale')return '<span class="badge gray" title="'+escHtml(r.detail||'')+'">Stale data</span>';
       return '<span class="badge gray" title="'+escHtml(r.detail||'No verified candle data; analysis resumes when a supported feed is available.')+'">'+(st==='unavailable'?'Feed unavailable':'No data')+' <button type="button" class="btn sm ghost msig-retry" aria-label="Retry scan for '+escHtml(I.s)+'" style="padding:0 5px;margin-left:4px">Retry</button></span>';
     }
-    const v=escHtml(r.votes||'');
+    const v=escHtml(isAsterPublishable(r)?(r.votes||''):'ASTER validation pending; timeframe votes withheld');
     const partial=r.data_ok===false?' (some timeframes lack data — not confirmable)':'';
     if(isDirectionalCandidate(r)&&!isAsterPublishable(r))return '<span class="badge gray" title="Technical candidate withheld because ASTER has not approved publication.">ASTER blocked</span>';
     if(r.signal==='BUY')  return '<span class="badge buy" title="ASTER approved · MTF confirmed — '+v+'">Buy '+liveScoreHtml(r,'span')+'</span>';
@@ -1681,7 +1681,8 @@ function signalBadge(I){
     if(r.bias==='bearish')return '<span class="badge lean lean-dn" title="ASTER approved · direction leans down but timeframes are not fully confirmed'+partial+' — '+v+'">▼ Lean down</span>';
     const wr=r.wait_reason?(' ['+r.wait_reason+']'):'';
     const short={MTF_CONFLICT:'TFs disagree',MTF_NO_ALIGNMENT:'no alignment',MTF_LEAN_NOT_CONFIRMED:'lean unconfirmed',INSUFFICIENT_CANDLES:'data short',STALE_DATA:'stale feed',FEED_ERROR:'feed error'}[r.wait_reason]||'';
-    return '<span class="badge wait" title="Wait'+wr+partial+' — '+(r.wait_detail||('no alignment — '+v))+'">Wait'+(short?' · '+escHtml(short):'')+'</span>';
+    const waitDetail=isAsterPublishable(r)?(r.wait_detail||('no alignment — '+v)):'ASTER has not validated this reading; timeframe votes are withheld.';
+    return '<span class="badge wait" title="Wait'+wr+partial+' — '+waitDetail+'">Wait'+(short?' · '+escHtml(short):'')+'</span>';
   }
   if(state.mktScanFailed) return '<span class="badge gray">Scan unavailable <button type="button" class="btn sm ghost msig-retry" style="padding:0 8px;margin-left:6px">Retry</button></span>';
   return '<span class="badge gray">Scanning…</span>'; /* first scan in flight — honest, never a dead ellipsis */
