@@ -17,6 +17,7 @@ import { planPosition } from './sizer.js';
 import { isOnlyOpenTradesGateFailure, verifyBrokerOpenTradeCount } from './mt5Risk.js';
 import { analyzeTimeframe, confirmMultiTimeframe, votesSummary, runDeterministicAnalysis, waitReason } from '../server/lib/analyzer.js';
 import { localDecision } from '../server/lib/localdecision.js';
+import { buildProScalperSnapshot } from '../server/lib/indicators.pro.js';
 import { notify, initNotifications, enableNotifications, notifState, LEVEL_GUIDE } from './notify.js';
 import { getKeys, setKeys, clearKeys, hasAnyKey, keyHeaders } from './vault.js';
 import { derivHealth, derivProposal, derivConfirm, tickFeed } from './derivproxy.js';
@@ -1358,6 +1359,8 @@ function renderSignals(){
         '<div><div class="k">Target</div><div class="v up" data-l="t"></div></div>'+
       '</div>'+
       '<p class="sig-why"></p>'+
+      '<div class="tiny faint sig-pro" style="margin:7px 0 3px;line-height:1.55"></div>'+
+      '<div class="tiny faint sig-aster" style="margin-bottom:8px;line-height:1.5"></div>'+
       '<div class="row"><button class="btn sm grow sig-chart">Open chart</button><button class="btn primary sm grow sig-use">Use setup</button></div>';
     card.querySelector('.sym-avatar').textContent=sig.symbol.replace(/[^A-Z0-9]/g,'').slice(0,3);
     card.querySelector('.sym-name').textContent=sig.symbol;
@@ -1372,6 +1375,13 @@ function renderSignals(){
     card.querySelector('[data-l="s"]').textContent=fmtPx(sig.stop_loss,I.d);
     card.querySelector('[data-l="t"]').textContent=fmtPx(sig.tp1,I.d);
     card.querySelector('.sig-why').textContent=String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase()+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
+    const ps=sig.pro_scalper, pi=ps&&ps.indicators, proEl=card.querySelector('.sig-pro');
+    if(ps&&ps.ok&&pi){
+      const k=pi.stochasticRsi;
+      proEl.textContent='PRO SCALPER · Stoch RSI '+(k?k.k.toFixed(1)+' / '+k.d.toFixed(1):'—')+' · CCI '+(Number.isFinite(pi.cci)?pi.cci.toFixed(1):'—')+' · Williams %R '+(Number.isFinite(pi.williamsR)?pi.williamsR.toFixed(1):'—')+' · Supertrend '+(pi.supertrend?.direction||'—')+' · Keltner '+(pi.keltner?pi.keltner.mid.toFixed(I.d):'—')+(ps.dataQuality?.volumeAvailable?' · volume metrics available':' · volume metrics unavailable');
+    }else proEl.textContent='PRO SCALPER · unavailable: '+String(ps?.status||'verified M5 candle snapshot not supplied').replaceAll('_',' ').toLowerCase();
+    const ag=sig.aster, asterEl=card.querySelector('.sig-aster');
+    asterEl.textContent='ASTER · '+(ag?.publishable===true?'READY FOR MANUAL REVIEW':ag?.status==='NOT_VALIDATED'?'NOT VALIDATED · publication blocked':'BLOCKED · '+String(ag?.status||'missing evidence'))+(ag?.rejectionReasons?.length?' · '+ag.rejectionReasons.slice(0,2).join('; '):'');
     card.querySelector('.sig-chart').onclick=()=>openSignalSymbol(sig.symbol);
     card.querySelector('.sig-use').onclick=()=>{
       state.side=sig.signal==='SELL'?'SELL':'BUY';
@@ -1471,7 +1481,8 @@ async function exnessSignalFor(I,includeCandles=false){
   const stale=['m1','m5','h1'].find(k=>!newest[k]||!marketCandleFresh(newest[k].time,limits[k]));
   if(stale)throw new Error('Exness latest '+({m1:'M1',m5:'M5',h1:'H1'}[stale])+' candle is stale.');
   const dec=localDecision(det),wr=dec.signal==='WAIT'?waitReason(det,{maxAgeSec:3*3600+300}):null;
-  return {symbol:I.s,price,signal:dec.signal,bias:dec.bias,confidence:dec.confidence,entry:dec.entry,stop_loss:dec.stop_loss,tp1:dec.tp1,tp2:dec.tp2,rrr:dec.rrr,mtf_signal:det.mtfSignal,data_ok:true,votes:votesSummary(det.analyses),wait_reason:wr&&wr.code,wait_detail:wr&&wr.detail,tf:'MTF 1m/5m/1h',model:'technical-exness',source:'Exness MT5 local candles',data_source:'Exness MT5 local candles · '+String(q.symbol||I.s),latest_candle_time:newest.m1.time,candle_close:closed.close,ts:Date.now(),fallback:false,...(includeCandles?{candle_sets:sets}: {})};
+  const proScalper=buildProScalperSnapshot(closed.sets.m5||[]);
+  return {symbol:I.s,price,signal:dec.signal,bias:dec.bias,confidence:dec.confidence,entry:dec.entry,stop_loss:dec.stop_loss,tp1:dec.tp1,tp2:dec.tp2,rrr:dec.rrr,mtf_signal:det.mtfSignal,data_ok:true,votes:votesSummary(det.analyses),wait_reason:wr&&wr.code,wait_detail:wr&&wr.detail,tf:'MTF 1m/5m/1h',model:'technical-exness',source:'Exness MT5 local candles',data_source:'Exness MT5 local candles · '+String(q.symbol||I.s),latest_candle_time:newest.m1.time,candle_close:closed.close,pro_scalper:Object.assign({},proScalper,{validation:{priceIndicatorsValid:!!(proScalper.ok&&proScalper.indicators&&proScalper.indicators.supertrend&&proScalper.indicators.ichimoku&&proScalper.indicators.keltner&&proScalper.indicators.stochasticRsi&&Number.isFinite(proScalper.indicators.cci)&&Number.isFinite(proScalper.indicators.williamsR)),mode:'browser-calculated'}}),aster:{status:'NOT_VALIDATED',publishable:false,publicationBlocked:true,publicationDecision:'BLOCK_PUBLICATION',rejectionReasons:['Local scanner reading does not include the complete server-side ASTER evidence set.']},ts:Date.now(),fallback:false,...(includeCandles?{candle_sets:sets}: {})};
 }
 function fallbackSourceFor(r){
   if(r&&r.source)return String(r.source);
@@ -3176,8 +3187,29 @@ function updateKpis(){
 /* ================================================================
    OVERVIEW
    ================================================================ */
+function renderProScalperDashboard(){
+  const ov=$('#view-overview'); if(!ov)return;
+  let panel=$('#ovProScalper');
+  if(!panel){ panel=document.createElement('div'); panel.id='ovProScalper'; panel.className='card'; panel.style.cssText='padding:14px 16px;margin-bottom:14px'; const daily=$('#ovDaily'); if(daily&&daily.parentNode===ov)daily.insertAdjacentElement('afterend',panel); else ov.prepend(panel); }
+  const rows=Object.values(state.mktScan||{}).filter(r=>r&&!r.error&&r.pro_scalper?.ok&&r.data_state!=='daily').sort((a,b)=>(Number(b.confidence)||0)-(Number(a.confidence)||0));
+  const best=rows[0];
+  if(!best){ panel.innerHTML='<div class="row between wrap"><b>Pro Scalper indicators</b><span class="badge gray">Awaiting verified M5 data</span></div><p class="tiny faint" style="margin-top:6px">Indicator values appear when the scanner has enough closed candles. Missing volume and unsupported timeframes remain unavailable.</p>'; return; }
+  const p=best.pro_scalper, i=p.indicators||{}, k=i.stochasticRsi, a=best.aster;
+  const fmt=(v,d=2)=>Number.isFinite(Number(v))?Number(v).toFixed(d):'—';
+  const gate=a?.publishable===true?'READY FOR MANUAL REVIEW':a?.status==='NOT_VALIDATED'?'NOT VALIDATED · BLOCKED':'BLOCKED · '+String(a?.status||'missing evidence');
+  panel.innerHTML='<div class="row between wrap"><div><b>Pro Scalper indicators</b><div class="tiny faint">'+escHtml(best.symbol)+' · closed M5 candles · '+escHtml(best.data_source||best.source||'source unavailable')+'</div></div><span class="badge gray">ASTER '+escHtml(gate)+'</span></div>'
+    +'<div class="row wrap" style="gap:8px 16px;margin-top:10px;font-size:12px">'
+    +'<span>Stoch RSI <b class="mono">'+(k?fmt(k.k,1)+' / '+fmt(k.d,1):'—')+'</b></span>'
+    +'<span>CCI <b class="mono">'+fmt(i.cci,1)+'</b></span>'
+    +'<span>Williams %R <b class="mono">'+fmt(i.williamsR,1)+'</b></span>'
+    +'<span>Supertrend <b>'+escHtml(i.supertrend?.direction||'—')+'</b></span>'
+    +'<span>Keltner mid <b class="mono">'+fmt(i.keltner?.mid,4)+'</b></span>'
+    +'<span>Volume metrics <b>'+(p.dataQuality?.volumeAvailable?'available':'unavailable')+'</b></span></div>'
+    +'<p class="tiny faint" style="margin-top:8px">Analysis only. ASTER blocks publication when required evidence is missing, unknown, stale or invalid. No order authorization.</p>';
+}
 function renderOverview(){
   updateKpis();
+  renderProScalperDashboard();
   renderOvDaily(); renderBestPick();
   const posEl=$('#ovPositions');
   if(posEl){
