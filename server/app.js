@@ -24,6 +24,7 @@ import { closedCandleSets } from './lib/closedcandles.js';
 import { makeDecision, availableEngines, newsBriefViaPerplexity, newsBriefAny } from './lib/decision.js';
 import { waSend, waStatus, waRateOk } from './lib/wa.js';
 import { evaluateRisk, bossVerdict } from './lib/riskgate.js';
+import { validateAsterSignal } from './lib/astergate.js';
 import { isTradingKilled, setTradingKilled, requireTrading } from './lib/killswitch.js';
 import { runPipeline } from './lib/pipeline/index.js';
 import { parseRss, biasFor, calendarTodayUtc, parseFfCalendar, RSS_SOURCES } from './lib/news.js';
@@ -293,7 +294,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
 
       /* 5-min active-signal cache (cost guard) unless force */
       const active = store.getActive(user, symbol);
-      if (!technicalOnly && active && !force) {
+      if (!technicalOnly && active && active.payload?.aster?.publishable === true && !force) {
         return res.json(Object.assign({}, active.payload, { meta: Object.assign({}, active.meta, { cached: true }) }));
       }
 
@@ -374,9 +375,88 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         candle_close: closed.close,
         candle_current: closed.current
       });
+      /* ASTER strategy inventory: keep the repository's two strategy families
+         separate. The source currently defines 4 rule-based setups and 12
+         chart patterns (16 inventory entries, not 15). Each family is evaluated
+         against the same completed M5 candle window; no strategies are invented. */
+      let asterStrategyEvaluation;
+      try {
+        const m5Window = closed.sets.m5;
+        const ruleBased = evaluateSetups({
+          symbol, candles: m5Window, granularity: GRAN['5m'],
+          category: setupsCategory(null, symbol)
+        });
+        const detected = detectPatterns(m5Window);
+        const detectedByKey = new Map(detected.map((p) => [p.key, p]));
+        asterStrategyEvaluation = {
+          ruleBasedSetups: {
+            expected: ruleBased.results.length,
+            evaluated: ruleBased.results.length,
+            results: ruleBased.results
+          },
+          chartPatterns: {
+            expected: PATTERN_KEYS.length,
+            evaluated: PATTERN_KEYS.length,
+            results: PATTERN_KEYS.map((key) => ({
+              key,
+              state: detectedByKey.has(key) ? 'DETECTED' : 'NOT_DETECTED',
+              detection: detectedByKey.get(key) || null
+            }))
+          },
+          totalInventoryEntries: ruleBased.results.length + PATTERN_KEYS.length,
+          source: 'completed M5 candles'
+        };
+      } catch (strategyError) {
+        asterStrategyEvaluation = {
+          ruleBasedSetups: { expected: 4, evaluated: 0, results: [] },
+          chartPatterns: { expected: PATTERN_KEYS.length, evaluated: 0, results: [] },
+          totalInventoryEntries: 4 + PATTERN_KEYS.length,
+          error: String(strategyError.message || strategyError).slice(0, 120)
+        };
+      }
+      const rawDirection = String(payload.signal || '').toUpperCase();
+      const aster = validateAsterSignal({
+        symbol,
+        direction: rawDirection === 'BUY' ? 'LONG' : rawDirection === 'SELL' ? 'SHORT' : rawDirection,
+        setupDetected: rawDirection === 'BUY' || rawDirection === 'SELL' || rawDirection === 'LONG' || rawDirection === 'SHORT',
+        evidence: {
+          symbolValid: true,
+          marketDataFresh: det.ok === true,
+          candleCloseConfirmed: closed.current === true,
+          /* The current analysis path does not yet provide these independently verified inputs.
+             They remain UNKNOWN rather than being inferred from a directional indicator. */
+          bidAskValid: null, spreadValid: null, ohlcValid: null,
+          d1Trend: null, h4Trend: null, h1Setup: null, m15Confirmation: null,
+          indicatorsValid: null, structureValid: null, newsValidated: null,
+          stopLossValid: null, measuredTargetsValid: null, positionSizingValid: null,
+          brokerConstraintsValid: null, riskWithinLimit: null
+        },
+        confluence: {
+          htfStructure: null, priceAction: null, setupQuality: null,
+          indicators: null, entryConfirmation: null, newsConditions: null
+        },
+        rrAtTp1: Number.isFinite(Number(payload.rrr)) ? Number(payload.rrr) : null,
+        accountRiskPercent: null,
+        configuredRiskLimitPercent: Number(process.env.ASTER_MAX_ACCOUNT_RISK_PERCENT)
+      }, {
+        minimumConfluenceScore: Number.isFinite(Number(process.env.ASTER_MIN_CONFLUENCE_SCORE))
+          ? Number(process.env.ASTER_MIN_CONFLUENCE_SCORE) : 70
+      });
+      payload.aster = Object.assign({}, aster, { strategyEvaluation: asterStrategyEvaluation });
+      /* Keep the deterministic technical reading byte-for-byte compatible with
+         the browser and Worker. ASTER is a separate publication decision: it
+         may block publication, but must never rewrite signal/levels/wait fields. */
+      payload.aster.publicationBlocked = !aster.publishable;
+      payload.aster.publicationDecision = aster.publishable
+        ? 'ALLOW_MANUAL_REVIEW'
+        : 'BLOCK_PUBLICATION';
+      log.info('aster.validation', {
+        symbol, status: aster.status, score: aster.score,
+        checks: aster.checks, rejectionReasons: aster.rejectionReasons
+      });
       const fullMeta = Object.assign({}, meta, { cached: false, at: new Date().toISOString() });
 
-      if (!technicalOnly) store.addSignal({
+      if (!technicalOnly && aster.publishable) store.addSignal({
         user, symbol, timeframe: 'MTF',
         signal: payload.signal, confidence: payload.confidence, entry: payload.entry,
         active: true, created_at: new Date().toISOString(),
@@ -434,11 +514,42 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         if (isResumed(closed)) return Object.assign(resumedAnswer(symbol, 'Deriv public candles', latestCandleTime, closed), { ts: Date.now() });
         const det = runDeterministicAnalysis(symbol, closed.sets);
         const dec = localDecision(det);
+        const scanDirection = String(dec.signal || '').toUpperCase();
+        const scanAster = validateAsterSignal({
+          symbol,
+          direction: scanDirection === 'BUY' ? 'LONG' : scanDirection === 'SELL' ? 'SHORT' : scanDirection,
+          setupDetected: scanDirection === 'BUY' || scanDirection === 'SELL' || scanDirection === 'LONG' || scanDirection === 'SHORT',
+          evidence: {
+            symbolValid: true, marketDataFresh: det.ok === true,
+            candleCloseConfirmed: closed.current === true,
+            bidAskValid: null, spreadValid: null, ohlcValid: null,
+            d1Trend: null, h4Trend: null, h1Setup: null, m15Confirmation: null,
+            indicatorsValid: null, structureValid: null, newsValidated: null,
+            stopLossValid: null, measuredTargetsValid: null, positionSizingValid: null,
+            brokerConstraintsValid: null, riskWithinLimit: null
+          },
+          confluence: {
+            htfStructure: null, priceAction: null, setupQuality: null,
+            indicators: null, entryConfirmation: null, newsConditions: null
+          },
+          rrAtTp1: dec.rrr == null ? null : Number(dec.rrr),
+          accountRiskPercent: null,
+          configuredRiskLimitPercent: Number(process.env.ASTER_MAX_ACCOUNT_RISK_PERCENT)
+        }, {
+          minimumConfluenceScore: Number(process.env.ASTER_MIN_CONFLUENCE_SCORE || 70)
+        });
         const price = det.analyses.m1?.currentPrice ?? null;
         const wr = dec.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
         return {
           symbol, price, mtf_signal: det.mtfSignal, data_ok: det.ok,
-          signal: dec.signal, bias: dec.bias, votes: votesSummary(det.analyses),
+          /* Preserve the canonical deterministic reading for PC/browser/Worker parity.
+             ASTER independently controls whether it may be published or acted on. */
+          signal: dec.signal,
+          aster: Object.assign({}, scanAster, {
+            publicationBlocked: !scanAster.publishable,
+            publicationDecision: scanAster.publishable ? 'ALLOW_MANUAL_REVIEW' : 'BLOCK_PUBLICATION'
+          }),
+          bias: dec.bias, votes: votesSummary(det.analyses),
           wait_reason: wr ? wr.code : null, wait_detail: wr ? wr.detail : null,
           confidence: dec.confidence,
           entry: dec.entry, stop_loss: dec.stop_loss, tp1: dec.tp1, tp2: dec.tp2,
