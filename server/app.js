@@ -375,6 +375,45 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         candle_close: closed.close,
         candle_current: closed.current
       });
+      /* ASTER strategy inventory: keep the repository's two strategy families
+         separate. The source currently defines 4 rule-based setups and 12
+         chart patterns (16 inventory entries, not 15). Each family is evaluated
+         against the same completed M5 candle window; no strategies are invented. */
+      let asterStrategyEvaluation;
+      try {
+        const m5Window = closed.sets.m5;
+        const ruleBased = evaluateSetups({
+          symbol, candles: m5Window, granularity: GRAN['5m'],
+          category: setupsCategory(null, symbol)
+        });
+        const detected = detectPatterns(m5Window);
+        const detectedByKey = new Map(detected.map((p) => [p.key, p]));
+        asterStrategyEvaluation = {
+          ruleBasedSetups: {
+            expected: ruleBased.results.length,
+            evaluated: ruleBased.results.length,
+            results: ruleBased.results
+          },
+          chartPatterns: {
+            expected: PATTERN_KEYS.length,
+            evaluated: PATTERN_KEYS.length,
+            results: PATTERN_KEYS.map((key) => ({
+              key,
+              state: detectedByKey.has(key) ? 'DETECTED' : 'NOT_DETECTED',
+              detection: detectedByKey.get(key) || null
+            }))
+          },
+          totalInventoryEntries: ruleBased.results.length + PATTERN_KEYS.length,
+          source: 'completed M5 candles'
+        };
+      } catch (strategyError) {
+        asterStrategyEvaluation = {
+          ruleBasedSetups: { expected: 4, evaluated: 0, results: [] },
+          chartPatterns: { expected: PATTERN_KEYS.length, evaluated: 0, results: [] },
+          totalInventoryEntries: 4 + PATTERN_KEYS.length,
+          error: String(strategyError.message || strategyError).slice(0, 120)
+        };
+      }
       const rawDirection = String(payload.signal || '').toUpperCase();
       const aster = validateAsterSignal({
         symbol,
@@ -403,7 +442,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         minimumConfluenceScore: Number.isFinite(Number(process.env.ASTER_MIN_CONFLUENCE_SCORE))
           ? Number(process.env.ASTER_MIN_CONFLUENCE_SCORE) : 70
       });
-      payload.aster = aster;
+      payload.aster = Object.assign({}, aster, { strategyEvaluation: asterStrategyEvaluation });
       if (!aster.publishable) {
         payload.signal = 'WAIT';
         payload.wait_reason = 'aster_validation_blocked';
