@@ -127,6 +127,7 @@ window.fetch = function(url, opts){
       next_watch: 'Hold above 1.1021 keeps the structure bullish.',
       mtf_signal: 'BUY_CONFIRMED', data_ok: true, sentiment_score: 55, sentiment_source: 'derived',
       news: { available: false, reason: 'no_perplexity_key' },
+      aster: { status: 'READY FOR MANUAL REVIEW', publishable: true, publicationBlocked: false, publicationDecision: 'ALLOW_MANUAL_REVIEW', rejectionReasons: [] },
       meta: { mode: 'technical', reason: 'no_keys', spent: 0, cap: 5, engines: [], failures: [], cached: false }
     });
   }
@@ -328,9 +329,9 @@ async function run() {
   check('az history row', $('#azHistBody').children.length === 1, $('#azHistBody').children.length);
   click($('#azUse'));
   await sleep(60);
-  check('az use -> trade view', $('#view-trade').classList.contains('active'));
-  check('az levels applied', parseFloat($('#orderSL').value) === 1.1035 && parseFloat($('#orderTP').value) === 1.107, $('#orderSL').value + '/' + $('#orderTP').value);
-  check('az tp2 applied', parseFloat($('#orderTP2').value) === 1.1095, $('#orderTP2').value);
+  check('az use remains analysis-only', $('#azUse').disabled && !$('#view-trade').classList.contains('active'));
+  check('az levels are not copied into the order ticket', $('#orderSL').value === '' && $('#orderTP').value === '', $('#orderSL').value + '/' + $('#orderTP').value);
+  check('az tp2 is not copied into the order ticket', $('#orderTP2').value === '', $('#orderTP2').value);
 
   /* 6a — changing instruments must clear stale levels; late scans cannot overwrite the new ticket */
   const chartSel = $('#chartSymbol');
@@ -341,10 +342,10 @@ async function run() {
   await sleep(40); /* XAU result intentionally delayed and returns WAIT */
   chartSel.value = 'EUR/USD'; chartSel.dispatchEvent(new window.Event('change', { bubbles: true }));
   await sleep(80);
-  check('new symbol receives only its own current levels', $('#orderSL').value === '1.09900' && $('#orderTP').value === '1.11200' && $('#orderTP2').value === '1.11800', $('#orderSL').value + '/' + $('#orderTP').value + '/' + $('#orderTP2').value);
+  check('new symbol does not auto-populate ticket levels', $('#orderSL').value === '' && $('#orderTP').value === '' && $('#orderTP2').value === '', $('#orderSL').value + '/' + $('#orderTP').value + '/' + $('#orderTP2').value);
   if (window.__resolveDeferredScan) window.__resolveDeferredScan();
   await sleep(80);
-  check('late XAU WAIT scan cannot overwrite EUR/USD ticket levels', $('#orderSL').value === '1.09900' && $('#orderTP').value === '1.11200' && $('#orderTP2').value === '1.11800', $('#orderSL').value + '/' + $('#orderTP').value + '/' + $('#orderTP2').value);
+  check('late XAU WAIT scan cannot auto-populate EUR/USD ticket levels', $('#orderSL').value === '' && $('#orderTP').value === '' && $('#orderTP2').value === '', $('#orderSL').value + '/' + $('#orderTP').value + '/' + $('#orderTP2').value);
 
   /* 7 — settings: AI key vault + notifications */
   click(doc.querySelector('.nav-item[data-view="settings"]'));
@@ -727,7 +728,7 @@ async function run() {
   check('scan saved to cloud', (window.__apiCalls || []).some((c) => c.startsWith('POST') && c.includes('supabase.co/rest/v1/analysis_history')), 'calls=' + (window.__apiCalls || []).filter((c) => c.includes('supabase')).slice(0, 3).join(' ; '));
   click($('#azRun'));
   await sleep(500);
-  check('signal why-panel rendered', !!$('#azWhy') && ($('#azWhy').textContent.includes('votes') || $('#azWhy').textContent.includes('Why WAIT')), ($('#azWhy')||{}).textContent?.slice(0, 90));
+  check('signal why-panel rendered', !!$('#azWhy') && $('#azWhy').textContent.includes('votes'), ($('#azWhy')||{}).textContent?.slice(0, 90));
 
   check('signal saved to cloud', (window.__apiCalls || []).some((c) => c.startsWith('POST') && c.includes('supabase.co/rest/v1/signals')), 'calls=' + (window.__apiCalls || []).filter((c) => c.includes('signals')).slice(0, 3).join(' ; '));
   click($('#cldLoad'));
@@ -817,7 +818,7 @@ async function run() {
     check('audit C2: bridge needs per-connection login before order/close/positions + rejects cross-origin ws on both ports + optional AURUM_BRIDGE_TOKEN', audBrg.includes('auth_required') && (audBrg.match(/_origin_allowed/g) || []).length >= 4 && audBrg.includes('login required on this connection first') && audBrg.includes('AURUM_BRIDGE_TOKEN') && (audBrg.match(/_NEED_AUTH/g) || []).length >= 3);
     check('audit C3: bridge order/quote replies expose real exposure (effective_notional + clamped_min + volume_min)', audBrg.includes('effective_notional') && audBrg.includes('clamped_min') && (audBrg.match(/volume_min/g) || []).length >= 4);
     check('audit C3 client: min-lot oversize refused pre-buy; warning forbids raising stake/cap and recommends verified smaller minimum', am('Refused: broker minimum lot') && am('const minNotional=') && am('o.effective_notional') && am('No order was sent') && am('Do not raise the stake or server-side cap') && am('verified minimum exposure fits your existing risk limit') && !am('Raise the stake to roughly'));
-    check('audit M2: client fetch timeout on scan calls (AbortSignal.timeout, 30s)', am('timeoutMs=0') && (srcMain2.match(/timeoutMs:30000/g) || []).length >= 3 && am('fallbackSignalBatch') && am('AbortSignal.timeout'));
+    check('audit M2: scan fetches retain bounded timeouts and ticket autofill is read-only', am('timeoutMs=0') && (srcMain2.match(/timeoutMs:30000/g) || []).length >= 2 && am('fallbackSignalBatch') && (srcMain2.match(/AbortSignal.timeout/g) || []).length >= 2 && am('automatic order-ticket population is disabled'));
     check('audit H1: broker secrets are sessionStorage-only with clear-on-logout wording', audIdx.includes('sessionStorage') && audIdx.includes('cleared on disconnect/sign-out') && !audIdx.includes('plain-text backup'));
     check('audit C2 client: Bridge token field actually wired into the login frame', am('mt5Token') && audBjs.includes('token: creds.token'));
   }

@@ -15,6 +15,7 @@ import { localDecision } from '../server/lib/localdecision.js';
 import { closedCandleSets } from '../src/closedcandles.js';
 import { indexDailySignal, parseYahooChart } from '../server/lib/indices.js';
 import { rsi, sma } from '../server/lib/indicators.js';
+import { buildProScalperSnapshot } from '../server/lib/indicators.pro.js';
 import { parseFfCalendar } from '../server/lib/news.js';
 import {
   CALENDAR_KEEP_MS, CALENDAR_LAST_GOOD_MS, CALENDAR_RETRY_MS, CALENDAR_SOURCE, CALENDAR_URL, HEADLINE_SOURCES, HEADLINES_KEEP_MS,
@@ -24,6 +25,24 @@ import {
   HttpError, MAX_JSON_BODY_BYTES, WORKER_SECURITY_HEADERS, allowHeader, createBoundedCache,
   describeError, isAppShellPath, logEvent, readJsonObject, withoutBody
 } from './platform.js';
+
+function proScalperValidation(candles) {
+  const snapshot = buildProScalperSnapshot(candles || []);
+  const keys = ['stochasticRsi', 'cci', 'williamsR', 'supertrend', 'ichimoku', 'keltner'];
+  const missing = keys.filter((key) => {
+    const value = snapshot.indicators && snapshot.indicators[key];
+    return value == null || (typeof value === 'object'
+      ? Object.values(value).some((item) => item == null || (typeof item === 'number' && !Number.isFinite(item)))
+      : typeof value === 'number' && !Number.isFinite(value));
+  });
+  return Object.assign({}, snapshot, {
+    validation: {
+      priceIndicatorsValid: snapshot.ok === true && missing.length === 0,
+      missingPriceIndicators: missing,
+      mode: 'deterministic-candle-snapshot'
+    }
+  });
+}
 
 const DERIV_PUBLIC_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
 const GRANULARITIES = new Set([60, 300, 3600]);
@@ -376,6 +395,8 @@ function createReadOnlyWorker({
           wait_detail: sig.signal === 'WAIT' ? 'Daily indicators are mixed — no directional edge today.' : null,
           confidence: sig.confidence, entry: null, stop_loss: null, tp1: null, tp2: null,
           tf: 'DAILY (index)', model: 'technical-daily', source, data_source: source,
+          pro_scalper: { ok: false, status: 'NOT_APPLICABLE_DAILY_INDEX_TIMEFRAME', executionAuthorized: false },
+          aster: { status: 'BLOCKED', publishable: false, publicationBlocked: true, publicationDecision: 'BLOCK_PUBLICATION', rejectionReasons: ['Daily index feed is not a scalping timeframe; full ASTER evidence is unavailable.'] },
           /* The day this reading speaks for: the newest daily bar it was computed
              from, and whether that bar was a close or still forming. `ts` is only
              the moment of this answer. */
@@ -390,6 +411,7 @@ function createReadOnlyWorker({
       /* Finished candles only, as of the last 5-minute close: the same reading this browser makes (src/closedcandles.js). */
       const closed = closedCandleSets({ m1, m5, h1 });
       const det = runDeterministicAnalysis(symbol, closed.sets);
+      const proScalper = proScalperValidation(closed.sets.m5 || []);
       const decision = localDecision(det);
       const wr = decision.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
       const source = 'Deriv public candles';
@@ -402,7 +424,9 @@ function createReadOnlyWorker({
         confidence: decision.confidence,
         entry: decision.entry, stop_loss: decision.stop_loss, tp1: decision.tp1, tp2: decision.tp2,
         rrr: decision.rrr, tf: 'MTF 1m/5m/1h', model: 'technical',
-        source, data_source: source, latest_candle_time: Number(latest?.time || 0), candle_close: closed.close, candle_current: closed.current, ts: now()
+        source, data_source: source, latest_candle_time: Number(latest?.time || 0), candle_close: closed.close, candle_current: closed.current,
+        pro_scalper: proScalper,
+        aster: { status: 'NOT_VALIDATED', publishable: false, publicationBlocked: true, publicationDecision: 'BLOCK_PUBLICATION', rejectionReasons: ['This technical-only read does not include the complete ASTER evidence set.'] }, ts: now()
       };
     } catch (e) {
       const source = 'unavailable';
@@ -556,6 +580,7 @@ function createReadOnlyWorker({
         ]);
         const closed = closedCandleSets({ m1, m5, h1 });
         const det = runDeterministicAnalysis(symbol, closed.sets);
+        const proScalper = proScalperValidation(closed.sets.m5 || []);
         const decision = localDecision(det);
         const wr = decision.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
         const latest = m1[m1.length - 1];
@@ -569,6 +594,8 @@ function createReadOnlyWorker({
           latest_candle_time: Number(latest?.time || 0),
           candle_close: closed.close,
           candle_current: closed.current,
+          pro_scalper: proScalper,
+          aster: { status: 'NOT_VALIDATED', publishable: false, publicationBlocked: true, publicationDecision: 'BLOCK_PUBLICATION', rejectionReasons: ['This technical-only read does not include the complete ASTER evidence set.'] },
           meta: { mode: 'technical', reason: 'cloudflare_readonly', engines: [], spent: 0, cap: 0, cached: false, at: new Date(now()).toISOString() }
         });
       } catch (e) {
