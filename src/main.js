@@ -1392,7 +1392,7 @@ function renderSignals(){
       proEl.textContent='PRO SCALPER · Stoch RSI '+(k?k.k.toFixed(1)+' / '+k.d.toFixed(1):'—')+' · CCI '+(Number.isFinite(pi.cci)?pi.cci.toFixed(1):'—')+' · Williams %R '+(Number.isFinite(pi.williamsR)?pi.williamsR.toFixed(1):'—')+' · Supertrend '+(pi.supertrend?.direction||'—')+' · Ichimoku '+cloud+' · Keltner '+(pi.keltner?pi.keltner.mid.toFixed(I.d):'—')+' · AVWAP '+(pi.anchoredVwap?pi.anchoredVwap.value.toFixed(I.d):'anchor not configured')+(ps.dataQuality?.volumeAvailable?' · OBV '+(Number.isFinite(pi.obv)?pi.obv.toFixed(0):'—')+' · MFI '+(Number.isFinite(pi.mfi)?pi.mfi.toFixed(1):'—')+' · VP POC '+(vp?vp.poc.toFixed(I.d):'—'):' · OBV/MFI/VP unavailable: real volume missing');
     }else proEl.textContent='PRO SCALPER · unavailable: '+String(ps?.status||'verified M5 candle snapshot not supplied').replaceAll('_',' ').toLowerCase();
     const ag=sig.aster, asterEl=card.querySelector('.sig-aster');
-    asterEl.textContent='ASTER · '+(ag?.publishable===true?'READY FOR MANUAL REVIEW':ag?.status==='NOT_VALIDATED'?'NOT VALIDATED · publication blocked':'BLOCKED · '+String(ag?.status||'missing evidence'))+(ag?.rejectionReasons?.length?' · '+ag.rejectionReasons.slice(0,2).join('; '):'');
+    asterEl.textContent='ASTER · '+(isAsterPublishable(sig)?'READY FOR MANUAL REVIEW':ag?.status==='NOT_VALIDATED'?'NOT VALIDATED · publication blocked':'BLOCKED · '+String(ag?.status||'missing evidence'))+(ag?.rejectionReasons?.length?' · '+ag.rejectionReasons.slice(0,2).join('; '):'');
     card.querySelector('.sig-chart').onclick=()=>openSignalSymbol(sig.symbol);
     const useButton=card.querySelector('.sig-use');
     useButton.hidden=true;
@@ -3154,7 +3154,7 @@ function renderProScalperDashboard(){
   if(!best){ panel.innerHTML='<div class="row between wrap"><b>Pro Scalper indicators</b><span class="badge gray">Awaiting verified M5 data</span></div><p class="tiny faint" style="margin-top:6px">Indicator values appear when the scanner has enough closed candles. Missing volume and unsupported timeframes remain unavailable.</p>'; return; }
   const p=best.pro_scalper, i=p.indicators||{}, k=i.stochasticRsi, ic=i.ichimoku, kc=i.keltner, vp=i.volumeProfile, a=best.aster;
   const fmt=(v,d=2)=>Number.isFinite(Number(v))?Number(v).toFixed(d):'—';
-  const gate=a?.publishable===true?'READY FOR MANUAL REVIEW':a?.status==='NOT_VALIDATED'?'NOT VALIDATED · BLOCKED':'BLOCKED · '+String(a?.status||'missing evidence');
+  const gate=isAsterPublishable(best)?'READY FOR MANUAL REVIEW':a?.status==='NOT_VALIDATED'?'NOT VALIDATED · BLOCKED':'BLOCKED · '+String(a?.status||'missing evidence');
   const volume=p.dataQuality?.volumeAvailable===true;
   const metrics=[
     ['Stochastic RSI',k?fmt(k.k,1)+' / '+fmt(k.d,1):'unavailable'],
@@ -3639,7 +3639,7 @@ function renderAz(p, meta) {
   mode.className = 'badge ' + (meta.mode === 'ai' ? 'gold' : 'gray');
   mode.textContent = azModeLabel(meta);
   $('#azMtf').textContent = approved?'Analysis timeframe: M1 / M5 / H1 confluence · MTF: ' + String(p.mtf_signal || '—').replace(/_/g, ' ').toLowerCase() + ' · source: ' + String(p.data_source||p.source||'unavailable'):'ASTER publication blocked · MTF direction withheld · source: '+String(p.data_source||p.source||'unavailable');
-  $('#azSignalTiming').textContent = 'Suggested review: after the next 5-minute candle closes (about 5 min); re-check sooner if price, spread or market status changes. Guidance only — no fixed signal expiry or holding-time guarantee.';
+  $('#azSignalTiming').textContent = approved?'Review the evidence again after the next 5-minute candle closes. Guidance only — no fixed expiry or holding-time guarantee.':'No signal is published while ASTER is blocked. Re-evaluate only after new closed-candle data and complete validation evidence are available.';
 
   $('#azConf').textContent = approved?p.confidence:'—';
   $('#azConfTxt').textContent = approved?p.confidence + '%':'WITHHELD';
@@ -3673,13 +3673,13 @@ function renderAz(p, meta) {
       azWhy.innerHTML = '<div class="az-why"><b>Why WAIT:</b> ' + escHtml(p.wait_detail || 'Timeframes did not confirm 2-of-3.') +
         '</div><div class="az-why tiny faint">reason: ' + escHtml(p.wait_reason || 'MTF_NO_ALIGNMENT') +
         ' · votes: ' + escHtml(p.votes || 'n/a') +
-        ' · auto-trade only enters on confirmed signals with confidence ≥ ' + atConf + '% (this one: ' + p.confidence + '%)</div>';
+        ' · this is analysis-only; no order or trade-ticket handoff is enabled.</div>';
       azWhy.classList.remove('hidden');
     } else {
       azWhy.classList.add('hidden');
       const atConf = ((typeof atCfg === 'function' && atCfg()) ? (atCfg().conf ?? 70) : 70);
       azWhy.innerHTML = '<div class="az-why tiny faint">votes: ' + escHtml(p.votes || 'n/a') +
-        ' · auto-trade enters when confidence ≥ ' + atConf + '% (this one: ' + p.confidence + '%)</div>';
+        ' · analysis-only; no order or trade-ticket handoff is enabled.</div>';
     }
   }
 
