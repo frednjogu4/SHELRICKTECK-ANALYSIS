@@ -61,14 +61,14 @@ export function validateAsterSignal(input = {}, options = {}) {
 
   const riskPct = Number(input.accountRiskPercent);
   const configuredLimit = Number(input.configuredRiskLimitPercent);
-  const riskLimit = Number.isFinite(configuredLimit) && configuredLimit > 0
-    ? Math.min(1, configuredLimit) : 1;
+  const riskLimitKnown = Number.isFinite(configuredLimit) && configuredLimit > 0;
+  const riskLimit = riskLimitKnown ? Math.min(1, configuredLimit) : null;
   const riskKnown = Number.isFinite(riskPct) && riskPct >= 0;
-  const riskPass = riskKnown && riskPct <= riskLimit;
+  const riskPass = riskKnown && riskLimitKnown && riskPct <= riskLimit;
   checks.push({
     name: 'account_risk_percent',
-    status: !riskKnown ? 'UNKNOWN' : riskPass ? 'PASSED' : 'FAILED',
-    evidence: riskKnown ? riskPct + '%; allowed ≤ ' + riskLimit + '%' : 'account risk or configured limit unavailable',
+    status: !riskKnown || !riskLimitKnown ? 'UNKNOWN' : riskPass ? 'PASSED' : 'FAILED',
+    evidence: riskKnown && riskLimitKnown ? riskPct + '%; allowed ≤ ' + riskLimit + '%' : 'account risk or configured limit unavailable',
   });
 
   const weights = ASTER_WEIGHTS;
