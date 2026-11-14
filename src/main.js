@@ -2102,6 +2102,10 @@ async function autofillLevels(sym){
       const a=$('#levelsAgain'); if(a)a.onclick=(e)=>{ e.preventDefault(); levelsForSym=null; autofillLevels(sym); };
       return;
     }
+    if(isDirectionalCandidate(sig)&&!isAsterPublishable(sig)){
+      if(levelsForSym===sym){['orderSL','orderTP','orderTP2'].forEach(id=>{const el=$('#'+id);if(el)el.value='';});levelsForSym=null;updateRisk();}
+      note.textContent='Technical candidate withheld: ASTER has not approved publication. Automatic ticket levels remain disabled.';return;
+    }
     if(sig.signal!=='BUY'&&sig.signal!=='SELL'){
       note.textContent='No confirmed setup for '+sym+' yet ('+(sig.wait_reason||'waiting').toLowerCase().replace(/_/g,' ')+') — SL/TP fill when the timeframes align.';
       return;
@@ -2136,8 +2140,9 @@ function updateChartLevels(){
        then the levels (a Buy or Sell only) and what was measured for signals of this rule. */
     const raw=scanLevelsHtml(I);
     const levels=raw?raw.replace(/^<div[^>]*>/,'<span>').replace(/<\/div>$/,'</span>'):'';
-    const trend=isDailyReading(r)?'':trendWords(r.votes);
-    const measured=measuredText(r,{short:true});
+    const approved=isAsterPublishable(r);
+    const trend=approved&&!isDailyReading(r)?trendWords(r.votes):'';
+    const measured=approved?measuredText(r,{short:true}):'';
     out='<span class="faint">LIVE SIGNAL LEVELS</span>&nbsp; '+readingChip(I.s).html
       +(trend?' <span data-chart-trend title="What the finished candles of each timeframe show at the last 5-minute close. It describes the market now; it does not say that the direction will continue.">now: '+escHtml(trend)+'</span>':'')
       +(levels?' '+levels:' <span class="faint">no entry, stop or target: they come only with a Buy or Sell reading</span>')
@@ -3276,11 +3281,11 @@ function renderOverview(){
     sv.innerHTML='<div class="hint">No scan results yet — open AI Signals to run a live technical scan.</div>';
   }
   state.signals.slice(0,3).forEach(sig=>{
-    const I=bySym[sig.symbol]||{d:4};
+    const I=bySym[sig.symbol]||{d:4},approved=isAsterPublishable(sig),directional=isDirectionalCandidate(sig);
     const d=document.createElement('div');
     d.className='mini-signal';
-    d.innerHTML='<div class="top"><b>'+sig.symbol+'</b><span class="badge '+(sig.signal==='BUY'?'buy':sig.signal==='SELL'?'sell':'neutral')+'">'+sig.signal+' · '+liveScoreHtml(sig,'span')+'</span></div>'+
-      '<div class="meta">entry '+fmtPx(sig.entry,I.d)+' · SL '+fmtPx(sig.stop_loss,I.d)+' · TP '+fmtPx(sig.tp1,I.d)+' · technical</div>';
+    d.innerHTML='<div class="top"><b>'+escHtml(sig.symbol)+'</b><span class="badge '+(approved?(sig.signal==='BUY'?'buy':sig.signal==='SELL'?'sell':'neutral'):'gray')+'">'+(directional&&!approved?'ASTER BLOCKED':escHtml(sig.signal||'WAIT'))+(approved?' · '+liveScoreHtml(sig,'span'):'')+'</span></div>'+
+      '<div class="meta">'+(approved?'entry '+fmtPx(sig.entry,I.d)+' · SL '+fmtPx(sig.stop_loss,I.d)+' · TP '+fmtPx(sig.tp1,I.d)+' · ASTER approved':'Technical candidate withheld · required ASTER evidence not approved')+'</div>';
     d.onclick=()=>goto('signals');
     sv.appendChild(d);
   });
@@ -4393,6 +4398,8 @@ function readingChip(sym){
   if(r.error)return {kind:'none',html:'<span class="badge gray" title="'+escHtml(r.detail||'No reading is available for this market right now.')+'">no reading</span>'};
   const daily=isDailyReading(r);
   const tip=escHtml((daily?'Daily reading from daily closing prices. ':'Reading of the 1m/5m/1h rule'+(closeText(r)?' at the '+closeText(r)+' candle close. ':'. '))+(r.votes?'Timeframes: '+r.votes+'. ':'')+'The percentage is how strongly the timeframes agree, not a chance of profit.');
+  if(isDirectionalCandidate(r)&&!isAsterPublishable(r))return {kind:'wait',html:'<span class="badge gray" title="Technical candidate withheld until ASTER approves publication.">ASTER blocked</span>'};
+  if((r.bias==='bullish'||r.bias==='bearish')&&!isAsterPublishable(r))return {kind:'wait',html:'<span class="badge gray" title="Directional bias withheld until ASTER validates the evidence.">ASTER pending</span>'};
   if(r.signal==='BUY'||r.signal==='SELL')return {kind:'trade',html:'<span class="badge '+(r.signal==='BUY'?'buy':'sell')+'" title="'+tip+'">'+(r.signal==='BUY'?'Buy ':'Sell ')+liveScoreHtml(r,'span')+(daily?' · daily':'')+'</span>'};
   if(r.bias==='bullish')return {kind:'wait',html:'<span class="badge lean lean-up" title="'+tip+'">Wait · leans up</span>'};
   if(r.bias==='bearish')return {kind:'wait',html:'<span class="badge lean lean-dn" title="'+tip+'">Wait · leans down</span>'};
@@ -4757,7 +4764,7 @@ function renderWatchLive(){
       ctx.strokeStyle=up?'#2fbf71':'#e5484d'; ctx.lineWidth=1.6; ctx.stroke();
       /* live signal levels: entry (gold) / SL (red) / TP1+TP2 (green) from the scan */
       const sr=state.mktScan[cv.dataset.wcv];
-      if(sr&&!sr.error){
+      if(sr&&!sr.error&&isAsterPublishable(sr)){
         const yFor=(v)=>6+(1-(v-mn)/rg)*(H-12);
         const inR=(v)=>v!=null&&Number.isFinite(Number(v))&&v>mn-0.6*rg&&v<mx+0.6*rg;
         const line=(v,color,label)=>{
