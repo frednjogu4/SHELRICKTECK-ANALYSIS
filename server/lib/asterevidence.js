@@ -17,10 +17,14 @@ function validRows(rows) {
   return true;
 }
 function ema(values, period) {
-  if (values.length < period) return null;
+  if (!Array.isArray(values) || values.length < period) return null;
   const k = 2 / (period + 1);
-  let v = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < values.length; i++) v = values[i] * k + v * (1 - k);
+  let v = values.slice(0, period).reduce((a, b) => a + Number(b), 0) / period;
+  for (let i = period; i < values.length; i++) {
+    const current = Number(values[i]);
+    if (!Number.isFinite(current)) return null;
+    v = current * k + v * (1 - k);
+  }
   return Number.isFinite(v) ? v : null;
 }
 function rsi(values, period = 14) {
