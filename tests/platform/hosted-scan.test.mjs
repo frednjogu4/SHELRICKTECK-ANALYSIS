@@ -113,6 +113,8 @@ for (const symbol of DERIV_SYMBOLS) {
     assert.equal(reading.pro_scalper?.executionAuthorized, false);
     assert.equal(reading.pro_scalper?.validation?.priceIndicatorsValid, true);
     assert.equal(reading.aster?.publishable, false, 'technical-only browser reads remain blocked by ASTER');
+    assert.equal(reading.aster?.publicationBlocked, true);
+    assert.equal(reading.aster?.publicationDecision, 'BLOCK_PUBLICATION');
     assert.equal(reading.latest_candle_time, rowsFor(symbol, 60).at(-1).epoch, 'the reading says which candle it ends on');
     assert.ok(['BUY', 'SELL', 'WAIT'].includes(reading.signal));
     assert.deepEqual(feed.calls, SCAN_TIMEFRAMES.map(([, granularity]) => ({ symbol, granularity, count: SCAN_CANDLES })), 'three series: 1m, 5m, 1h');
