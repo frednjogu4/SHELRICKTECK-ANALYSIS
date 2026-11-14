@@ -63,3 +63,54 @@ test('malformed OHLC bars fail validation and do not produce trend evidence', ()
   assert.equal(result.evidence.h4Trend, null);
   assert.equal(result.evidence.structureValid, null);
 });
+
+test('ASTER plan evidence validates directional stop and target geometry and recomputes TP1 RR', () => {
+  const long = buildAsterPlanEvidence({
+    direction: 'LONG', entry: 100, stopLoss: 98, tp1: 104, tp2: 106
+  });
+  assert.equal(long.stopLossValid, true);
+  assert.equal(long.measuredTargetsValid, true);
+  assert.equal(long.rrAtTp1, 2);
+
+  const short = buildAsterPlanEvidence({
+    direction: 'SHORT', entry: 100, stopLoss: 102, tp1: 96, tp2: 94
+  });
+  assert.equal(short.stopLossValid, true);
+  assert.equal(short.measuredTargetsValid, true);
+  assert.equal(short.rrAtTp1, 2);
+});
+
+test('ASTER plan evidence rejects wrong-side stops and targets below the minimum RR', () => {
+  const wrongStop = buildAsterPlanEvidence({
+    direction: 'LONG', entry: 100, stopLoss: 101, tp1: 104, tp2: 106
+  });
+  assert.equal(wrongStop.stopLossValid, false);
+  assert.equal(wrongStop.measuredTargetsValid, false);
+
+  const weakReward = buildAsterPlanEvidence({
+    direction: 'LONG', entry: 100, stopLoss: 98, tp1: 103, tp2: 105
+  });
+  assert.equal(weakReward.stopLossValid, true);
+  assert.equal(weakReward.measuredTargetsValid, false);
+  assert.equal(weakReward.rrAtTp1, 1.5);
+});
+
+test('missing proposed levels remain UNKNOWN instead of passing', () => {
+  const missing = buildAsterPlanEvidence({ direction: 'LONG', entry: 100 });
+  assert.equal(missing.stopLossValid, null);
+  assert.equal(missing.measuredTargetsValid, null);
+  assert.equal(missing.rrAtTp1, null);
+});
+
+
+test('stale timeframe candles do not pass the freshness gate', () => {
+  const now = Date.now();
+  const sets = completeSets(now);
+  for (const tf of ['m15', 'h1', 'h4', 'd1']) {
+    const period = { m15: 900, h1: 3600, h4: 14400, d1: 86400 }[tf];
+    sets[tf] = sets[tf].map((c) => ({ ...c, time: c.time - 10 * period }));
+  }
+  const result = buildAsterCandleEvidence({ candleSets: sets, direction: 'LONG', now });
+  assert.equal(result.evidence.ohlcValid, true);
+  assert.equal(result.evidence.marketDataFresh, false);
+});
