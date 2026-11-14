@@ -112,6 +112,11 @@ test('analyze returns the full decision contract (technical, no keys, live stub 
   assert.equal(d.aster.checks.find(c => c.name === 'bidAskValid').status, 'UNKNOWN');
   assert.equal(d.aster.checks.find(c => c.name === 'newsValidated').status, 'UNKNOWN');
   assert.equal(d.aster.checks.find(c => c.name === 'positionSizingValid').status, 'UNKNOWN');
+  assert.equal(d.aster.checks.find(c => c.name === 'stopLossValid').status, 'PASSED');
+  assert.equal(d.aster.checks.find(c => c.name === 'measuredTargetsValid').status,
+    d.aster.planEvidence.rrValid && d.aster.planEvidence.targetOrderValid ? 'PASSED' : 'FAILED');
+  assert.ok(d.aster.unresolvedEvidence.includes('bidAskValid'));
+  assert.match(d.aster.checks.find(c => c.name === 'bidAskValid').evidence, /single quote/);
 });
 
 test('ASTER publication block never rewrites the deterministic PC technical reading', async () => {
