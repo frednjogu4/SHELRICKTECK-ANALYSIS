@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAsterCandleEvidence } from '../lib/asterevidence.js';
+import { buildAsterCandleEvidence, buildAsterPlanEvidence } from '../lib/asterevidence.js';
 
 function candles(tf, nowMs, trend = 1) {
   const period = { m15: 900, h1: 3600, h4: 14400, d1: 86400 }[tf];
