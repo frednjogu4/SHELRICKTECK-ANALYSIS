@@ -74,3 +74,15 @@ test('ASTER treats null RR and account risk as UNKNOWN, never as zero risk', () 
   assert.ok(r.rejectionReasons.includes('account_risk_percent: UNKNOWN'));
   assert.equal(r.publishable, false);
 });
+
+test('ASTER exposes the specific reason a mandatory evidence item is UNKNOWN', () => {
+  const evidence = { ...allEvidence, bidAskValid: null };
+  const r = validateAsterSignal({
+    ...valid, evidence,
+    evidenceDetails: { bidAskValid: 'Feed does not expose independent bid and ask prices.' }
+  });
+  const check = r.checks.find((item) => item.name === 'bidAskValid');
+  assert.equal(check.status, 'UNKNOWN');
+  assert.equal(check.evidence, 'Feed does not expose independent bid and ask prices.');
+  assert.equal(r.executionAuthorized, false);
+});
