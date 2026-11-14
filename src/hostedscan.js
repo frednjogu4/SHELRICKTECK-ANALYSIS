@@ -33,6 +33,24 @@ import { isFeedFailure } from './derivhistory.js';
 import { closedCandleSets } from './closedcandles.js';
 import { buildProScalperSnapshot } from '../server/lib/indicators.pro.js';
 
+function proScalperValidation(candles) {
+  const snapshot = buildProScalperSnapshot(candles || []);
+  const keys = ['stochasticRsi', 'cci', 'williamsR', 'supertrend', 'ichimoku', 'keltner'];
+  const missing = keys.filter((key) => {
+    const value = snapshot.indicators && snapshot.indicators[key];
+    return value == null || (typeof value === 'object'
+      ? Object.values(value).some((item) => item == null || (typeof item === 'number' && !Number.isFinite(item)))
+      : typeof value === 'number' && !Number.isFinite(value));
+  });
+  return Object.assign({}, snapshot, {
+    validation: {
+      priceIndicatorsValid: snapshot.ok === true && missing.length === 0,
+      missingPriceIndicators: missing,
+      mode: 'deterministic-candle-snapshot'
+    }
+  });
+}
+
 export const DERIV_SOURCE = 'Deriv public candles';
 export const YAHOO_SOURCE = 'Yahoo Finance public daily data';
 export const BROWSER_LABEL = DERIV_SOURCE + ' · analysed in this browser';
@@ -91,7 +109,7 @@ export function isDerivBacked(symbol) {
 export function buildDerivReading(symbol, sets, nowMs = Date.now()) {
   const closed = closedCandleSets(sets);
   const det = runDeterministicAnalysis(symbol, closed.sets);
-  const proScalper = buildProScalperSnapshot(closed.sets.m5 || []);
+  const proScalper = proScalperValidation(closed.sets.m5 || []);
   const decision = localDecision(det);
   const wr = decision.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
   const latest = sets.m1[sets.m1.length - 1];
@@ -112,8 +130,8 @@ export function buildDerivReading(symbol, sets, nowMs = Date.now()) {
     latest_candle_time: Number(latest?.time || 0),
     candle_close: closed.close,
     candle_current: closed.current,
-    pro_scalper: Object.assign({}, proScalper, { validation: { priceIndicatorsValid: !!(proScalper.ok && proScalper.indicators && proScalper.indicators.supertrend && proScalper.indicators.ichimoku && proScalper.indicators.keltner && proScalper.indicators.stochasticRsi && Number.isFinite(proScalper.indicators.cci) && Number.isFinite(proScalper.indicators.williamsR)), mode: 'browser-calculated' } }),
-    aster: { status: 'NOT_VALIDATED', publishable: false, publicationBlocked: true, publicationDecision: 'BLOCK_PUBLICATION', rejectionReasons: ['Browser scanner does not have the complete server-side ASTER evidence set.'] },
+    pro_scalper: proScalper,
+    aster: { status: 'NOT_VALIDATED', publishable: false, publicationBlocked: true, publicationDecision: 'BLOCK_PUBLICATION', rejectionReasons: ['This technical-only read does not include the complete ASTER evidence set.'] },
     ts: nowMs,
     sentiment_score: 50,
     sentiment_source: 'derived',
