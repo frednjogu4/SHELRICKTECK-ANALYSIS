@@ -1395,15 +1395,9 @@ function renderSignals(){
     asterEl.textContent='ASTER · '+(ag?.publishable===true?'READY FOR MANUAL REVIEW':ag?.status==='NOT_VALIDATED'?'NOT VALIDATED · publication blocked':'BLOCKED · '+String(ag?.status||'missing evidence'))+(ag?.rejectionReasons?.length?' · '+ag.rejectionReasons.slice(0,2).join('; '):'');
     card.querySelector('.sig-chart').onclick=()=>openSignalSymbol(sig.symbol);
     const useButton=card.querySelector('.sig-use');
-    useButton.hidden=!(approved&&directional);
-    if(approved&&directional)useButton.onclick=()=>{
-      state.side=sig.signal==='SELL'?'SELL':'BUY';
-      $('#orderSL').value=sig.stop_loss!=null?Number(sig.stop_loss).toFixed(I.d):'';
-      $('#orderTP').value=sig.tp1!=null?Number(sig.tp1).toFixed(I.d):'';
-      $('#orderTP2').value=sig.tp2!=null?Number(sig.tp2).toFixed(I.d):'';
-      openSignalSymbol(sig.symbol); if(INSTRUMENT_MAP[sig.symbol])syncSide();
-      toast('Setup loaded','Levels for '+sig.symbol+' applied to the ticket.','ok');
-    };
+    useButton.hidden=true;
+    useButton.disabled=true;
+    useButton.textContent='Analysis only';
     g.appendChild(card);
   });
 }
@@ -2061,71 +2055,10 @@ let levelsForSym=null;
 let levelsRequestSeq=0;
 ['orderSL','orderTP','orderTP2'].forEach((id)=>{ const el=document.getElementById(id); if(el)el.addEventListener('input',()=>{ levelsForSym='__manual__'; }); });
 async function autofillLevels(sym){
-  loadCalendar().catch(()=>{}); /* scheduled releases for the line above the chart; at most one read in ten minutes */
-  const requestId=++levelsRequestSeq;
-  const isCurrent=()=>requestId===levelsRequestSeq&&state.chart.sym===sym;
-  const note=$('#levelsNote'); if(!note)return;
-  try{
-    let sig;
-    if(await isCloudflareHostedApp()){
-      /* Cloud viewer: the same reading the Markets table shows (this browser first, AURUM cloud as labelled fallback). */
-      sig=(await hostedSignalBatch([sym]))[0];
-      if(!isCurrent())return; /* a slower answer for the previous symbol is stale */
-    }else{
-      const r=await api('/api/signals/scan',{method:'POST',body:{symbols:[sym]},timeoutMs:30000});
-      if(!isCurrent())return;
-      if(!r.ok)throw 0;
-      const j=await r.json();
-      if(!isCurrent())return; /* a slower response for the previous symbol is stale */
-      sig=(j.results||[])[0];
-      /* A market that has just resumed after a pause has no reading yet (closedcandles.js): nothing from before
-         the pause may fill the ticket. The PC's server sends a row without a reading; one that is only marked is
-         withheld here, by the decision the Markets table uses (withheldReading). */
-      sig=(sig&&withheldReading(sig))||sig;
-    }
-    /* shared: chart strip + markets badges. A cloud-viewer state (stale, no data, unavailable) replaces
-       an older reading too, so levels from before a market closed never stay on screen as current. */
-    if(sig&&(!sig.error||signalState(sig)))state.mktScan[sym]=sig;
-    updateChartLevels();
-    if(!sig||sig.error){
-      /* The market is closed, paused or has just resumed: levels that came from an earlier reading go with it.
-         Levels the trader typed, or took over from the analysis panel, stay (levelsForSym '__manual__'); so does
-         everything when the answer merely failed. */
-      if(sig&&signalState(sig)==='stale'&&levelsForSym!=='__manual__'){
-        ['orderSL','orderTP','orderTP2'].forEach((id)=>{ const el=$('#'+id); if(el)el.value=''; });
-        levelsForSym=null; updateRisk();
-      }
-      note.textContent=sig&&signalState(sig)&&sig.detail?String(sig.detail):'Live levels unavailable for '+sym+' right now.'; return;
-    }
-    if(levelsForSym==='__manual__'){ /* user/AI applied levels meanwhile — do not stomp */
-      note.innerHTML='Ticket levels kept (applied manually / from the AI signal) — <a href="#" id="levelsAgain">use live signal levels instead</a>.';
-      const a=$('#levelsAgain'); if(a)a.onclick=(e)=>{ e.preventDefault(); levelsForSym=null; autofillLevels(sym); };
-      return;
-    }
-    if(isDirectionalCandidate(sig)&&!isAsterPublishable(sig)){
-      if(levelsForSym===sym){['orderSL','orderTP','orderTP2'].forEach(id=>{const el=$('#'+id);if(el)el.value='';});levelsForSym=null;updateRisk();}
-      note.textContent='Technical candidate withheld: ASTER has not approved publication. Automatic ticket levels remain disabled.';return;
-    }
-    if(sig.signal!=='BUY'&&sig.signal!=='SELL'){
-      note.textContent='No confirmed setup for '+sym+' yet ('+(sig.wait_reason||'waiting').toLowerCase().replace(/_/g,' ')+') — SL/TP fill when the timeframes align.';
-      return;
-    }
-    const I=bySym[sym]; const d=(I&&I.d)!=null?I.d:5;
-    const f=(v)=> (v!=null&&Number.isFinite(Number(v)))?String(Number(v).toFixed(d)):'';
-    const sl=f(sig.stop_loss), t1=f(sig.tp1), t2=f(sig.tp2);
-    if($('#orderSL'))$('#orderSL').value=sl;
-    if($('#orderTP'))$('#orderTP').value=t1;
-    if($('#orderTP2'))$('#orderTP2').value=t2;
-    levelsForSym=sym;
-    if(sig.signal!==state.side&&(state.side==='BUY'||state.side==='SELL')){
-      state.side=sig.signal; syncSide();
-      note.innerHTML='Levels from live analysis — <b>'+sig.signal+'</b> · '+sig.confidence+'% conf · side switched to match. Edit freely or <a href="#" id="levelsAgain">re-apply</a>.';
-    }else{
-      note.innerHTML='Levels from live analysis — <b>'+sig.signal+'</b> · '+sig.confidence+'% conf. Edit freely or <a href="#" id="levelsAgain">re-apply</a>.';
-    }
-    const a=$('#levelsAgain'); if(a)a.onclick=(e)=>{ e.preventDefault(); autofillLevels(sym); };
-    updateRisk();
-  }catch(e){ if(!isCurrent())return; if(note)note.textContent='Live levels unavailable for '+sym+' right now.'; }
+  const note=$('#levelsNote');
+  if(note)note.textContent='Analysis-only mode: signal levels may be reviewed in the dashboard, but automatic order-ticket population is disabled.';
+  updateChartLevels();
+  return;
 }
 function updateChartLevels(){
   const el=document.getElementById('chartLevels'); if(!el)return;
@@ -3757,8 +3690,8 @@ function renderAz(p, meta) {
   $('#azResistance').innerHTML = approved?((levels.resistance || []).map(v => lvlRow(v, 'resistance')).join('') || '<div class="tiny faint">—</div>'):'<div class="tiny faint">Withheld by ASTER</div>';
 
   $('#azRisks').innerHTML = (p.risks || []).map(r => '<li>' + escHtml(r) + '</li>').join('') || '<li>No major risks identified</li>';
-  $('#azUse').disabled = !approved || !directional;
-  $('#azUse').title = approved?'Load this ASTER-approved setup':'Blocked until ASTER approves publication';
+  $('#azUse').disabled = true;
+  $('#azUse').title = 'Analysis-only mode: trade-ticket handoff is disabled.';
 
   $('#azResult').classList.remove('hidden');
   azAddHistory(p, meta);
@@ -3789,18 +3722,7 @@ function azAddHistory(p, meta) {
 }
 
 function azUseSetup() {
-  if (!lastAz) return;
-  const p = lastAz;
-  if(!isAsterPublishable(p)||!isDirectionalCandidate(p)){toast('ASTER blocked','This technical candidate has not passed the complete publication gate.','warn');return;}
-  const dec = (bySym[p.symbol] && bySym[p.symbol].d) || 4;
-  $('#orderSL').value = Number(p.stop_loss).toFixed(dec);
-  $('#orderTP').value = Number(p.tp1).toFixed(dec);
-  const tp2=$('#orderTP2'); if(tp2)tp2.value = p.tp2!=null?Number(p.tp2).toFixed(dec):'';
-  levelsForSym='__manual__'; /* AI-signal levels win — don't let the ticket autofill race stomp them */
-  if (p.signal === 'BUY' || p.signal === 'SELL') { state.side = p.signal; syncSide(); }
-  setChartSymbol(bySym[p.symbol] ? p.symbol : state.chart.sym, true);
-  goto('trade');
-  toast('Setup loaded', p.symbol + ' ' + p.signal + ' — SL / TP1 / TP2 applied to the ticket.', 'ok');
+  toast('Analysis only','Trade-ticket handoff is disabled. No order has been prepared or placed.','warn');
 }
 
 /* ================================================================
