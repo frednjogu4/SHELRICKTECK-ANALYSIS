@@ -443,7 +443,6 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         };
       }
       const rawDirection = String(payload.signal || '').toUpperCase();
-      const rawDirection = String(payload.signal || '').toUpperCase();
       const asterDirection = rawDirection === 'BUY' ? 'LONG' : rawDirection === 'SELL' ? 'SHORT' : rawDirection;
       const candleEvidence = buildAsterCandleEvidence({ candleSets, direction: asterDirection });
       const aster = validateAsterSignal({
