@@ -443,11 +443,13 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
           ? Number(process.env.ASTER_MIN_CONFLUENCE_SCORE) : 70
       });
       payload.aster = Object.assign({}, aster, { strategyEvaluation: asterStrategyEvaluation });
-      if (!aster.publishable) {
-        payload.signal = 'WAIT';
-        payload.wait_reason = 'aster_validation_blocked';
-        payload.wait_detail = aster.finalInstruction;
-      }
+      /* Keep the deterministic technical reading byte-for-byte compatible with
+         the browser and Worker. ASTER is a separate publication decision: it
+         may block publication, but must never rewrite signal/levels/wait fields. */
+      payload.aster.publicationBlocked = !aster.publishable;
+      payload.aster.publicationDecision = aster.publishable
+        ? 'ALLOW_MANUAL_REVIEW'
+        : 'BLOCK_PUBLICATION';
       log.info('aster.validation', {
         symbol, status: aster.status, score: aster.score,
         checks: aster.checks, rejectionReasons: aster.rejectionReasons
@@ -540,8 +542,13 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         const wr = dec.signal === 'WAIT' ? waitReason(det, { maxAgeSec: 3 * 3600 + 300 }) : null;
         return {
           symbol, price, mtf_signal: det.mtfSignal, data_ok: det.ok,
-          signal: scanAster.publishable ? dec.signal : 'WAIT',
-          aster: scanAster,
+          /* Preserve the canonical deterministic reading for PC/browser/Worker parity.
+             ASTER independently controls whether it may be published or acted on. */
+          signal: dec.signal,
+          aster: Object.assign({}, scanAster, {
+            publicationBlocked: !scanAster.publishable,
+            publicationDecision: scanAster.publishable ? 'ALLOW_MANUAL_REVIEW' : 'BLOCK_PUBLICATION'
+          }),
           bias: dec.bias, votes: votesSummary(det.analyses),
           wait_reason: wr ? wr.code : null, wait_detail: wr ? wr.detail : null,
           confidence: dec.confidence,
