@@ -1264,7 +1264,7 @@ function bestPickDailyHtml(){
   const d=bestPick.daily, read=bestPick.dailyRead||[], unread=bestPick.dailyUnread;
   const open='<div class="bp-daily" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border-soft)" title="'+escHtml(DAILY_TREND_NOTE)+'">';
   const label=day=>'Daily index trend'+(day?' \u00b7 '+escHtml(day):'');
-  if(d)return open+'<span class="tiny faint">'+label(dailyBarText(d))+'</span> <b>'+escHtml(d.symbol)+'</b> <span class="badge '+(d.signal==='BUY'?'buy':'sell')+'">'+escHtml(d.signal)+'</span> <b>'+(Number(d.confidence)||0)+'%</b>'
+  if(d)return open+'<span class="tiny faint">'+label(dailyBarText(d))+'</span> <b>'+escHtml(d.symbol)+'</b> <span class="badge gray">ASTER blocked · daily direction withheld</span>'
     +INDEX_BADGE
     +' <span class="tiny faint">votes '+escHtml(d.votes||'\u2014')+' \u00b7 source: '+escHtml(d.data_source||d.source||'unavailable')+'</span></div>';
   if(read.length)return open+'<span class="tiny faint">'+label(sharedDailyBarText(read))+': no direction on '+escHtml(read.map(r=>r.symbol).join(', '))+'.'+(unread?' Not read: '+escHtml(unread)+'.':'')+'</span></div>';
@@ -1384,7 +1384,7 @@ function renderSignals(){
     card.querySelector('[data-l="e"]').textContent=approved?fmtPx(sig.entry,I.d):'—';
     card.querySelector('[data-l="s"]').textContent=approved?fmtPx(sig.stop_loss,I.d):'—';
     card.querySelector('[data-l="t"]').textContent=approved?fmtPx(sig.tp1,I.d):'—';
-    card.querySelector('.sig-why').textContent=String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase()+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
+    card.querySelector('.sig-why').textContent=(directional&&!approved?'Multi-timeframe direction withheld by ASTER.':String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase())+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
     const ps=sig.pro_scalper, pi=ps&&ps.indicators, proEl=card.querySelector('.sig-pro');
     if(ps&&ps.ok&&pi){
       const k=pi.stochasticRsi, ic=pi.ichimoku, vp=pi.volumeProfile;
@@ -3705,7 +3705,7 @@ function renderAz(p, meta) {
   const mode = $('#azMode');
   mode.className = 'badge ' + (meta.mode === 'ai' ? 'gold' : 'gray');
   mode.textContent = azModeLabel(meta);
-  $('#azMtf').textContent = 'Analysis timeframe: M1 / M5 / H1 confluence · MTF: ' + String(p.mtf_signal || '—').replace(/_/g, ' ').toLowerCase() + ' · source: ' + String(p.data_source||p.source||'unavailable');
+  $('#azMtf').textContent = approved?'Analysis timeframe: M1 / M5 / H1 confluence · MTF: ' + String(p.mtf_signal || '—').replace(/_/g, ' ').toLowerCase() + ' · source: ' + String(p.data_source||p.source||'unavailable'):'ASTER publication blocked · MTF direction withheld · source: '+String(p.data_source||p.source||'unavailable');
   $('#azSignalTiming').textContent = 'Suggested review: after the next 5-minute candle closes (about 5 min); re-check sooner if price, spread or market status changes. Guidance only — no fixed signal expiry or holding-time guarantee.';
 
   $('#azConf').textContent = approved?p.confidence:'—';
@@ -3724,9 +3724,9 @@ function renderAz(p, meta) {
   const sentHint=sent.nextElementSibling;
   if(sentHint&&sentHint.classList.contains('tiny'))sentHint.textContent=p.sentiment_source?('source: '+p.sentiment_source):'derived from live candles';
 
-  $('#azRationale').textContent = p.rationale || '—';
-  $('#azTech').textContent = p.technical_summary || '—';
-  $('#azWatch').textContent = p.next_watch || '—';
+  $('#azRationale').textContent = approved?(p.rationale || '—'):'Technical rationale withheld until ASTER approves publication.';
+  $('#azTech').textContent = approved?(p.technical_summary || '—'):'Technical summary withheld until ASTER approves publication.';
+  $('#azWatch').textContent = approved?(p.next_watch || '—'):'No directional watch item is published while ASTER is blocked.';
 
   /* WAIT transparency: reason code + human reason + per-timeframe votes + auto-trade gate */
   const azWhy = $('#azWhy');
@@ -3753,8 +3753,8 @@ function renderAz(p, meta) {
   const lvlRow = (v, side) =>
     '<div class="az-level-row"><span class="mono">' + fmtPx(v, dec) + '</span><span class="tiny faint">' + side + '</span></div>';
   const levels = p.key_levels || { support: [], resistance: [] };
-  $('#azSupport').innerHTML = (levels.support || []).map(v => lvlRow(v, 'support')).join('') || '<div class="tiny faint">—</div>';
-  $('#azResistance').innerHTML = (levels.resistance || []).map(v => lvlRow(v, 'resistance')).join('') || '<div class="tiny faint">—</div>';
+  $('#azSupport').innerHTML = approved?((levels.support || []).map(v => lvlRow(v, 'support')).join('') || '<div class="tiny faint">—</div>'):'<div class="tiny faint">Withheld by ASTER</div>';
+  $('#azResistance').innerHTML = approved?((levels.resistance || []).map(v => lvlRow(v, 'resistance')).join('') || '<div class="tiny faint">—</div>'):'<div class="tiny faint">Withheld by ASTER</div>';
 
   $('#azRisks').innerHTML = (p.risks || []).map(r => '<li>' + escHtml(r) + '</li>').join('') || '<li>No major risks identified</li>';
   $('#azUse').disabled = !approved || !directional;
@@ -4227,7 +4227,7 @@ function renderGoldAnalysis(){
   $('#goldVotes').textContent=approved?'Analysis timeframe: M1 / M5 / H1 · '+(d.mtf_signal||'no confirmation')+' · '+(d.data_source||''):'ASTER publication blocked · timeframe direction is withheld until required evidence passes.';
   $('#goldSignalUpdated').textContent=(closeText(d)?'Reading of the '+closeText(d)+' candle close · checked ':'Last analysis: ')+(d.updatedAt?new Date(d.updatedAt).toLocaleString():'—')+(closeText(d)?' · the next reading comes with the next 5-minute close; no fixed expiry.':' · review after next M5 candle; no fixed expiry.');
   $('#goldEntry').textContent=approved?goldFmtLevel(d.entry,dig):'—';$('#goldSL').textContent=approved?goldFmtLevel(d.stop_loss,dig):'—';$('#goldTP1').textContent=approved?goldFmtLevel(d.tp1,dig):'—';$('#goldTP2').textContent=approved?goldFmtLevel(d.tp2,dig):'—';
-  const votes=String(d.votes||''),buy=(votes.match(/\\bBUY\\b/g)||[]).length,sell=(votes.match(/\\bSELL\\b/g)||[]).length,wait=(votes.match(/\\bWAIT\\b/g)||[]).length;
+  const votes=String(d.votes||''),buy=(votes.match(/BUY/g)||[]).length,sell=(votes.match(/SELL/g)||[]).length,wait=(votes.match(/WAIT/g)||[]).length;
   $('#goldPressure').textContent=approved?'Timeframe vote tally: '+buy+' BUY · '+sell+' SELL · '+wait+' WAIT. '+(d.signal==='BUY'?'Bullish technical confluence is confirmed.':d.signal==='SELL'?'Bearish technical confluence is confirmed.':'No directional majority; the monitor stands aside.'):'Technical vote details are withheld because ASTER has not approved publication.';
   $('#goldRationale').textContent=approved?(d.rationale||d.technical_summary||'No rationale returned.'):'Technical rationale is withheld until ASTER validates all mandatory evidence.';
   $('#goldRisks').innerHTML=(Array.isArray(d.risks)?d.risks:[]).map(x=>'<li>'+escHtml(x)+'</li>').join('')||'<li>No additional risk detail supplied.</li>';
@@ -5121,7 +5121,7 @@ function renderSniperSelectedDetail(){
   if(!symbol||!r){el.innerHTML='<div class="empty"><b>No current scan result</b>Refresh signals to load this market.</div>';return;}
   if(r.error){el.innerHTML='<div class="empty"><b>Signal unavailable for '+escHtml(symbol)+'</b>'+escHtml(r.detail||'No verified source data.')+' No levels are shown as current.</div>';return;}
   const approved=isAsterPublishable(r),directional=isDirectionalCandidate(r),I=bySym[symbol],digits=I&&I.d||2,fmt=k=>{const n=Number(r[k]);return approved&&directional&&Number.isFinite(n)&&n>0?fmtPx(n,digits):'—';},source=r.data_source||r.source||'unavailable';
-  el.innerHTML='<div class="row between wrap"><div><b style="font-size:18px">'+escHtml(symbol)+'</b> <span class="badge '+(approved?(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray'):'gray')+'">'+(directional&&!approved?'ASTER BLOCKED':escHtml(r.signal||'WAIT'))+'</span></div><label class="row tiny" style="gap:6px"><input type="checkbox" data-sniper-detail-watch="'+escHtml(symbol)+'" '+(sniperWatchSymbols.has(symbol)?'checked':'')+'> Notify on entry &amp; exit</label></div><div class="az-tiles" style="margin-top:12px"><div class="az-tile"><div class="k">ENTRY REFERENCE</div><div class="v">'+fmt('entry')+'</div></div><div class="az-tile"><div class="k">STOP LOSS</div><div class="v down">'+fmt('stop_loss')+'</div></div><div class="az-tile"><div class="k">TP1</div><div class="v up">'+fmt('tp1')+'</div></div><div class="az-tile"><div class="k">TP2 / EXIT</div><div class="v up">'+fmt('tp2')+'</div></div></div><div class="hint">Price: '+(Number(r.price)>0?fmtPx(Number(r.price),digits):'—')+' · Confidence: '+(approved?liveScoreHtml(r,'span'):'withheld by ASTER')+' · Source: '+escHtml(source)+' · '+escHtml(r.tf||'')+(closeText(r)?' · read at the '+closeText(r)+' candle close':'')+'. Analysis only — no order sent.</div>'+liveNoteHtml(r,false)+(measuredText(r)?'<div class="tiny faint" data-measured="'+escHtml(symbol)+'">'+escHtml(measuredText(r))+'</div>':'');
+  el.innerHTML='<div class="row between wrap"><div><b style="font-size:18px">'+escHtml(symbol)+'</b> <span class="badge '+(approved?(r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'gray'):'gray')+'">'+(directional&&!approved?'ASTER BLOCKED':escHtml(r.signal||'WAIT'))+'</span></div><label class="row tiny" style="gap:6px"><input type="checkbox" data-sniper-detail-watch="'+escHtml(symbol)+'" '+(sniperWatchSymbols.has(symbol)?'checked':'')+'> Notify on entry &amp; exit</label></div><div class="az-tiles" style="margin-top:12px"><div class="az-tile"><div class="k">ENTRY REFERENCE</div><div class="v">'+fmt('entry')+'</div></div><div class="az-tile"><div class="k">STOP LOSS</div><div class="v down">'+fmt('stop_loss')+'</div></div><div class="az-tile"><div class="k">TP1</div><div class="v up">'+fmt('tp1')+'</div></div><div class="az-tile"><div class="k">TP2 / EXIT</div><div class="v up">'+fmt('tp2')+'</div></div></div><div class="hint">Price: '+(Number(r.price)>0?fmtPx(Number(r.price),digits):'—')+' · Confidence: '+(approved?liveScoreHtml(r,'span'):'withheld by ASTER')+' · Source: '+escHtml(source)+' · '+escHtml(r.tf||'')+(closeText(r)?' · read at the '+closeText(r)+' candle close':'')+'. Analysis only — no order sent.</div>'+(approved?liveNoteHtml(r,false):'<div class="hint">Technical candidate withheld by ASTER. No directional setup or levels are published.</div>')+(approved&&measuredText(r)?'<div class="tiny faint" data-measured="'+escHtml(symbol)+'">'+escHtml(measuredText(r))+'</div>':'');
   const watch=el.querySelector('[data-sniper-detail-watch]');if(watch)watch.onchange=()=>setSniperWatch(symbol,watch.checked);
 }
 function renderSniperSignalAlerts(results,qualifiedSymbols=new Set()){
@@ -5590,10 +5590,12 @@ async function autoEntry(sig,path){
       : '<tr><td colspan="4" class="muted">No alerts yet.</td></tr>';
     const ts = document.getElementById('cldSignals');
     if (ts) ts.innerHTML = (sg || []).length ? sg.map((r, i) => {
-      const cls = { BUY: 'up', SELL: 'down', WAIT: 'faint' }[r.signal] || 'faint';
+      const approved=!!(r.aster&&r.aster.publishable===true&&r.aster.publicationBlocked!==true&&r.aster.publicationDecision!=='BLOCK_PUBLICATION');
+      const visible=approved?r.signal:((r.signal==='BUY'||r.signal==='SELL')?'WITHHELD':r.signal);
+      const cls = approved?({ BUY: 'up', SELL: 'down', WAIT: 'faint' }[r.signal] || 'faint'):'faint';
       const d = (bySym[r.symbol] && bySym[r.symbol].d) != null ? bySym[r.symbol].d : 4;
-      const fx = (v) => (v != null ? Number(v).toFixed(d) : '—');
-      return '<tr><td class="muted">' + (i + 1) + '</td><td><span class="' + cls + '">' + esc(r.signal) + '</span></td><td>' + esc(r.symbol) + '</td><td class="right mono">' + esc(r.confidence) + '%</td><td class="right mono">' + fx(r.entry_price) + '</td><td class="right mono">' + fx(r.stop_loss) + '</td><td class="right mono">' + fx(r.take_profit_1) + '</td><td class="tiny">' + esc(r.engine || 'technical') + '</td><td class="right mono">' + when(r.created_at) + '</td></tr>';
+      const fx = (v) => (approved&&v != null ? Number(v).toFixed(d) : '—');
+      return '<tr><td class="muted">' + (i + 1) + '</td><td><span class="' + cls + '">' + esc(visible) + '</span></td><td>' + esc(r.symbol) + '</td><td class="right mono">' + (approved?esc(r.confidence)+'%':'—') + '</td><td class="right mono">' + fx(r.entry_price) + '</td><td class="right mono">' + fx(r.stop_loss) + '</td><td class="right mono">' + fx(r.take_profit_1) + '</td><td class="tiny">' + esc(r.engine || 'technical') + (approved?'':' · ASTER not recorded') + '</td><td class="right mono">' + when(r.created_at) + '</td></tr>';
     }).join('')
       : '<tr><td colspan="9" class="muted">No signals yet — run an MTF analysis.</td></tr>';
     updateCloudState();
