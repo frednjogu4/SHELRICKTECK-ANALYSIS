@@ -31,6 +31,7 @@ import { runPipeline } from './lib/pipeline/index.js';
 import { parseRss, biasFor, calendarTodayUtc, parseFfCalendar, RSS_SOURCES } from './lib/news.js';
 import { INDEX_MAP, parseYahooChart, indexDailySignal } from './lib/indices.js';
 import { sma, rsi } from './lib/indicators.js';
+import { buildProScalperSnapshot } from './lib/indicators.pro.js';
 import { fetchCandles as derivFetchCandles, fetchCandlesByCode as derivFetchCandlesByCode, fetchActiveSymbols as derivFetchActiveSymbols, fetchTickByCode as derivFetchTickByCode, DERIV_SYMBOLS } from './lib/derivfeed.js';
 import { createDerivRouter, attachDerivWs } from './derivproxy.js';
 import { runBacktest } from './lib/backtest.js';
@@ -105,6 +106,23 @@ function resumedAnswer(symbol, source, latestCandleTime, closed) {
     detail: symbol + ' has just resumed after a pause: no 5-minute candle has closed since, so a reading would describe the market before the pause. The first reading comes with the next 5-minute close.',
     source, data_source: source + ' \u00b7 resumed, waiting for a finished candle',
     latest_candle_time: latestCandleTime, candle_close: closed.close, candle_current: false
+  };
+}
+
+
+const PRO_SCALPER_PRICE_KEYS = Object.freeze(['stochasticRsi', 'cci', 'williamsR', 'supertrend', 'ichimoku', 'keltner']);
+function proScalperValidation(candles) {
+  const snapshot = buildProScalperSnapshot(candles || []);
+  const missing = PRO_SCALPER_PRICE_KEYS.filter((key) => {
+    const value = snapshot.indicators && snapshot.indicators[key];
+    return value == null || (typeof value === 'object'
+      ? Object.values(value).some((item) => item == null || (typeof item === 'number' && !Number.isFinite(item)))
+      : typeof value === 'number' && !Number.isFinite(value));
+  });
+  return {
+    snapshot,
+    valid: snapshot.ok === true && missing.length === 0,
+    missing
   };
 }
 
@@ -365,6 +383,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
          order, the market is not in a state to be read yet. */
       if (isResumed(closed)) return res.status(409).json(resumedAnswer(symbol, dataSource, latestCandleTime, closed));
       const det = runDeterministicAnalysis(symbol, closed.sets);
+      const proScalper = proScalperValidation(closed.sets.m5);
       const price = det.analyses.m1?.currentPrice ?? null;
       const sentiment = det.sentiment || { score: 50, bias: 'neutral', source: 'derived' };
 
@@ -401,7 +420,8 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         data_source: dataSource,
         latest_candle_time: latestCandleTime,
         candle_close: closed.close,
-        candle_current: closed.current
+        candle_current: closed.current,
+        pro_scalper: Object.assign({}, proScalper.snapshot, { validation: { priceIndicatorsValid: proScalper.valid, missingPriceIndicators: proScalper.missing, mode: 'deterministic-candle-snapshot' } })
       });
       /* ASTER strategy inventory: keep the repository's two strategy families
          separate. The source currently defines 4 rule-based setups and 12
@@ -455,6 +475,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         setupDetected: ['BUY', 'SELL', 'LONG', 'SHORT'].includes(rawDirection),
         evidence: Object.assign({}, candleEvidence.evidence, {
           symbolValid: true,
+          indicatorsValid: candleEvidence.evidence.indicatorsValid === true && proScalper.valid,
           candleCloseConfirmed: closed.current === true,
           stopLossValid: planEvidence.stopLossValid,
           measuredTargetsValid: planEvidence.measuredTargetsValid
@@ -539,6 +560,8 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
           if (!sig.ok) throw new Error('insufficient history for ' + symbol);
           return {
             symbol, price: sig.price, mtf_signal: sig.bias.toUpperCase(), data_ok: true,
+            pro_scalper: { ok: false, status: 'NOT_APPLICABLE_DAILY_INDEX_TIMEFRAME', executionAuthorized: false },
+            aster: { status: 'BLOCKED', publishable: false, publicationBlocked: true, publicationDecision: 'BLOCK_PUBLICATION', rejectionReasons: ['Daily index feed is not a scalping timeframe; full ASTER evidence is unavailable.'] },
             signal: sig.signal, bias: sig.bias, votes: sig.votes,
             wait_reason: sig.signal === 'WAIT' ? 'daily_no_setup' : null,
             wait_detail: sig.signal === 'WAIT' ? 'Daily indicators are mixed - no directional edge today.' : null,
@@ -558,6 +581,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         /* Just resumed after a pause: a row without a reading (see resumedAnswer above). */
         if (isResumed(closed)) return Object.assign(resumedAnswer(symbol, 'Deriv public candles', latestCandleTime, closed), { ts: Date.now() });
         const det = runDeterministicAnalysis(symbol, closed.sets);
+        const proScalper = proScalperValidation(closed.sets.m5);
         const dec = localDecision(det);
         const scanDirection = String(dec.signal || '').toUpperCase();
         const scanAster = validateAsterSignal({
@@ -566,6 +590,7 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
           setupDetected: scanDirection === 'BUY' || scanDirection === 'SELL' || scanDirection === 'LONG' || scanDirection === 'SHORT',
           evidence: {
             symbolValid: true, marketDataFresh: det.ok === true,
+            indicatorsValid: proScalper.valid,
             candleCloseConfirmed: closed.current === true,
             bidAskValid: null, spreadValid: null, ohlcValid: null,
             d1Trend: null, h4Trend: null, h1Setup: null, m15Confirmation: null,
@@ -590,7 +615,9 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
           /* Preserve the canonical deterministic reading for PC/browser/Worker parity.
              ASTER independently controls whether it may be published or acted on. */
           signal: dec.signal,
+          pro_scalper: Object.assign({}, proScalper.snapshot, { validation: { priceIndicatorsValid: proScalper.valid, missingPriceIndicators: proScalper.missing, mode: 'deterministic-candle-snapshot' } }),
           aster: Object.assign({}, scanAster, {
+            proScalper: { priceIndicatorsValid: proScalper.valid, missingPriceIndicators: proScalper.missing },
             publicationBlocked: !scanAster.publishable,
             publicationDecision: scanAster.publishable ? 'ALLOW_MANUAL_REVIEW' : 'BLOCK_PUBLICATION'
           }),
