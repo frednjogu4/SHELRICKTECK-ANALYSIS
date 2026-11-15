@@ -9,8 +9,10 @@ sets (1, 'Success'). That is the behaviour that made the bridge report
 The stand-in also takes an account in initialize(), as MetaQuotes documents it
 (login, password, server; MetaTrader 5 then logs in to that account as part of
 the attach), and answers "Authorization failed" (-6) to an attach without an
-account while it is logged in to none. How a real terminal behaves there has
-not been run: the package and the terminal exist for Windows only.
+account while it is logged in to none. It answers what a test tells it to
+answer. What the package really does, step by step, is modelled in
+tests/test_mt5_connector_model.py (read from the package's own file). A real
+terminal has not been run: the package and the terminal exist for Windows only.
 
 Nothing here contacts a terminal, a broker or the network, and nothing asserts
 what a trade analysis concludes.
@@ -141,6 +143,8 @@ class AttachMessageTests(unittest.TestCase):
         cls.replaced = words_the_app_replaces()
         cls.folder = tempfile.TemporaryDirectory()
 
+        cls.look_up = staticmethod(cls.bridge._running_terminals)  # the real look-up; the tests put their own in its place
+
     @classmethod
     def tearDownClass(cls):
         cls.folder.cleanup()
@@ -173,9 +177,11 @@ class AttachMessageTests(unittest.TestCase):
         bridge.CANDIDATE_PATHS = [None]
         bridge._LOCKED_LOGIN = None
         bridge._LOCKED_SERVER = None
+        self.running(None)  # as on a PC where the bridge cannot look for a running MetaTrader 5
 
     def tearDown(self):
         logging.disable(logging.NOTSET)
+        self.bridge._running_terminals = self.look_up
 
     # ------------------------------------------------------------ helpers
     def use_terminal_file(self, *parts):
@@ -191,6 +197,16 @@ class AttachMessageTests(unittest.TestCase):
         reply = self.bridge.handle_login(dict(LOGIN))
         self.assertEqual(reply["type"], "error")
         return reply["message"]
+
+    def running(self, paths):
+        """The MetaTrader 5 programs that are open on the PC: a list of paths, or None when the bridge cannot look."""
+        self.bridge._running_terminals = lambda: (None if paths is None else list(paths))
+
+    def version_note(self):
+        """How every attach message ends: which bridge file answered."""
+        note = self.bridge._version_note()
+        self.assertRegex(note, r'^Bridge version 22a, running from "[^"\\]+\\bridge"\.$')
+        return note
 
     def not_logged_in(self, accepts=ACCOUNT):
         """MetaTrader 5 is open and logged in to no account: it attaches only when it is given an account it accepts."""
@@ -263,14 +279,63 @@ class AttachMessageTests(unittest.TestCase):
             ((path,), {"timeout": 5000}),
             ((path,), {"timeout": 4000, "login": 123456, "password": "local-only", "server": "Exness-MT5Trial"}),
         ])
+        # The attach with the account is the login: the package sends MetaTrader 5 the same login mt5.login() sends,
+        # so mt5.login() is not called after it. The identity checks follow as always.
         self.assertEqual([call[0] for call in self.terminal.calls],
-                         ["terminal_info", "initialize", "shutdown", "initialize", "terminal_info", "login", "account_info"])
+                         ["terminal_info", "initialize", "shutdown", "initialize", "terminal_info", "account_info"])
         self.assertIsNone(self.bridge._ATTACH_FAILURE)
-        # what follows the attach is what always followed it: MetaTrader's own login() and the identity checks
-        self.assertEqual(self.terminal.calls[5], ("login", (123456,), {"server": "Exness-MT5Trial"}))
         self.assertEqual(reply["server"], "Exness-MT5Trial")
         self.assertNotIn("123456", reply["account"])
         self.assertEqual((self.bridge._LOCKED_LOGIN, self.bridge._LOCKED_SERVER), (123456, "Exness-MT5Trial"))
+
+    def test_metatrader_is_not_asked_to_log_in_a_second_time_and_the_account_it_reports_is_compared(self):
+        # MetaTrader 5 logged in during the attach, but reports another account number than the one it was given.
+        self.not_logged_in()
+        self.account_as_metatrader_reports_it()
+        self.terminal.account.login = 654321
+        message = self.login_message()
+        self.assertEqual(message, "MetaTrader 5 reported a different account than the one entered. "
+                                  "Connection rejected; press Connect again.")
+        self.assert_reaches_the_user(message)
+        self.assertEqual(self.terminal.count("login"), 0)
+        self.assertIsNone(self.bridge._LOCKED_LOGIN)  # nothing was bound
+
+        # The next login finds the terminal attached: no attach of its own, so MetaTrader's own login() as always.
+        self.terminal.account.login = LOGIN["login"]
+        reply = self.bridge.handle_login(dict(LOGIN))
+        self.assertEqual(reply["type"], "logged", reply)
+        self.assertEqual(self.terminal.count("login"), 1)
+        self.assertEqual(self.terminal.calls[-2], ("login", (123456,), {"server": "Exness-MT5Trial"}))
+        self.assertEqual(len(self.attach_calls()), 2)
+
+    def test_a_terminal_that_is_logged_in_already_is_asked_to_log_in_as_it_always_was(self):
+        # The attach without an account succeeds: MetaTrader 5 is logged in to some account, not necessarily this one.
+        self.terminal.init_ok = True
+        self.account_as_metatrader_reports_it()
+        reply = self.bridge.handle_login(dict(LOGIN))
+        self.assertEqual(reply["type"], "logged", reply)
+        self.assertEqual(self.attach_calls(), [((), {"timeout": 5000})])
+        self.assertEqual([call[0] for call in self.terminal.calls], ["terminal_info", "initialize", "terminal_info", "login", "account_info"])
+        # and a wrong password is still MetaTrader's to refuse
+        self.setUp()
+        self.terminal.init_ok = True
+        message = self.login_message()
+        self.assertIn("MT5 rejected the credentials (step login, code -6", message)
+
+    def test_the_identity_checks_after_the_login_reach_the_user_in_their_own_words(self):
+        for change, words in [
+            (dict(server="Exness-MT5Real"), "MT5 reported a different server than the exact Exness server entered. Connection rejected;"),
+            (dict(company="Another Broker Ltd"), "MT5 did not verify an Exness company identity for this account. Connection rejected;"),
+        ]:
+            with self.subTest(change=change):
+                self.setUp()
+                self.not_logged_in()
+                self.account_as_metatrader_reports_it()
+                for name, value in change.items():
+                    setattr(self.terminal.account, name, value)
+                message = self.login_message()
+                self.assertIn(words, message)
+                self.assert_reaches_the_user(message)  # with "refused" in it the app showed "Bridge not reachable" instead
 
     def test_once_metatrader_has_said_not_logged_in_the_next_login_gives_it_the_account_at_once(self):
         self.not_logged_in()
@@ -303,7 +368,7 @@ class AttachMessageTests(unittest.TestCase):
             "check the internet connection of this PC. If Connect fails although the corner shows a speed: start "
             "MetaTrader 5 with a normal double-click, not 'Run as administrator', keep only that one MetaTrader 5 open, "
             "then run START_ALL_LOCAL.bat again. "
-            'Terminal tried: "ExnessKE MT5 Terminal\\terminal64.exe".')
+            'Terminal tried: "ExnessKE MT5 Terminal\\terminal64.exe". ' + self.version_note())
         self.assert_reaches_the_user(message)
         self.assertEqual(len(self.attach_calls()), 2)
         self.assertEqual(self.terminal.count("login"), 0)  # not attached: nothing further is asked of MetaTrader 5
@@ -341,12 +406,52 @@ class AttachMessageTests(unittest.TestCase):
         # MetaTrader's own login() follows the attach in the same answer, and the app waits 6 s for that answer
         self.assertLess(self.bridge._ACCOUNT_ATTACH_END_MS, self.bridge._LOGIN_ATTACH_WAIT_MS)
 
-        self.setUp()  # an account that is not accepted in that time: the message names the time it had
+        self.setUp()  # a login that has not finished in that time: the message names the time it had
         self.not_logged_in(accepts=None)
         self.terminal.account_error = (-10005, "IPC timeout")
         with self.slow_first_attach(1.2):
             message = self.login_message()
-        self.assertIn("did not answer within 2.8 seconds", message)
+        self.assertIn("had not finished logging in after 2.8 seconds", message)
+
+    def test_a_login_that_takes_longer_than_its_time_is_reported_as_still_going_on(self):
+        # The package sends MetaTrader 5 the login and then asks, for the waiting time, whether it is logged in.
+        # "IPC timeout" after that means the time ended first: MetaTrader 5 has the account and goes on.
+        path = self.use_terminal_file("ExnessKE MT5 Terminal", "terminal64.exe")
+        self.not_logged_in(accepts=None)
+        self.terminal.account_error = (-10005, "IPC timeout")
+        message = self.login_message()
+        self.assertEqual(
+            message,
+            "Cannot attach to MetaTrader 5: MetaTrader 5 was given the account number, password and server entered "
+            "in the app and had not finished logging in after 4 seconds (step terminal, code -10005: IPC time-out). "
+            "Give it a few more seconds. Look at the bottom-right corner of MetaTrader 5. If it shows a connection "
+            "speed, MetaTrader 5 has logged in by now: press Connect again. If it says 'Invalid account', Exness did "
+            "not accept the three: compare them with your Exness Personal Area (the account must be an MT5 account, "
+            "the password is the one of that trading account and not the one of the Exness website, the server is "
+            "written exactly as shown there) and press Connect again. If it says 'No connection', MetaTrader 5 cannot "
+            "get through to Exness: check the internet connection of this PC. "
+            'Terminal tried: "ExnessKE MT5 Terminal\\terminal64.exe". ' + self.version_note())
+        self.assert_reaches_the_user(message)
+        self.assertNotIn("Python integration", message)  # MetaTrader 5 was reached: nothing about how it was started
+        self.assertNotIn("Run as administrator", message)
+
+        # The next press, once the quiet time is over, finds MetaTrader 5 logged in: a plain attach, no second account.
+        self.bridge._ATTACH_FAILURE["at"] = time.time() - self.bridge._ATTACH_REPEAT_QUIET_S - 0.1
+        self.terminal.init_ok = True
+        self.account_as_metatrader_reports_it()
+        self.assertEqual(self.bridge.handle_login(dict(LOGIN))["type"], "logged")
+        self.assertEqual(self.attach_calls()[2:], [((path,), {"timeout": 5000})])
+
+    def test_an_account_with_a_one_time_password_is_sent_to_metatrader_itself(self):
+        self.not_logged_in(accepts=None)
+        self.terminal.account_error = (-7, "Unsupported authorization mode, OTP or certificate password needed")
+        message = self.login_message()
+        self.assertIn("this account asks for a one-time password or a certificate, and the app cannot give either to "
+                      "MetaTrader 5 (step terminal, code -7: Unsupported authorization mode, OTP or certificate "
+                      "password needed). Log in inside MetaTrader 5 yourself: 1) in MetaTrader 5 use File > Login to "
+                      "Trade Account", message)
+        self.assertNotIn("compare them with your Exness Personal Area", message)
+        self.assert_reaches_the_user(message)
 
     def test_when_too_little_time_is_left_the_next_login_makes_the_attach_with_the_account(self):
         self.not_logged_in()
@@ -386,7 +491,8 @@ class AttachMessageTests(unittest.TestCase):
             "number, password and the exact server) and wait until the bottom-right corner shows a connection speed and "
             "not 'No connection'; 2) press Connect. If MetaTrader 5 shows your account already: start MetaTrader 5 with "
             "a normal double-click, not 'Run as administrator', keep only that one MetaTrader 5 open, then run "
-            "START_ALL_LOCAL.bat again. Terminal tried: the default MetaTrader 5 of this PC (no location is saved).")
+            "START_ALL_LOCAL.bat again. Terminal tried: the default MetaTrader 5 of this PC (no location is saved). "
+            + self.version_note())
         self.assert_reaches_the_user(message)
 
     def test_only_not_logged_in_makes_the_bridge_give_metatrader_the_account(self):
@@ -589,7 +695,7 @@ class AttachMessageTests(unittest.TestCase):
         name, args, kwargs = [call for call in self.terminal.calls if call[0] == "initialize"][0]
         self.assertEqual(args, (path,))
         self.assertEqual(kwargs, {"timeout": 5000})
-        self.assertTrue(message.endswith('Terminal tried: "MetaTrader 5 EXNESS\\terminal64.exe".'), message)
+        self.assertTrue(message.endswith('Terminal tried: "MetaTrader 5 EXNESS\\terminal64.exe". ' + self.version_note()), message)
         self.assertIn("did not answer within 5 seconds", message)
         self.assertNotIn("MetaTrader 4", message)
         self.assertNotIn("someone", message)
@@ -599,7 +705,167 @@ class AttachMessageTests(unittest.TestCase):
         message = self.login_message()
         name, args, kwargs = [call for call in self.terminal.calls if call[0] == "initialize"][0]
         self.assertEqual(args, ())
-        self.assertIn("Terminal tried: the default MetaTrader 5 of this PC (no location is saved).", message)
+        self.assertIn("Terminal tried: the default MetaTrader 5 of this PC (no location is saved). Bridge version", message)
+
+    def test_without_a_saved_location_the_bridge_attaches_to_the_metatrader_that_is_open(self):
+        # Without a path the package takes the installation whose settings were saved last, open or not.
+        exness = r"C:\Program Files\ExnessKE MT5 Terminal\terminal64.exe"
+        self.running([exness])
+        self.not_logged_in()
+        self.account_as_metatrader_reports_it()
+        self.bridge._ATTACH_STATE["wait_ms"] = self.bridge._START_ATTACH_WAIT_MS
+        self.assertFalse(self.bridge.attach_terminal())  # the attach at bridge start
+        self.bridge._ATTACH_STATE["wait_ms"] = self.bridge._LOGIN_ATTACH_WAIT_MS
+        self.assertEqual(self.attach_calls(), [((exness,), {"timeout": 60000})])
+        self.assertTrue(self.bridge._attach_failure_message().endswith(
+            'Terminal tried: "ExnessKE MT5 Terminal\\terminal64.exe", the MetaTrader 5 that is open '
+            "(no location is saved). " + self.version_note()))
+        # Connect: the account goes to the same terminal
+        self.assertEqual(self.bridge.handle_login(dict(LOGIN))["type"], "logged")
+        self.assertEqual(self.attach_calls()[1:], [((exness,), {"timeout": 4000, "login": 123456, "password": "local-only", "server": "Exness-MT5Trial"})])
+
+    def test_of_several_open_metatraders_the_one_exness_terminal_is_taken(self):
+        other = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+        exness = r"C:\Program Files\ExnessKE MT5 Terminal\terminal64.exe"
+        for open_now, taken, count in [
+            ([other, exness], exness, 2),
+            ([exness.upper(), exness], exness.upper(), 1),     # the same program listed twice is one
+            ([other, "", exness], exness, 3),                  # one whose location Windows does not give
+            ([other], other, 1),                               # the only one that is open, whatever its name
+        ]:
+            with self.subTest(open_now=open_now):
+                self.running(open_now)
+                self.assertEqual(self.bridge._open_terminal(), (taken, count))
+
+    def test_when_the_bridge_cannot_tell_which_metatrader_is_meant_the_package_chooses_and_the_message_says_why(self):
+        other = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+        second = r"D:\Other Broker MT5\terminal64.exe"
+        exness = r"C:\Program Files\ExnessKE MT5 Terminal\terminal64.exe"
+        cases = [
+            ([other, second], "the default MetaTrader 5 of this PC (no location is saved and 2 MetaTrader 5 are open: "
+                              "keep only the Exness one open, then run START_ALL_LOCAL.bat again). Bridge version"),
+            ([exness, r"C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe"],
+             "the default MetaTrader 5 of this PC (no location is saved and 2 MetaTrader 5 are open: "
+             "keep only the Exness one open, then run START_ALL_LOCAL.bat again). Bridge version"),
+            ([], "the default MetaTrader 5 of this PC (no location is saved and none was open). Bridge version"),
+            ([""], "the default MetaTrader 5 of this PC (no location is saved). Bridge version"),
+            (None, "the default MetaTrader 5 of this PC (no location is saved). Bridge version"),
+        ]
+        for open_now, label in cases:
+            with self.subTest(open_now=open_now):
+                self.setUp()
+                self.running(open_now)
+                message = self.login_message()
+                self.assertEqual(self.attach_calls(), [((), {"timeout": 5000})])  # no path: the package chooses
+                self.assertIn("Terminal tried: " + label, message)
+                self.assert_reaches_the_user(message)
+
+    def test_a_saved_location_is_used_whatever_is_open(self):
+        path = self.use_terminal_file("ExnessKE MT5 Terminal", "terminal64.exe")
+        asked = []
+        self.bridge._running_terminals = lambda: asked.append(1) or [r"C:\Program Files\MetaTrader 5\terminal64.exe"]
+        self.login_message()
+        self.assertEqual(self.attach_calls(), [((path,), {"timeout": 5000})])
+        self.assertEqual(asked, [])  # the bridge does not even look
+
+    def test_the_look_up_of_running_metatraders_reads_windows_and_never_stands_in_the_way(self):
+        import ctypes
+        look_up = self.look_up
+        # Not Windows, nothing to look with: "cannot look", and the attach goes on as before.
+        if os.name != "nt":
+            self.assertIsNone(look_up())
+
+        # A stand-in for the Windows calls the look-up makes, with five processes of which three are MetaTrader 5.
+        processes = [(4, "System", None), (812, "terminal64.exe", r"C:\Program Files\ExnessKE MT5 Terminal\terminal64.exe"),
+                     (900, "chrome.exe", r"C:\chrome.exe"), (1200, "TERMINAL64.EXE", None),
+                     (1300, "terminal.exe", r"C:\MetaTrader 4\terminal.exe"), (1400, "terminal64.exe", r"D:\MT5\terminal64.exe")]
+        log = {"closed": [], "opened": [], "flags": None, "access": set(), "size": None}
+
+        def give(reference, index):
+            if index >= len(processes):
+                return 0
+            entry = reference._obj
+            entry.th32ProcessID, entry.szExeFile = processes[index][0], processes[index][1]
+            log["size"] = entry.dwSize
+            return 1
+
+        position = {"at": 0}
+
+        def snapshot(flags, process_id):
+            log["flags"] = (flags, process_id)
+            return 77
+
+        def first(handle, reference):
+            position["at"] = 0
+            return give(reference, 0)
+
+        def following(handle, reference):
+            position["at"] += 1
+            return give(reference, position["at"])
+
+        def open_process(access, inherit, process_id):
+            log["access"].add((access, inherit))
+            path = next(path for number, _, path in processes if number == process_id)
+            if path is None:
+                return None  # Windows does not let this process be opened
+            log["opened"].append(process_id)
+            return 1000 + process_id
+
+        def image_name(handle, flags, buffer, size):
+            path = next(path for number, _, path in processes if number == handle - 1000)
+            self.assertGreaterEqual(size._obj.value, 260)
+            buffer.value, size._obj.value = path, len(path)
+            return 1
+
+        windows = types.SimpleNamespace(
+            CreateToolhelp32Snapshot=snapshot, Process32FirstW=first, Process32NextW=following,
+            OpenProcess=open_process, QueryFullProcessImageNameW=image_name,
+            CloseHandle=lambda handle: log["closed"].append(handle) or 1)
+        self.assertEqual(look_up(windows), [r"C:\Program Files\ExnessKE MT5 Terminal\terminal64.exe", "", r"D:\MT5\terminal64.exe"])
+        self.assertEqual(log["flags"], (2, 0))                 # TH32CS_SNAPPROCESS, every process
+        self.assertEqual(log["access"], {(0x1000, False)})     # PROCESS_QUERY_LIMITED_INFORMATION: the path, nothing else
+        self.assertEqual(log["opened"], [812, 1400])           # MetaTrader 4 and other programs are not opened
+        self.assertEqual(log["closed"], [1812, 2400, 77])      # every handle is closed again, the snapshot last
+        self.assertGreater(log["size"], 0)                     # the size Windows asks for is filled in
+        # the types the calls are given, as Windows declares them
+        self.assertIs(snapshot.restype, ctypes.wintypes.HANDLE)
+        self.assertIs(open_process.restype, ctypes.wintypes.HANDLE)
+        self.assertEqual(image_name.argtypes[2], ctypes.wintypes.LPWSTR)
+
+        # The snapshot cannot be made, or a call raises: "cannot look", no exception.
+        windows.CreateToolhelp32Snapshot = lambda flags, process_id: ctypes.c_void_p(-1).value
+        self.assertIsNone(look_up(windows))
+        windows.CreateToolhelp32Snapshot = lambda flags, process_id: 77
+        windows.Process32FirstW = lambda handle, reference: (_ for _ in ()).throw(OSError("exception: access violation"))
+        self.assertIsNone(look_up(windows))
+        self.assertEqual(log["closed"][-1], 77)                # the snapshot is closed all the same
+
+        # And the attach goes on without a path when the look-up itself fails.
+        self.bridge._running_terminals = lambda: look_up(windows)
+        self.login_message()
+        self.assertEqual(self.attach_calls(), [((), {"timeout": 5000})])
+
+    def test_the_record_windows_fills_in_has_the_layout_windows_gives_it(self):
+        # PROCESSENTRY32W on 64-bit Windows: 568 bytes, the process number at 8, the program's name at 44. The
+        # MetaTrader5 package passes the same record to the same calls with that size. Windows has 2-byte
+        # characters and 4-byte DWORD and LONG, so the fields are laid out here with exactly those sizes.
+        import ctypes
+        record = self.bridge._PROCESS_RECORD
+        self.assertEqual([name for name, _, _ in record],
+                         ["dwSize", "cntUsage", "th32ProcessID", "th32DefaultHeapID", "th32ModuleID", "cntThreads",
+                          "th32ParentProcessID", "pcPriClassBase", "dwFlags", "szExeFile"])
+        for pointer, size, offsets in [(ctypes.c_uint64, 568, (8, 32, 44)), (ctypes.c_uint32, 556, (8, 24, 36))]:
+            on_windows = {"DWORD": ctypes.c_uint32, "LONG": ctypes.c_int32, "ULONG_PTR": pointer, "WCHAR": ctypes.c_uint16}
+
+            class Record(ctypes.Structure):
+                _fields_ = [(name, on_windows[kind] * count if count > 1 else on_windows[kind]) for name, kind, count in record]
+
+            self.assertEqual(ctypes.sizeof(Record), size)
+            self.assertEqual((Record.th32ProcessID.offset, Record.th32ParentProcessID.offset, Record.szExeFile.offset), offsets)
+        # the form the bridge makes of it has the same fields in the same order, and is made once
+        made = self.bridge._process_entry()
+        self.assertEqual([name for name, _ in made._fields_], [name for name, _, _ in record])
+        self.assertIs(self.bridge._process_entry(), made)
 
     def test_a_saved_location_that_is_gone_is_named_and_metatrader_is_not_called(self):
         gone = str(Path(self.folder.name) / "Old Folder" / "terminal64.exe")

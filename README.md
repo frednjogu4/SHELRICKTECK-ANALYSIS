@@ -190,15 +190,31 @@ it can check an account. When the attach fails, the form shows the bridge's
 message:
 
 ```text
-Cannot attach to MetaTrader 5: <what is wrong> (step terminal, code <n>: <MetaTrader's own text>). <what to do> Terminal tried: "<folder>\<file>".
+Cannot attach to MetaTrader 5: <what is wrong> (step terminal, code <n>: <MetaTrader's own text>). <what to do> Terminal tried: "<folder>\<file>". Bridge version 22a, running from "<folder>\bridge".
 ```
 
 The message distinguishes: the saved location is gone, the program found is
-MetaTrader 4, MetaTrader 5 did not log in with the account entered in the app
-(code -6), no MetaTrader 5 was found, it could not be started, it has no
-connection for Python, it did not answer in time (code -10005), and a version
-mismatch. The bridge window prints the text for its own attach when the bridge
-starts without MetaTrader 5; there, code -6 reads "not logged in".
+MetaTrader 4, the account needs a one-time password, MetaTrader 5 did not log
+in with the account entered in the app (code -6), it had not finished logging
+in with it when the time was up (code -10005), no MetaTrader 5 was found, it
+could not be started, it has no connection for Python, it did not answer in
+time (code -10005 without an account), and a version mismatch. The bridge
+window prints the text for its own attach when the bridge starts without
+MetaTrader 5; there, code -6 reads "not logged in".
+
+- **Which bridge is running.** The end of the message names the bridge file
+  that answered: its version and the last two folders of where it runs from.
+  The same version is under **Test bridge** in the app (`socket answered ·
+  bridge 22a`) and in the first lines of the bridge window. `21a` is every
+  bridge file from before this change, and also the first file that passed
+  the account on (14 November 2026): the label was not raised then, so `21a`
+  alone does not tell those two apart; a message that ends with `Bridge
+  version` does. A PC shows `21a` after an update when
+  the new `bridge\mt5_bridge.py` went into another copy of the app than the
+  one that runs (right-click the desktop icon **Fredrick TRADING (local app)**
+  and choose **Open file location**: that folder is the one that runs), or
+  when `START_ALL_LOCAL.bat` was not run again after the file was replaced: a
+  bridge window that is already open keeps the file it started with.
 
 - **`(step terminal, code 1: Success)` is the old fault.** Until 13 November
   2026 the bridge read MetaTrader's error after `mt5.shutdown()`, which sets it
@@ -212,9 +228,13 @@ starts without MetaTrader 5; there, code -6 reads "not logged in".
   attach. Connect now has the attach made with them when MetaTrader 5 gives
   that answer (`initialize()` takes `login`, `password` and `server`, and
   MetaTrader 5 logs in to that account as part of the attach; MetaQuotes'
-  documentation of `initialize()`). After it everything is as before:
-  MetaTrader's own `login()` with the same three, then the checks of the server
-  and of the Exness company name.
+  documentation of `initialize()`). That attach is the login: the package
+  sends MetaTrader 5 the same login its `login()` sends, so `login()` is not
+  called after it (a second login would take as long as the first, and the app
+  waits 6 seconds for the whole answer). The checks follow as before, of the
+  server and of the Exness company name, and here also of the account number
+  MetaTrader 5 reports. When MetaTrader 5 was logged in already, nothing
+  changes: the attach carries no account and `login()` follows it.
   - The attach at bridge start has no account to give and stays as it was. Once
     it has ended with code -6, Connect goes to the attach with the account at
     once.
@@ -238,6 +258,41 @@ starts without MetaTrader 5; there, code -6 reads "not logged in".
   - A bridge file from before this change answers Connect with `it is not
     logged in ... Do this: 1) in MetaTrader 5 use File > Login to Trade
     Account` and passes nothing on: replace the file and restart the bridge.
+    Its message does not end with a bridge version.
+- **What the `MetaTrader5` package does.** Read from the package's own file
+  (version 5.0.6231, `_core.pyd`), because the documentation does not say it:
+  1. *Which terminal.* With a path, that one. Without a path it is not the
+     terminal that is open: every folder under `%APPDATA%\MetaQuotes\Terminal`
+     is one installation, and the one whose `config\accounts.dat` or
+     `config\terminal.ini` was written last is taken.
+  2. *The connection.* The package opens that terminal's pipe. A terminal
+     that is not running is started first, and its pipe is tried every half
+     second, 200 times, whatever `timeout` says.
+  3. *The account.* With `login`, `password` or `server` it sends MetaTrader 5
+     a login for them. `-7` with the text `OTP or certificate password needed`
+     is MetaTrader's refusal of an account with a one-time password.
+  4. *The wait.* It asks MetaTrader 5 every tenth of a second how far it is,
+     for `timeout` milliseconds: logged in ends it with `True`, a failed login
+     with `-6` (`Authorization failed`), and when the time is up the answer is
+     `-10005` (`IPC timeout`). MetaTrader 5 is not told to stop, so it goes on
+     logging in.
+
+  So `-6` is MetaTrader's own answer: the terminal was reached, and it has no
+  account or its login was not accepted. `-10005` is the only time-out of the
+  package and means MetaTrader 5 answered but was neither logged in nor
+  refused when the time ended. An unknown keyword is ignored and a wrong value
+  gives `False` with code `-2`; the package raises for neither.
+- **Which MetaTrader 5.** The launcher saves the location of the MetaTrader 5
+  it finds running (`bridge\terminal_path.txt`), but only when exactly one is
+  running. Without a saved location the package would choose by point 1
+  above, which with two installations can be another one than the Exness
+  terminal on the screen, and it would start that one. The bridge therefore
+  looks for the running `terminal64.exe` itself (the Windows calls the
+  package uses to find the program that started it) and passes its path:
+  the only one that is open, or of several the one with `Exness` in its path.
+  When it cannot tell, the package chooses as before, and the message says so
+  (`no location is saved and 2 MetaTrader 5 are open: keep only the Exness one
+  open`). A saved location is used as it is.
 - **Wording.** The sign-in form replaces a bridge message that contains
   `unreachable`, `timeout`, `refused`, `closed` or `blocked` with its own
   "Bridge not reachable" help. The bridge rewords these five words, or
@@ -250,24 +305,28 @@ starts without MetaTrader 5; there, code -6 reads "not logged in".
   repeat gets the same answer without a second attempt, and a login that
   arrives during an attach is answered at once with "still contacting
   MetaTrader 5". The attach with the account ends 4 seconds after the login
-  began to attach, because MetaTrader's `login()` follows it in the same
-  answer. When an attach without the account came first and left under
+  began to attach, so that the checks after it fit into the same answer. When
+  the login has not finished by then, the message says that MetaTrader 5 has
+  the account and is still logging in, and the next press of Connect finds it
+  logged in. When an attach without the account came first and left under
   2 seconds, the attach with the account is not begun: the app's repeat makes
   it, and that repeat is not held back. The attach at bridge start keeps
   MetaTrader's 60 seconds, because a terminal the launcher has just started
   needs them.
 - **Tests.** `tests/test_mt5_bridge_attach.py` runs the bridge against a
-  stand-in for the Windows-only `MetaTrader5` package, and
-  `tests/platform/pc-bridge-attach.test.mjs` checks the facts about the app
-  named above and runs the Python tests where Python 3 is installed
-  (`npm test` includes it). The wording for each case follows MetaQuotes' list
-  of error codes and users' reports. Nothing has been run on Windows or against
-  a real terminal: that MetaTrader 5 logs in when `initialize()` is given an
-  account is MetaQuotes' documentation, and the stand-in behaves as that
-  documentation says. Not known from it, and not measured: how long MetaTrader
-  5 takes to say "not logged in", how long a login takes on the trading PC's
-  line, and whether MetaTrader 5 goes on logging in when the 4 seconds end
-  first (the message for that case says to press Connect again).
+  stand-in for the Windows-only `MetaTrader5` package that answers what a test
+  tells it to. `tests/test_mt5_connector_model.py` runs it against a model of
+  the four points above, with terminals that are open or closed, logged in or
+  not, and logins that take a given time. `tests/platform/pc-bridge-attach.test.mjs`
+  checks the facts about the app named above and runs the Python tests where
+  Python 3 is installed (`npm test` includes it). Nothing has been run on
+  Windows or against a real terminal. The package's side is read from its
+  file; MetaTrader's side is not known from it and not measured: when
+  MetaTrader 5 reports "logged in" or "login failed", how long a login takes
+  on the trading PC's line, and what it reports while a dialog of its own is
+  open. The look-up of the running MetaTrader 5 is tested against a stand-in
+  for the Windows calls, not on Windows; when it fails for any reason the
+  bridge goes on as it did without it.
 
 ### When the PC app refuses every Exness order
 

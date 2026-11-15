@@ -86,7 +86,11 @@ _LOCAL_API_AUTH = os.environ.get("AURUM_LOCAL_API_AUTH", "").strip() == "1"
 _LOCAL_API_TOKEN = os.environ.get("AURUM_LOCAL_API_TOKEN", "").strip()
 if _LOCAL_API_AUTH and not _LOCAL_API_TOKEN:
     sys.exit("Local API auth is required but its local token is missing. Re-run SETUP_AND_RUN_LOCAL.bat.")
-BRIDGE_BUNDLE = "21a"  # Exness MT5-local adapter build
+# 22a: Connect gives MetaTrader 5 the account entered in the app when MetaTrader 5 is not logged in, and
+# without a saved location the bridge attaches to the MetaTrader 5 that is open (21a did neither). The app
+# shows the label under "Test bridge" ("socket answered - bridge 22a") and every attach message ends with it,
+# so that a message tells which bridge file answered. Change it whenever this file changes what Connect does.
+BRIDGE_BUNDLE = "22a"  # Exness MT5-local adapter build
 
 
 def _ip_is_local(ip):
@@ -232,6 +236,27 @@ def _last_error():
 # those three, so when the attach without an account is answered with -6,
 # handle_login() has it made once more with the account entered in the app.
 # At bridge start there is no account to give: that attach stays as it was.
+#
+# What initialize() does, read from the MetaTrader5 package itself (5.0.6231,
+# the file _core.pyd; tests/test_mt5_connector_model.py holds the same as a
+# model the bridge is tested against):
+#   1. Which terminal. With a path: that one. Without: not the one that is
+#      open, but the installation whose settings were saved last
+#      (config\accounts.dat and config\terminal.ini under
+#      %APPDATA%\MetaQuotes\Terminal). So without a saved location the bridge
+#      looks for the MetaTrader 5 that is open and passes its path
+#      (_open_terminal()).
+#   2. It opens that terminal's pipe. A terminal that is not running is started
+#      first, and the package waits for its pipe without regard to 'timeout'.
+#   3. With an account it sends MetaTrader 5 a login for it.
+#   4. It then asks every tenth of a second how far MetaTrader 5 is, for as
+#      long as 'timeout' says: logged in gives True, "authorization failed"
+#      gives -6, and when the time ends first the answer is -10005
+#      ("IPC timeout") while MetaTrader 5 goes on logging in.
+# So -6 is MetaTrader 5's own answer (the terminal was reached, and it has no
+# account or its login was not accepted), and -10005 after an account was given
+# means the login has not finished yet. An unknown keyword is ignored by the
+# package and a wrong one gives False with code -2: it raises for neither.
 _ATTACH_LOCK = threading.Lock()  # one initialize() at a time: bridge start, websocket and HTTP logins alike
 _ATTACH_FAILURE = None  # why the last attach failed (dict); None after a successful attach
 # The app waits 8 s for the answer to a login (src/bridge.js) and repeats a
@@ -254,10 +279,23 @@ _ACCOUNT_ATTACH_MIN_MS = 2000  # with less than this left it is made by the next
 _CONNECTOR_TAKES_TIMEOUT = True
 _ATTACH_REPEAT_QUIET_S = 3.0
 _ATTACH_STATE = {"wait_ms": _LOGIN_ATTACH_WAIT_MS, "since": 0.0, "limit_s": 0.0}
+# .with_account is True in the thread whose attach has just logged MetaTrader 5 in to the account it was given.
+# That attach is a login: the package sends MetaTrader 5 the same login that mt5.login() sends. handle_login()
+# then does not send it a second time; the app waits 6 seconds for the whole answer, and a second login would
+# cost as long as the first. It belongs to one login in one thread and is read once.
+_ATTACHED_HERE = threading.local()
 
 
 _BOUND_ELSEWHERE = ("This bridge is already bound to a different Exness account/server. PC and phone must use the same "
                     "account and exact server; restart the bridge only when safely disconnected to change identity.")
+
+
+def _account_number(account_info):
+    """The account number MetaTrader 5 reports, 0 when it reports none."""
+    try:
+        return int(getattr(account_info, "login", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _bound_to_another_account(login, server):
@@ -271,6 +309,7 @@ def handle_login(msg):
     (terminal attach vs credentials) plus MT5's own error code, so the app can
     show a real fix instead of a generic 'bridge unreachable'."""
     global _LOCKED_LOGIN, _LOCKED_SERVER
+    _ATTACHED_HERE.with_account = False  # nothing left over from a login this thread answered before
     try:
         login = int(msg.get("login") or 0)
     except (TypeError, ValueError):
@@ -307,12 +346,17 @@ def handle_login(msg):
             return {**err(_app_safe(f"MT5 terminal not responding (step terminal, code {code}: {desc}). Start MetaTrader 5 and keep it open."))}
     else:
         log.info("reusing the MT5 terminal already attached at bridge startup")
+    just_logged_in = bool(getattr(_ATTACHED_HERE, "with_account", False))
+    _ATTACHED_HERE.with_account = False
     if not term.trade_allowed:
         log.info("terminal reports read-only trade permissions; compatible with this verification build")
     with _LOGIN_LOCK:
         if _bound_to_another_account(login, server):
             return {**err(_BOUND_ELSEWHERE)}
-        ok = mt5.login(login, password=password, server=server)
+        if just_logged_in:
+            ok = True  # the attach of this login gave MetaTrader 5 these three, and MetaTrader 5 logged in with them
+        else:
+            ok = mt5.login(login, password=password, server=server)
         if not ok:
             code, desc = _last_error()
             return {**err(_app_safe(f"MT5 rejected the credentials (step login, code {code}: {desc}). Check the account number, MT5 password, and exact Exness MT5 server in your Exness Personal Area."))}
@@ -322,12 +366,17 @@ def handle_login(msg):
             return {**err(_app_safe(f"Logged in but account info unavailable (step account, code {code}: {desc})"))}
         actual_server = str(getattr(ai, "server", "")).strip()
         company = str(getattr(ai, "company", "")).strip()
+        if just_logged_in and _account_number(ai) != login:
+            # mt5.login() was not called, so the account MetaTrader 5 reports is compared with the one it was given
+            log.error("MT5 reports another account than the one it was given; refusing to authorize this connection")
+            return {**err(_app_safe("MetaTrader 5 reported a different account than the one entered. Connection refused; press Connect again."))}
+        # _app_safe: the app shows its own "Bridge not reachable" help for a message with the word "refused" in it
         if actual_server.casefold() != server.casefold():
             log.error("MT5 login server mismatch; refusing to authorize this connection")
-            return {**err("MT5 reported a different server than the exact Exness server entered. Connection refused; verify the server in your Exness Personal Area.")}
+            return {**err(_app_safe("MT5 reported a different server than the exact Exness server entered. Connection refused; verify the server in your Exness Personal Area."))}
         if "exness" not in company.casefold():
             log.error("MT5 company identity is missing or not Exness; refusing to authorize this connection")
-            return {**err("MT5 did not verify an Exness company identity for this account. Connection refused; confirm you selected the Exness terminal and account.")}
+            return {**err(_app_safe("MT5 did not verify an Exness company identity for this account. Connection refused; confirm you selected the Exness terminal and account."))}
         if _LOCKED_LOGIN is None:
             _LOCKED_LOGIN, _LOCKED_SERVER = int(ai.login), actual_server
     log.info("logged in: account ending %s (%s)", _mask_account(ai.login)[-4:], ai.currency)
@@ -364,12 +413,36 @@ def _app_safe(text):
     return out
 
 
-def _terminal_label(path):
-    """Name the terminal that was tried: its folder and file, not the whole path."""
-    if not path:
-        return "the default MetaTrader 5 of this PC (no location is saved)"
+def _last_two(path):
+    """The last two parts of a path: enough to tell which folder, without the whole path."""
     parts = [part for part in re.split(r"[\\/]+", str(path)) if part]
     return '"' + "\\".join(parts[-2:]) + '"'
+
+
+def _terminal_label(path, chosen="saved", open_count=None):
+    """Name the terminal that was tried: its folder and file, not the whole path.
+
+    chosen says where the path comes from: "saved" (the location the launcher saved), "open" (no location
+    is saved: the MetaTrader 5 that is running) or "default" (no location is saved and the bridge could not
+    tell which one to take: the MetaTrader5 package then takes the installation that was used last).
+    open_count is how many MetaTrader 5 were running, None when the bridge could not look.
+    """
+    if path:
+        if chosen == "open":
+            return _last_two(path) + ", the MetaTrader 5 that is open (no location is saved)"
+        return _last_two(path)
+    if open_count == 0:
+        return "the default MetaTrader 5 of this PC (no location is saved and none was open)"
+    if open_count is not None and open_count > 1:
+        return (f"the default MetaTrader 5 of this PC (no location is saved and {open_count} MetaTrader 5 are open: "
+                "keep only the Exness one open, then run START_ALL_LOCAL.bat again)")
+    return "the default MetaTrader 5 of this PC (no location is saved)"
+
+
+def _version_note():
+    """Which bridge file answered: its version and the folder it runs from. A PC can hold two copies of the app,
+    and a bridge that was not started again still runs the file from before."""
+    return f"Bridge version {BRIDGE_BUNDLE}, running from {_last_two(_BRIDGE_DIR)}."
 
 
 def _attach_busy_message():
@@ -434,6 +507,11 @@ def _attach_failure_message():
         what = "the program that was found is MetaTrader 4, and this app needs MetaTrader 5"
         do = ("Install the MetaTrader 5 desktop program from your Exness Personal Area, open it and log in, "
               f"quit MetaTrader 4, then {_START_AGAIN}.")
+    elif "otp" in low or "certificate" in low:
+        # the package's own words: "Unsupported authorization mode, OTP or certificate password needed"
+        what = ("this account asks for a one-time password or a certificate, and the app cannot give either "
+                "to MetaTrader 5")
+        do = "Log in inside MetaTrader 5 yourself: " + _steps(_LOG_IN_STEP, "press Connect again")
     elif (code == -6 or "authorization" in low) and failure.get("with_account"):
         what = ("MetaTrader 5 did not log in with the account number, password and server entered in the app, "
                 "or it has no connection to Exness")
@@ -464,6 +542,12 @@ def _attach_failure_message():
     elif "pipe server" in low:
         what = "MetaTrader 5 did not open its connection for Python"
         do = "Do this: " + _steps(_PYTHON_BOX_STEP, _NORMAL_START_STEP, _LOG_IN_STEP, "press Connect again")
+    elif (code == -10005 or "timeout" in low or "time-out" in low) and (failure.get("with_account") or failure.get("after_account")):
+        # MetaTrader 5 has the account: the package sent the login and then asked, for the waiting time, whether
+        # MetaTrader 5 was logged in. The time ended first; MetaTrader 5 goes on logging in.
+        what = ("MetaTrader 5 was given the account number, password and server entered in the app and had not "
+                f"finished logging in after {seconds}")
+        do = f"Give it a few more seconds. {_ACCOUNT_NOT_ACCEPTED}"
     elif code == -10005 or "timeout" in low or "time-out" in low:
         what = f"MetaTrader 5 did not answer within {seconds}"
         do = ("If it has only just started, wait until it shows your account and press Connect again. "
@@ -474,8 +558,9 @@ def _attach_failure_message():
     else:
         what = "MetaTrader 5 could not be contacted"
         do = "Do this: " + _steps(_LOG_IN_STEP, _NORMAL_START_STEP, "press Connect again") + " " + _SAVED_LOCATION_HINT
+    label = _terminal_label(path, failure.get("chosen") or "saved", failure.get("open"))
     return _app_safe(f"Cannot attach to MetaTrader 5: {what} (step terminal{detail}). {do} "
-                     f"Terminal tried: {_terminal_label(path)}.")
+                     f"Terminal tried: {label}. {_version_note()}")
 
 
 def _locked_identity_error():
@@ -843,6 +928,134 @@ async def handler(ws, path=None):
 
 _CONFIGURED_MT5_PATH = os.environ.get("AURUM_MT5_PATH", "").strip()
 CANDIDATE_PATHS = [_CONFIGURED_MT5_PATH] if _CONFIGURED_MT5_PATH else [None]
+_TERMINAL_EXE = "terminal64.exe"  # MetaTrader 5; MetaTrader 4 is terminal.exe
+_PROCESS_RECORD = (  # PROCESSENTRY32W (tlhelp32.h): what Windows fills in for one running process
+    ("dwSize", "DWORD", 1), ("cntUsage", "DWORD", 1), ("th32ProcessID", "DWORD", 1), ("th32DefaultHeapID", "ULONG_PTR", 1),
+    ("th32ModuleID", "DWORD", 1), ("cntThreads", "DWORD", 1), ("th32ParentProcessID", "DWORD", 1),
+    ("pcPriClassBase", "LONG", 1), ("dwFlags", "DWORD", 1), ("szExeFile", "WCHAR", 260),
+)
+_WINDOWS = {"entry": None, "kernel32": None}  # made at the first look-up and kept
+
+
+def _process_entry():
+    """The ctypes form of _PROCESS_RECORD."""
+    if _WINDOWS["entry"] is None:
+        import ctypes
+        from ctypes import wintypes
+        kinds = {"DWORD": wintypes.DWORD, "LONG": wintypes.LONG, "ULONG_PTR": ctypes.c_size_t, "WCHAR": wintypes.WCHAR}
+
+        class ProcessEntry(ctypes.Structure):
+            _fields_ = [(name, kinds[kind] * count if count > 1 else kinds[kind]) for name, kind, count in _PROCESS_RECORD]
+
+        _WINDOWS["entry"] = ProcessEntry
+    return _WINDOWS["entry"]
+
+
+def _running_terminals(kernel32=None):
+    """Where the MetaTrader 5 programs that are running on this PC were started from.
+
+    One entry for every running terminal64.exe: its full path, or "" when Windows does not give it.
+    None when the bridge cannot look at all (this is not Windows, or the look-up fails): the caller
+    then goes on as it did before there was a look-up.
+
+    The calls are the ones the MetaTrader5 package itself makes to find the program that started it:
+    CreateToolhelp32Snapshot, Process32FirstW/NextW, OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION and
+    QueryFullProcessImageNameW. A process is opened only to read its path, and nothing is changed.
+    `kernel32` is for the tests; on Windows it is the system's own.
+    """
+    if kernel32 is None and os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        if kernel32 is None:
+            if _WINDOWS["kernel32"] is None:
+                _WINDOWS["kernel32"] = ctypes.WinDLL("kernel32")  # an object of its own: the types set below stay here
+            kernel32 = _WINDOWS["kernel32"]
+        entry_type = _process_entry()
+
+        take_snapshot = kernel32.CreateToolhelp32Snapshot
+        take_snapshot.argtypes, take_snapshot.restype = [wintypes.DWORD, wintypes.DWORD], wintypes.HANDLE
+        first, following = kernel32.Process32FirstW, kernel32.Process32NextW
+        for step in (first, following):
+            step.argtypes, step.restype = [wintypes.HANDLE, ctypes.POINTER(entry_type)], wintypes.BOOL
+        open_process = kernel32.OpenProcess
+        open_process.argtypes, open_process.restype = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE
+        image_name = kernel32.QueryFullProcessImageNameW
+        image_name.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        image_name.restype = wintypes.BOOL
+        close = kernel32.CloseHandle
+        close.argtypes, close.restype = [wintypes.HANDLE], wintypes.BOOL
+
+        snapshot = take_snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS: every process
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:  # INVALID_HANDLE_VALUE
+            return None
+        found = []
+        try:
+            entry = entry_type()
+            entry.dwSize = ctypes.sizeof(entry_type)
+            more = first(snapshot, ctypes.byref(entry))
+            while more:
+                if str(entry.szExeFile).lower() == _TERMINAL_EXE:
+                    path = ""
+                    process = open_process(0x1000, False, entry.th32ProcessID)  # PROCESS_QUERY_LIMITED_INFORMATION
+                    if process:
+                        try:
+                            size = wintypes.DWORD(1024)
+                            name = ctypes.create_unicode_buffer(size.value)
+                            if image_name(process, 0, name, ctypes.byref(size)):
+                                path = name.value
+                        finally:
+                            close(process)
+                    found.append(path)
+                more = following(snapshot, ctypes.byref(entry))
+        finally:
+            close(snapshot)
+        return found
+    except Exception as e:  # the look-up must never stand in the way of an attach
+        log.warning("could not look for a running MetaTrader 5 (%s: %s); the MetaTrader5 package chooses the terminal",
+                    type(e).__name__, e)
+        return None
+
+
+def _open_terminal():
+    """Which MetaTrader 5 to attach to when no location is saved: the one that is open.
+
+    Without a path the MetaTrader5 package does not take the terminal that is open. It takes the installation
+    whose settings were saved last and starts it when it is not running; with two MetaTrader 5 on the PC that
+    can be another one than the Exness terminal on the screen. The bridge therefore looks itself and passes
+    the path on.
+
+    Returns (path, how many are open). The path is None when none is open, when Windows does not give the
+    location, or when several are open and not exactly one of them is an Exness one: the package then
+    chooses, as it did before. The count is None when the bridge could not look.
+    """
+    running = _running_terminals()
+    if running is None:
+        return None, None
+    seen, known, without_path = set(), [], 0
+    for path in running:
+        if not path:
+            without_path += 1
+        elif path.lower() not in seen:
+            seen.add(path.lower())
+            known.append(path)
+    count = len(known) + without_path
+    if count == 1 and known:
+        return known[0], 1
+    exness = [path for path in known if "exness" in path.lower()]
+    if len(exness) == 1:
+        return exness[0], count
+    return None, count
+
+
+def _timed_out(failure):
+    """True when the waiting time ended before MetaTrader 5 was logged in or had refused (-10005, "IPC timeout")."""
+    if not failure or failure.get("kind") != "mt5":
+        return False
+    low = str(failure.get("text") or "").lower()
+    return failure.get("code") == -10005 or "timeout" in low or "time-out" in low
+
 
 def _wants_account(failure):
     """True when MetaTrader 5 itself answered an attach with 'Authorization failed' (-6): no account is logged in."""
@@ -875,6 +1088,7 @@ def attach_terminal(account=None):
     """
     wait_ms = _ATTACH_STATE["wait_ms"]
     recent = _ATTACH_FAILURE
+    _ATTACHED_HERE.with_account = False
     account_at_once = account is not None and _CONNECTOR_TAKES_TIMEOUT and _wants_account(recent)
     if recent is not None and time.time() - (recent.get("at") or 0.0) < _ATTACH_REPEAT_QUIET_S:
         # The app repeats a failed login at once over HTTP: same answer, no second attempt. One case is
@@ -897,7 +1111,9 @@ def attach_terminal(account=None):
             return False  # the answer "not logged in" stands; the next login starts with the account
         account_wait_ms = int(round(left_ms / 100.0)) * 100  # in tenths of a second: the message names the time
         _ATTACH_STATE["since"], _ATTACH_STATE["limit_s"] = time.time(), account_wait_ms / 1000.0
-        return _attach_terminal_once(account_wait_ms, account)
+        logged_in = _attach_terminal_once(account_wait_ms, account)
+        _ATTACHED_HERE.with_account = logged_in  # MetaTrader 5 is logged in to this account: handle_login() does not log in again
+        return logged_in
     finally:
         _ATTACH_STATE["since"] = 0.0
         _ATTACH_LOCK.release()
@@ -953,20 +1169,27 @@ def _attach_terminal_once(wait_ms, account=None, account_follows=False):
     failure = None
     limit_s = wait_ms / 1000.0
     with_account = account is not None
-    if not _CONFIGURED_MT5_PATH:
-        log.warning("AURUM_MT5_PATH is not set; using the MetaTrader5 default terminal. Verify the connected server is Exness before login.")
     for p in CANDIDATE_PATHS:
-        if p and not os.path.isfile(p):
+        chosen, open_count = "saved", None
+        if not p:  # no location is saved: the MetaTrader 5 that is open, when the bridge can tell which one
+            p, open_count = _open_terminal()
+            chosen = "open" if p else "default"
+            if p:
+                log.info("no MetaTrader 5 location is saved; attaching to the one that is open: %s", p)
+            else:
+                log.warning("AURUM_MT5_PATH is not set; using the MetaTrader5 default terminal. Verify the connected server is Exness before login.")
+        found = {"chosen": chosen, "open": open_count}
+        if p and chosen == "saved" and not os.path.isfile(p):
             last = "Configured AURUM_MT5_PATH does not exist: " + p
             log.error(last)
-            failure = {"kind": "missing", "path": p, "code": None, "text": "", "limit_s": limit_s}
+            failure = {"kind": "missing", "path": p, "code": None, "text": "", "limit_s": limit_s, **found}
             continue
         try:
             ok, limit_s = _initialize(p, wait_ms, account)
         except Exception as e:
             text = _without_account(e, account)
             ok, last = False, text
-            failure = {"kind": "exception", "path": p, "code": None, "text": text, "limit_s": limit_s, "with_account": with_account}
+            failure = {"kind": "exception", "path": p, "code": None, "text": text, "limit_s": limit_s, "with_account": with_account, **found}
             continue
         if ok:
             if p:
@@ -978,7 +1201,7 @@ def _attach_terminal_once(wait_ms, account=None, account_follows=False):
         code, text = _last_error()  # read it now: mt5.shutdown() below sets it back to (1, 'Success')
         text = _without_account(text, account)
         last = str((code, text))
-        failure = {"kind": "mt5", "path": p, "code": code, "text": text, "limit_s": limit_s, "with_account": with_account}
+        failure = {"kind": "mt5", "path": p, "code": code, "text": text, "limit_s": limit_s, "with_account": with_account, **found}
         log.warning("initialize(%s%s) failed: %s", p or "default terminal",
                     ", with the account entered in the app" if with_account else "", last)
         try:
@@ -987,6 +1210,9 @@ def _attach_terminal_once(wait_ms, account=None, account_follows=False):
             pass
     if failure is not None:
         failure["at"] = time.time()
+        before = _ATTACH_FAILURE or {}
+        if _timed_out(failure) and not with_account and _timed_out(before) and (before.get("with_account") or before.get("after_account")):
+            failure["after_account"] = True  # MetaTrader 5 is still working on the login it was given before
     _ATTACH_FAILURE = failure
     if account_follows and _wants_account(failure):
         log.info("MetaTrader 5 is not logged in: the account entered in the app is tried next")
@@ -1482,6 +1708,7 @@ async def main():
     # attachment fails. MT5 read-only requests return an explicit terminal error;
     # the static app and other analysis do not depend on a broker login.
     _start_http_app()
+    log.info("bridge version %s, started from %s", BRIDGE_BUNDLE, _BRIDGE_DIR)
     _ATTACH_STATE["wait_ms"] = _START_ATTACH_WAIT_MS  # a terminal the launcher has only just started needs the time
     attached = attach_terminal()
     _ATTACH_STATE["wait_ms"] = _LOGIN_ATTACH_WAIT_MS

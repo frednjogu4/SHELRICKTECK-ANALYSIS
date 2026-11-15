@@ -905,7 +905,7 @@ async function run() {
   {
     const pyB = readFileSync(join(root, 'bridge', 'mt5_bridge.py'), 'utf8');
     const brB = readFileSync(join(root, 'src', 'bridge.js'), 'utf8');
-    check('20h: bridge announces its bundle version on the ping handshake (both sockets)', (pyB.match(/"bridge": BRIDGE_BUNDLE/g) || []).length >= 2 && pyB.includes('BRIDGE_BUNDLE = "21a"'));
+    check('20h: bridge announces its bundle version on the ping handshake (both sockets)', (pyB.match(/"bridge": BRIDGE_BUNDLE/g) || []).length >= 2 && pyB.includes('BRIDGE_BUNDLE = "22a"'));
     check('20h: diagnoseBridge walks env / http / socket / token / MT5 login step by step', brB.includes('export async function diagnoseBridge') && brB.includes('Bridge HTTP reachable') && brB.includes('Trading socket') && brB.includes('MT5 login'));
     check('20h: app exposes the Test bridge button + doctor panel', srcMain2.includes('bridgeTestBtn') && srcMain2.includes('bridgeDoctor') && doc.documentElement.outerHTML.includes('id="bridgeTestBtn"'));
   }
@@ -949,7 +949,7 @@ async function run() {
     const req = readFileSync(join(root, 'bridge', 'requirements.txt'), 'utf8');
     const py = readFileSync(join(root, 'bridge', 'mt5_bridge.py'), 'utf8');
     check('20m: bridge installer upgrades MetaTrader5 to the latest version available for Python 3.13', req.includes('MetaTrader5>=5.0.6231'));
-    check('20m: bridge window identifies the current IPC-compatible bundle', py.includes('BRIDGE_BUNDLE = "21a"'));
+    check('20m: bridge window identifies the current IPC-compatible bundle', py.includes('BRIDGE_BUNDLE = "22a"'));
   }
 
   /* ---------- round 20o: MetaTrader5 invalid-fill constant compatibility ---------- */
