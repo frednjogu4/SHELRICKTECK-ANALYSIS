@@ -25,16 +25,17 @@ npm run build
 
 The Worker config at `wrangler.jsonc` points static assets to `./dist` and names the Worker `cloudflare-staging`. The build step regenerates `dist` from the shared app source.
 
-## Deploy to the staging Worker only
+## Deploy through GitHub Actions to the staging Worker only
 
-No deployment has been made from this handoff. Wrangler authentication must first be completed by the account owner through the normal interactive flow:
+The repository includes `.github/workflows/deploy-cloudflare-staging.yml`. It is a manual deployment, limited to the latest `main` branch, and targets the Worker name in `wrangler.jsonc` (`cloudflare-staging`). It does not deploy to another AURUM Worker or add a production route.
 
-```sh
-npx wrangler login
-npx wrangler whoami
-npx wrangler deploy
-```
+Before the workflow can deploy:
 
-Before confirming deployment, inspect `wrangler.jsonc` and verify that the target is exactly `cloudflare-staging` in the intended Cloudflare account. The dashboard may call the active environment `production` under that service; that does not authorize a deploy to a separate production Worker. Do not change `name`, add a production route, or promote this code elsewhere.
+1. In GitHub, open **Settings → Environments** and create an environment named `cloudflare-staging`.
+2. Add a secret named `CLOUDFLARE_API_TOKEN` to that environment. Create the token in Cloudflare with only the account permissions needed to deploy Workers, scoped to the account that owns `cloudflare-staging`. Never put the token in Git, workflow text, or chat.
+3. Merge the reviewed changes into `main`.
+4. In **Actions → Deploy Cloudflare staging**, choose **Run workflow** on `main`, then set the confirmation input to `deploy`. If the GitHub environment has required reviewers, approve the deployment there.
 
-After deployment, verify the staging URL and `GET /api/health`. Expected safety fields include `runtime: cloudflare-readonly`, `execution: false`, and `exness: PC-local only; no Exness data is sent to Cloudflare`.
+The linked Cloudflare dashboard may call the active environment `production` under the `cloudflare-staging` service. This action still deploys only the Worker named `cloudflare-staging`; it does not authorize promotion to a separate production service.
+
+After deployment, verify the staging URL and `GET /api/health`. Expected safety fields include `runtime: cloudflare-readonly`, `execution: false`, and `exness: PC-local only; no Exness data is sent to Cloudflare`. As an alternative, an account owner can deploy from a trusted local terminal with `npx wrangler login` followed by `npm run cf:deploy:staging`.

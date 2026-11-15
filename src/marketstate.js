@@ -337,11 +337,14 @@ function unavailable(timeframe, reason, extra = {}) {
  */
 export function timeframeState(raw, timeframe, options = {}) {
   const settings = { ...DEFAULTS, ...options };
+  const includeForming = options.includeForming === true;
+  const asOfSec = Number(options.asOfSec);
   const { candles: clean, dropped, ordered } = cleanCandles(raw);
   if (!clean.length) return unavailable(timeframe, 'NO_CANDLES', { dropped });
   if (!ordered) return unavailable(timeframe, 'OUT_OF_ORDER', { dropped });
-  /* The newest candle may still be forming: everything before it has finished. */
-  const candles = clean.slice(0, -1);
+  /* By default the newest candle may still be forming, so it is excluded. The live Market state view
+     opts in after updating that candle from an incoming quote, and marks the result provisional. */
+  const candles = includeForming ? clean : clean.slice(0, -1);
   const newestStart = clean[clean.length - 1].time;
   if (candles.length < settings.minFinished) return unavailable(timeframe, 'NOT_ENOUGH_CANDLES', { have: candles.length, need: settings.minFinished, newestStart, dropped });
 
@@ -370,10 +373,12 @@ export function timeframeState(raw, timeframe, options = {}) {
   const from = Math.max(0, candles.length - 2 * SKETCH_CANDLES, Math.min(candles.length - SKETCH_CANDLES, ...used));
   return {
     ok: true, timeframe: timeframe.key, label: timeframe.label, name: timeframe.name, seconds: timeframe.seconds,
-    /* The close of the last finished candle: the moment this state belongs to. */
-    asOf: candles[last].time + timeframe.seconds,
+    /* A live reading is timestamped at its latest tick; a historical reading belongs to the finished close. */
+    asOf: includeForming && asOfSec > 0 ? asOfSec : candles[last].time + timeframe.seconds,
     newestStart,
     candles: candles.length,
+    finishedCandles: includeForming ? Math.max(0, candles.length - 1) : candles.length,
+    forming: includeForming,
     dropped,
     price: closes[last],
     trend: {
@@ -419,6 +424,26 @@ export function summarizeStates(readings) {
   if (up.length) return { state: 'PARTIAL_UP', ...groups };
   if (down.length) return { state: 'PARTIAL_DOWN', ...groups };
   return { state: 'NO_TREND', ...groups };
+}
+
+/**
+ * A transparent, equal-weight directional bias from the four trend states.
+ * Two or more net timeframe votes are required for BUY/SELL; otherwise WAIT.
+ * Strength is absolute net alignment out of four, not a win probability.
+ */
+export function directionalBias(readings) {
+  const list=Array.isArray(readings)?readings:[];
+  const summary=summarizeStates(list);
+  const up=summary.up.length, down=summary.down.length;
+  const neutral=summary.range.length+summary.unclear.length;
+  const missing=summary.missing;
+  if(list.length!==STATE_TIMEFRAMES.length||missing.length){
+    return {available:false,direction:'WAIT',strength:null,strengthLabel:'Unavailable',up,down,neutral,missing};
+  }
+  const net=up-down, strength=Math.round(100*Math.abs(net)/STATE_TIMEFRAMES.length);
+  const direction=up>=2&&net>=2?'BUY':down>=2&&net<=-2?'SELL':'WAIT';
+  const strengthLabel=strength>=75?'Strong':strength>=50?'Moderate':strength>=25?'Limited':'Weak';
+  return {available:true,direction,strength,strengthLabel,up,down,neutral,missing:[]};
 }
 
 /**

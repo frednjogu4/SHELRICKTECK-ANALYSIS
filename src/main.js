@@ -27,7 +27,7 @@ import { cloudConfig, cloudSaveConfig, cloudClearConfig, cloudAuthStatus, cloudS
 import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } from './resilience.js';
 import { candleHistory } from './derivhistory.js';
 import { createHostedScanner, signalState, summarizeReadings, withheldReading, feedTimeMs, ageText } from './hostedscan.js';
-import { STATE_TIMEFRAMES, STATE_CANDLES, ADX_TREND, ADX_RANGE, VOL_WINDOW, timeframeState, summarizeStates, summaryText, feedFreshness, structureWords, eatMoment, TREND_WORDS, VOLATILITY_WORDS, UNAVAILABLE_WORDS, STATE_MEASURED_TEXT } from './marketstate.js';
+import { STATE_TIMEFRAMES, STATE_CANDLES, ADX_TREND, ADX_RANGE, VOL_WINDOW, timeframeState, summarizeStates, summaryText, feedFreshness, directionalBias, structureWords, eatMoment, TREND_WORDS, VOLATILITY_WORDS, UNAVAILABLE_WORDS, STATE_MEASURED_TEXT } from './marketstate.js';
 import { closedCandleSets, nextReadingCheck } from './closedcandles.js';
 import { measuredText, measuredLine, isDailyReading } from './measured.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
@@ -396,7 +396,7 @@ const VIEW_META={
   overview:['Overview','Workspace · everything at a glance'],
   markets:['Markets','All instruments · live Deriv prices'],
   trade:['Chart & Trade','Live TradingView chart · broker-routed orders'],
-  state:['Market state','Four timeframes · a description, not a signal'],
+  state:['Market state','Four timeframes · live directional bias'],
   signals:['Signal Analyzer','MTF confluence → validated decision'],
   sniper:['Sniper alerts','Choose markets · entry/exit notifications'],
   gold:['Gold / USD','Dedicated XAU/USD analysis · no orders'],
@@ -4725,7 +4725,7 @@ function renderWatchLive(){
 const MS_SHOWN=[...STATE_TIMEFRAMES].reverse(); /* the larger picture first */
 /* After a look that came just too early for the feed, the next one follows this soon. */
 const MS_RETRY_MS=30000;
-const msView={sym:'',shown:'',readings:{},sources:{},failed:{},readAt:{},run:0,busy:false,nextAt:0,wired:false};
+const msView={sym:'',shown:'',readings:{},candles:{},sources:{},failed:{},readAt:{},liveQuote:null,lastTickAt:0,lastTickSec:0,liveFresh:false,unsubscribe:null,run:0,busy:false,nextAt:0,wired:false};
 function msMarkets(){ return INSTR.filter(I=>DERIV_CODE_MAP[I.s]); }
 /* Candle times are the feed's: its clock when a recent tick tells it, this device's otherwise. */
 function msNowSec(){ return feedTimeMs(Date.now(),feed.feedClock())/1000; }
@@ -4734,22 +4734,52 @@ function msInit(){
   if(!sel.options.length)sel.innerHTML=msMarkets().map(I=>'<option value="'+escHtml(I.s)+'">'+escHtml(I.s+' — '+I.n)+'</option>').join('');
   if(!msView.wired){
     msView.wired=true;
-    sel.onchange=()=>{ msView.sym=sel.value; msLoad({force:true}); };
+    sel.onchange=()=>{ msView.sym=sel.value; msSubscribe(msView.sym); msLoad({force:true}); };
     $('#msBtn').onclick=()=>msLoad({force:true});
     $('#msMeasured').textContent=STATE_MEASURED_TEXT;
   }
   /* First visit: the market of the chart when it has candles here, gold otherwise. */
   if(!msView.sym){ const chart=state.chart&&state.chart.sym; msView.sym=DERIV_CODE_MAP[chart]?chart:DERIV_CODE_MAP['XAU/USD']?'XAU/USD':((msMarkets()[0]||{}).s||''); }
   sel.value=msView.sym;
+  msSubscribe(msView.sym);
   msRender();
   msLoad();
+}
+/* Subscribe to the selected market's actual Deriv tick stream. A candle-history refresh is still used
+   at each timeframe boundary; ticks update the forming candle locally between those reads. */
+function msSubscribe(sym){
+  if(msView.unsubscribe){ try{ msView.unsubscribe(); }catch(e){} msView.unsubscribe=null; }
+  msView.liveQuote=null; msView.lastTickAt=0; msView.lastTickSec=0; msView.liveFresh=false;
+  const code=DERIV_CODE_MAP[sym]; if(!code)return;
+  try{
+    msView.unsubscribe=feed.subscribeDerivCode(code,(q)=>{
+      if(q&&q.status==='live'&&Number(q.quote)>0)msApplyTick(sym,{px:Number(q.quote),time:q.time||q.epoch});
+    });
+  }catch(e){ /* Missing live ticks leave the last candle-based reading labelled as such. */ }
+}
+/* Recompute from the cached history plus its forming candle on every current quote. */
+function msApplyTick(sym,q){
+  if(sym!==msView.sym)return;
+  const price=Number(q&&q.px), rawTime=Number(q&&q.time), sec=rawTime>1e12?rawTime/1000:rawTime;
+  if(!(price>0)||!(sec>0)||!Number.isFinite(price)||!Number.isFinite(sec)||sec<msView.lastTickSec)return;
+  msView.liveQuote={px:price,time:sec}; msView.lastTickAt=Date.now(); msView.lastTickSec=sec; msView.liveFresh=true;
+  for(const tf of STATE_TIMEFRAMES){
+    const candles=msView.candles[tf.key]; if(!candles||!candles.length)continue;
+    const current=candles[candles.length-1], start=Math.floor(sec/tf.seconds)*tf.seconds;
+    /* Do not fabricate an OHLC bar when history has not yet returned this period's candle. */
+    if(current.time!==start)continue;
+    current.high=Math.max(current.high,price); current.low=Math.min(current.low,price); current.close=price;
+    const reading=timeframeState(candles,tf,{includeForming:true,asOfSec:sec});
+    if(reading.ok)msView.readings[tf.key]=reading;
+  }
+  if(state.view==='state')msRender();
 }
 /* Reads the timeframes whose state may have changed (all of them with `force`), then draws the view.
    A look that is overtaken by a newer one (another market, Read again) draws nothing. */
 async function msLoad({force=false}={}){
   const sym=msView.sym; if(!sym)return;
   const run=++msView.run;
-  if(msView.shown!==sym){ msView.shown=sym; msView.readings={}; msView.sources={}; msView.failed={}; msView.readAt={}; }
+  if(msView.shown!==sym){ msView.shown=sym; msView.readings={}; msView.candles={}; msView.sources={}; msView.failed={}; msView.readAt={}; msView.liveQuote=null; msView.lastTickAt=0; msView.lastTickSec=0; msView.liveFresh=false; }
   msView.busy=true;
   msView.nextAt=nextReadingCheck(Date.now(),STATE_TIMEFRAMES[0].seconds*1000);
   msRender();
@@ -4758,10 +4788,12 @@ async function msLoad({force=false}={}){
       /* The newest 600 candles, also when the market was closed in between: a state needs 400 finished ones. */
       const p=await historyCandles(sym,tf.seconds,STATE_CANDLES,{acrossClosures:true});
       if(run!==msView.run)return;
-      msView.readings[tf.key]=timeframeState(p.candles,tf);
+      msView.candles[tf.key]=p.candles.map(c=>({...c}));
+      msView.readings[tf.key]=timeframeState(msView.candles[tf.key],tf);
       msView.sources[tf.key]=p.source;
       msView.readAt[tf.key]=Date.now();
       delete msView.failed[tf.key];
+      if(msView.liveQuote)msApplyTick(sym,msView.liveQuote);
     }catch(e){
       if(run!==msView.run)return;
       const said=String((e&&e.message)||e||'no answer').slice(0,160);
@@ -4794,7 +4826,9 @@ async function msLoad({force=false}={}){
    look is taken a few seconds after each 5-minute close. */
 function msTick(){
   if(!msView.sym)return;
-  msFreshness();
+  const liveFresh=msView.lastTickAt>0&&Date.now()-msView.lastTickAt<15000;
+  if(msView.liveFresh!==liveFresh){ msView.liveFresh=liveFresh; msRender(); }
+  else msFreshness();
   if(msView.busy||Date.now()<msView.nextAt)return;
   try{ if(document.hidden)return; }catch(e){}
   msLoad();
@@ -4810,11 +4844,13 @@ function msFreshness(){
   const by=STATE_TIMEFRAMES.find(tf=>tf.label===fresh.label);
   const readAt=by&&msView.readAt[by.key]?' · read '+eatClock(msView.readAt[by.key])+' EAT':'';
   let mark,line;
+  const tickAge=msView.lastTickAt?Date.now()-msView.lastTickAt:Infinity;
   if(msView.busy){ mark='dot warn'; line='Reading…'; }
   else if(!read.length){ mark='dot off'; line='Not read yet'; }
   else if(fresh.ageSec==null){ mark='dot off'; line='No candles'; }
-  /* Whether the feed is current is not known when the look that would tell it failed. */
+  /* A recent timestamped quote is the only thing that says the state is updating in real time. */
   else if(by&&msView.failed[by.key]){ mark='dot warn'; line='Last look failed'+readAt; }
+  else if(tickAge<15000){ mark='dot live'; line='Live tick · '+eatClock(msView.lastTickSec*1000)+' EAT'; }
   else if(fresh.current){ mark='dot live'; line='Feed current'+readAt; }
   else { mark='dot warn'; line='Market closed or feed paused'; }
   /* An old candle means a closed market or a paused feed only when the look that found it worked.
@@ -4825,7 +4861,7 @@ function msFreshness(){
     words=lookFailed
       ?'The newest '+fresh.label+' candle that was read started '+ageText(fresh.ageSec)+' ago.'
       :fresh.current
-      ?'The newest '+fresh.label+' candle started '+ageText(fresh.ageSec)+' ago. Each state is as of the close named on its card and changes at most once per candle of its timeframe.'
+      ?(tickAge<15000?'Live quotes update each forming candle; these readings can change before the candle closes. The newest '+fresh.label+' candle started '+ageText(fresh.ageSec)+' ago.':'The newest '+fresh.label+' candle started '+ageText(fresh.ageSec)+' ago, but no recent live tick is arriving. Cards show the last observed price until ticks resume.')
       :'The newest '+fresh.label+' candle of '+sym+' started '+ageText(fresh.ageSec)+' ago, so the market is closed or the feed has paused. Each state below is as of the close named on its card, not the state now.';
   }
   const failed=MS_SHOWN.filter(tf=>msView.failed[tf.key]).map(tf=>tf.label);
@@ -4843,6 +4879,18 @@ function msRender(){
   const sum=$('#msSummary');
   if(read.length<readings.length)sum.textContent=msView.busy?'Reading '+sym+'…':'';
   else sum.textContent=sym+' · '+summaryText(summarizeStates(readings));
+  const biasEl=$('#msBias'), bias=directionalBias(readings);
+  if(biasEl){
+    biasEl.dataset.bias=bias.direction;
+    if(!bias.available)biasEl.innerHTML='<span class="badge gray">WAIT</span><strong>Directional bias</strong><span class="ms-bias-detail">Strength unavailable · waiting for all four timeframes to be read.</span>';
+    else{
+      const cls=bias.direction==='BUY'?'buy':bias.direction==='SELL'?'sell':'gray';
+      const dirText=bias.direction==='WAIT'?'No aligned direction · WAIT':bias.direction+' bias';
+      biasEl.innerHTML='<span class="badge '+cls+'">'+bias.direction+'</span><strong>'+dirText+'</strong>'
+        +'<span class="ms-bias-detail">Strength: '+bias.strengthLabel+' · '+bias.strength+'/100 timeframe alignment</span>'
+        +'<span class="ms-bias-detail">'+bias.up+' up · '+bias.down+' down · '+bias.neutral+' neutral</span>';
+    }
+  }
   msFreshness();
   const ctx={px:(v)=>fmtPx(v,dec),when:(sec)=>escHtml(eatMoment(sec,nowSec))};
   grid.innerHTML=MS_SHOWN.map(tf=>msCard(tf,msView.readings[tf.key],ctx)).join('');
@@ -4858,7 +4906,9 @@ function msCard(tf,r,ctx){
   }
   const t=r.trend, s=r.structure, v=r.volatility, px=ctx.px, when=ctx.when;
   const source=msView.sources[tf.key]==='deriv-public'?'Deriv public candles, read through the AURUM API':'Deriv public candles, read by this browser';
-  const head='<div class="ms-card-head">'+title+'<div class="ms-asof">as of '+when(r.asOf)+' EAT · '+r.candles+' finished candles'+(msView.failed[tf.key]?' · last look failed':'')+'</div></div>';
+  const tickInPeriod=msView.lastTickSec>0&&Math.floor(msView.lastTickSec/tf.seconds)*tf.seconds===r.newestStart;
+  const asOf=r.forming?(msView.liveFresh&&tickInPeriod?'live tick at ':'last tick at ')+when(r.asOf)+' EAT · '+r.finishedCandles+' finished + forming '+tf.label+' candle':'as of '+when(r.asOf)+' EAT · '+r.candles+' finished candles';
+  const head='<div class="ms-card-head">'+title+'<div class="ms-asof">'+asOf+(msView.failed[tf.key]?' · last look failed':'')+'</div></div>';
   /* trend */
   const trendBadge={UP:['ms-up','▲ '],DOWN:['ms-down','▼ '],RANGE:['ms-flat','↔ '],UNCLEAR:['ms-flat','']}[t.state];
   const n=t.candlesInState;
@@ -4881,12 +4931,12 @@ function msCard(tf,r,ctx){
     +'<div class="ms-evidence">'+(v.state==='UNKNOWN'
       ?'ATR 14 <b>'+px(v.atr)+'</b>; too few candles to compare it with.'
       :'ATR 14 <b>'+px(v.atr)+'</b> ('+v.atrPct.toFixed(2)+'% of the price): higher than in <b>'+Math.round(v.rank)+'%</b> of the '+VOL_WINDOW+' candles before it'+(v.ratio?', '+v.ratio.toFixed(1)+' times their middle value':'')+(v.change?', '+v.change:'')+'.')+'</div></dd></div>';
-  return open('ok',' data-ms-trend="'+t.state+'" data-ms-structure="'+s.state+'" data-ms-volatility="'+v.state+'"')+head+msSketch(tf,r)
-    +'<div class="ms-key"><span><i class="e50"></i>EMA 50</span><span><i class="e200"></i>EMA 200</span><span>HH, HL, LH, LL: a swing against the one before it</span></div>'
+  return open('ok',' data-ms-trend="'+t.state+'" data-ms-structure="'+s.state+'" data-ms-volatility="'+v.state+'"')+head+msSketch(tf,r,px)
+    +'<div class="ms-key"><span><i class="e50"></i>EMA 50</span><span><i class="e200"></i>EMA 200</span>'+(msView.liveFresh&&tickInPeriod?'<span><i class="live"></i>Live price</span>':'')+'<span>HH, HL, LH, LL: a swing against the one before it</span></div>'
     +'<dl class="ms-rows">'+trend+structure+volatility+'</dl><div class="ms-asof" style="margin-top:8px">'+source+'</div></article>';
 }
 /* The candles of one timeframe as high-low bars, with EMA 50 and EMA 200 and the swings the structure was read from. */
-function msSketch(tf,r){
+function msSketch(tf,r,formatPrice=(value)=>String(value)){
   const W=320,H=120,padX=8,padTop=15,padBottom=15;
   const cs=r.sketch.candles,n=cs.length;
   let lo=Infinity,hi=-Infinity;
@@ -4908,14 +4958,23 @@ function msSketch(tf,r){
     if(x-labelled[sw.kind]>=15){ marks+='<text x="'+f(Math.min(W-9,Math.max(9,x)))+'" y="'+f(high?y-4.5:y+10.5)+'" text-anchor="middle">'+sw.mark+'</text>'; labelled[sw.kind]=x; }
   }
   for(const sw of [lastOf.high,lastOf.low])if(sw)levels+='<path class="ms-level" d="M'+f(X(sw.index))+' '+f(Y(sw.price))+'H'+f(W-padX)+'"/>';
+  const tickInPeriod=msView.lastTickSec>0&&Math.floor(msView.lastTickSec/tf.seconds)*tf.seconds===r.newestStart;
+  const liveTick=!!(r.forming&&msView.liveFresh&&tickInPeriod&&cs.length);
+  const liveClass=cs.length&&r.price>=cs[cs.length-1].open?'ms-live-up':'ms-live-down';
+  const liveY=Math.max(padTop+3,Math.min(H-padBottom-2,Y(r.price)));
+  const liveMark=liveTick
+    ?'<path class="ms-live-price '+liveClass+'" d="M'+f(padX)+' '+f(liveY)+'H'+f(W-padX)+'"/><circle class="ms-live-point '+liveClass+'" cx="'+f(X(n-1))+'" cy="'+f(liveY)+'" r="3"/><text class="ms-live-label '+liveClass+'" x="'+f(W-padX-2)+'" y="'+f(Math.max(9,liveY-4))+'" text-anchor="end">LIVE '+formatPrice(r.price)+'</text>'
+    :'';
   const clip='msClip-'+tf.key;
-  return '<svg class="ms-sketch" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+tf.label+': the last '+n+' finished candles with EMA 50, EMA 200 and the swing highs and lows">'
+  const candleDescription=liveTick?(Math.max(0,n-1)+' finished candles plus the forming candle'):n+' finished candles';
+  const liveDescription=liveTick?'; live price '+formatPrice(r.price):'';
+  return '<svg class="ms-sketch" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+tf.label+': the last '+candleDescription+' with EMA 50, EMA 200 and the swing highs and lows'+liveDescription+'">'
     +'<defs><clipPath id="'+clip+'"><rect x="0" y="0" width="'+W+'" height="'+H+'"/></clipPath></defs>'
     +'<g fill="none" stroke-linecap="round" clip-path="url(#'+clip+')">'
     +'<path class="ms-ema200" d="'+line(r.sketch.ema200)+'"/><path class="ms-ema50" d="'+line(r.sketch.ema50)+'"/>'
     +levels
     +'<path class="ms-bar-up" stroke-width="'+width+'" d="'+up+'"/><path class="ms-bar-down" stroke-width="'+width+'" d="'+down+'"/></g>'
-    +marks+'</svg>';
+    +marks+liveMark+'</svg>';
 }
 
 function render(view){

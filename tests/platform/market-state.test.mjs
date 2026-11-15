@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import {
   STATE_TIMEFRAMES, STATE_CANDLES, MIN_FINISHED, ADX_TREND, ADX_RANGE, SWING_SPAN, VOL_WINDOW, VOL_QUIET, VOL_HIGH, VOL_EXTREME, SKETCH_CANDLES,
   cleanCandles, emaAligned, atrSeries, adxSeries, trendStateOf, stackOf, swingPoints, alternatingSwings, markSwings, structureOf, volatilityOf,
-  timeframeState, summarizeStates, summaryText, feedFreshness, structureWords, eatMoment, TREND_WORDS, VOLATILITY_WORDS, STATE_MEASURED, STATE_MEASURED_TEXT
+  timeframeState, summarizeStates, summaryText, directionalBias, feedFreshness, structureWords, eatMoment, TREND_WORDS, VOLATILITY_WORDS, STATE_MEASURED, STATE_MEASURED_TEXT
 } from '../../src/marketstate.js';
 import { ema } from '../../server/lib/indicators.js';
 import { adx } from '../../server/lib/indicators.ext.js';
@@ -134,6 +134,21 @@ test('the newest candle is never used: whatever it holds, the state is the same'
   assert.equal(base.asOf, RISING[RISING.length - 2].time + H1.seconds, 'the state belongs to the close of the candle before the newest');
   assert.equal(base.newestStart, last.time);
   assert.equal(base.candles, STATE_CANDLES - 1);
+});
+
+test('the live option includes the updated forming candle, timestamps it at the latest tick and marks it provisional', () => {
+  const tickSec = RISING.at(-1).time + 123;
+  const historical = timeframeState(RISING, H1);
+  const live = timeframeState(RISING, H1, { includeForming: true, asOfSec: tickSec });
+  assert.equal(live.ok, true);
+  assert.equal(live.forming, true);
+  assert.equal(live.finishedCandles, STATE_CANDLES - 1);
+  assert.equal(live.candles, STATE_CANDLES);
+  assert.equal(live.asOf, tickSec);
+  assert.equal(live.price, RISING.at(-1).close);
+  assert.equal(historical.forming, false);
+  assert.equal(historical.finishedCandles, STATE_CANDLES - 1);
+  assert.equal(historical.price, RISING.at(-2).close);
 });
 
 test('one more finished candle moves the state on by one candle and no further', () => {
@@ -391,6 +406,24 @@ test('the four timeframes together: agreement is said, disagreement is named and
   assert.equal(summaryText(summarizeStates([reading('H4', 'UNCLEAR'), reading('M5', 'DOWN'), reading('H1', 'RANGE'), reading('M15', 'RANGE')])), 'H4: unclear. H1 and M15: range. M5: downtrend.');
 });
 
+test('directional bias requires all four readings, gives a transparent equal-weight vote and never calls it probability', () => {
+  const cases = [
+    [['UP', 'UP', 'UP', 'UNCLEAR'], 'BUY', 75, 'Strong', 3, 0, 1],
+    [['DOWN', 'DOWN', 'DOWN', 'UP'], 'SELL', 50, 'Moderate', 1, 3, 0],
+    [['UP', 'UP', 'DOWN', 'RANGE'], 'WAIT', 25, 'Limited', 2, 1, 1],
+    [['UP', 'UP', 'DOWN', 'DOWN'], 'WAIT', 0, 'Weak', 2, 2, 0]
+  ];
+  for (const [states, direction, strength, strengthLabel, up, down, neutral] of cases) {
+    const bias=directionalBias(states.map((state,i)=>reading(['M5','M15','H1','H4'][i],state)));
+    assert.deepEqual(bias,{available:true,direction,strength,strengthLabel,up,down,neutral,missing:[]});
+  }
+  const incomplete=directionalBias([reading('M5','UP'),reading('M15','UP'),reading('H1',null),reading('H4','DOWN')]);
+  assert.equal(incomplete.available,false);
+  assert.equal(incomplete.direction,'WAIT');
+  assert.equal(incomplete.strength,null);
+  assert.deepEqual(incomplete.missing,['H1']);
+});
+
 test('one timeframe without a state: nothing is said about the whole', () => {
   const summary = together('UP', 'UP', 'UP', null);
   assert.equal(summary.state, 'INCOMPLETE');
@@ -499,7 +532,7 @@ test('the page explains each line with the numbers the code uses', () => {
   assert.ok(SWING_SPAN === 5 && legend.includes('the five candles before it') && legend.includes('the five after it'), 'the swing span');
   assert.ok(legend.includes('the ' + VOL_WINDOW + ' candles before it'), 'the volatility window');
   assert.ok(legend.includes('fewer than ' + VOL_QUIET + ' in 100') && legend.includes('from ' + VOL_HIGH) && legend.includes('from ' + VOL_EXTREME), 'the volatility thresholds');
-  assert.ok(page.includes('It is a description, not a signal:'), 'the view says what it is not');
+  assert.ok(page.includes('not an instruction to trade or a probability of profit'), 'the view explains the bias is not an instruction or probability');
 });
 
 test('the README gives the same thresholds as the code and the page', () => {
@@ -513,7 +546,7 @@ test('the README gives the same thresholds as the code and the page', () => {
   assert.ok(flat.includes('against the ' + VOL_WINDOW + ' candles before it') && flat.includes('fewer than ' + VOL_QUIET + ' in 100') && flat.includes('high from ' + VOL_HIGH) && flat.includes('extreme from ' + VOL_EXTREME), 'volatility thresholds');
   assert.ok(flat.includes(STATE_CANDLES + ' candles per timeframe'), 'candles asked for');
   assert.ok(flat.includes('Fewer than ' + MIN_FINISHED + ' finished candles'), 'candles needed');
-  assert.ok(flat.includes('**It is a description, not a signal.**'));
+  assert.ok(flat.includes('**Directional bias, not a trade instruction.**'));
 });
 
 test('what the replay measured: the module, the sentence on the page and the README table carry the same figures, and none of them promises anything', () => {
@@ -538,7 +571,7 @@ test('what the replay measured: the module, the sentence on the page and the REA
 
   /* The page shows it where its heading says what the view is not. */
   const page = readFileSync(join(root, 'index.html'), 'utf8');
-  assert.match(page, /<b>It is a description, not a signal:<\/b>[^<]*<span id="msMeasured"><\/span>/);
+  assert.match(page, /<b>The BUY \/ SELL \/ WAIT bias is a transparent timeframe vote, not an instruction to trade or a probability of profit;<\/b> signal pages remain independent\. <span id="msMeasured"><\/span>/);
 });
 
 test('nothing that makes a signal, an alert or an order reads the market state', () => {
