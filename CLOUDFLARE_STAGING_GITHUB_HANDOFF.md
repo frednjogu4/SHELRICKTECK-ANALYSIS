@@ -1,6 +1,6 @@
 # AURUM Cloudflare staging handoff
 
-This handoff contains the current project source and built static assets for the **private** `frednjogu4/cloudflare-staging` repository / Cloudflare Worker named `cloudflare-staging`.
+This repository contains the project source and built static assets for the Cloudflare Worker named `cloudflare-staging`. The deployed site shown in the Cloudflare dashboard is this Worker; keep its deployment target distinct from any other AURUM service.
 
 ## Scope and safety
 
@@ -9,11 +9,9 @@ This handoff contains the current project source and built static assets for the
 - Exness bridge, credentials, and account data remain PC-local. Do not add an Exness token, password, local bridge URL, `.env`, or runtime token file to GitHub or Cloudflare.
 - The local and Cloudflare signal code imports the same shared analysis modules. Local mode may prefer fresh Exness M1/M5/H1 data; Cloudflare cannot access Exness and uses the approved public feeds. Source/availability labels should remain truthful rather than pretending both environments have identical market data.
 
-## Upload the source to the private GitHub repository
+## Source repository and verification
 
-The GitHub connector is not available in this chat, so no push was made. Extract this archive and copy its project files into the existing private repository `frednjogu4/cloudflare-staging`, preserving the folder structure. Review the changed-file list before committing. Do not make the repository public.
-
-## Verify and build
+Use this repository as the source of truth for the `cloudflare-staging` Worker. Preserve its folder structure; do not copy the build into another repository or manually edit generated output. Changes are reviewed through pull requests to `main`.
 
 From the project root, with Node.js 20 or newer:
 
