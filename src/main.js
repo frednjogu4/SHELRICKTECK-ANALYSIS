@@ -28,6 +28,7 @@ import { initConnectivityNotices, registerServiceWorker, removeAiKeyHeaders } fr
 import { candleHistory } from './derivhistory.js';
 import { createHostedScanner, signalState, summarizeReadings, withheldReading, feedTimeMs, ageText } from './hostedscan.js';
 import { STATE_TIMEFRAMES, STATE_CANDLES, ADX_TREND, ADX_RANGE, VOL_WINDOW, timeframeState, summarizeStates, summaryText, feedFreshness, directionalBias, structureWords, eatMoment, TREND_WORDS, VOLATILITY_WORDS, UNAVAILABLE_WORDS, STATE_MEASURED_TEXT } from './marketstate.js';
+import { evaluateSmcSetups, SMC_SETUP_RULES } from './smcplaybook.js';
 import { closedCandleSets, nextReadingCheck } from './closedcandles.js';
 import { measuredText, measuredLine, isDailyReading } from './measured.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
@@ -4910,11 +4911,12 @@ function updateChartMarketState(){
     biasEl.innerHTML='<span class="badge gray">WAIT</span><span>Four-timeframe candles are not available for '+escHtml(chartSym||'this market')+'.</span>';
     grid.innerHTML='<div class="empty" style="grid-column:1/-1">Market State is available for Deriv markets with intraday candle history; this chart remains unchanged.</div>';
     note.textContent='No four-timeframe reading is shown for this market.';
+    updateChartSmc();
     return;
   }
   if(msView.sym!==chartSym){
     biasEl.innerHTML='<span class="badge gray">WAIT</span><span>Loading '+escHtml(chartSym)+' readings…</span>';
-    grid.innerHTML=''; note.textContent='Waiting for the chart market’s candle history.'; return;
+    grid.innerHTML=''; note.textContent='Waiting for the chart market’s candle history.'; updateChartSmc(); return;
   }
   const readings=STATE_TIMEFRAMES.map(tf=>msView.readings[tf.key]||null);
   const bias=directionalBias(readings);
@@ -4934,6 +4936,45 @@ function updateChartMarketState(){
     :msView.lastTickAt
       ?'No recent tick · last received '+eatClock(msView.lastTickSec*1000)+' EAT. Each card shows the time of its last observed reading; none is labelled LIVE. Alignment is not probability of profit.'
       :'No timestamped live tick received yet. Each card shows the time of its last observed reading; alignment is not probability of profit.';
+  updateChartSmc();
+}
+let smcChartCache={key:'',result:null};
+function updateChartSmc(){
+  const biasEl=$('#chartSmcBias'), summary=$('#chartSmcConfluence'), grid=$('#chartSmcGrid');
+  if(!biasEl||!summary||!grid)return;
+  const sym=state.chart&&state.chart.sym;
+  if(!DERIV_CODE_MAP[sym]){
+    biasEl.innerHTML='<span class="badge gray">WAIT</span><span>H1/H4 bias unavailable for '+escHtml(sym||'this market')+'.</span>';
+    summary.textContent='SMC checklist is available only where intraday Deriv candle history is available.';
+    grid.innerHTML=''; return;
+  }
+  if(msView.sym!==sym){
+    biasEl.innerHTML='<span class="badge gray">WAIT</span><span>Loading '+escHtml(sym)+' trend readings…</span>';
+    summary.textContent='Waiting for the selected chart market.'; grid.innerHTML=''; return;
+  }
+  const raw=msView.candles.m5||[], finished=raw.length>1?raw.slice(0,-1):[];
+  const h1=msView.readings.h1||null,h4=msView.readings.h4||null;
+  const key=[sym,finished.length?finished[finished.length-1].time:0,h1&&h1.newestStart||0,h1&&h1.trend&&h1.trend.state||'',h4&&h4.newestStart||0,h4&&h4.trend&&h4.trend.state||''].join('|');
+  if(smcChartCache.key!==key){
+    smcChartCache={key,result:evaluateSmcSetups(finished,{h1,h4})};
+  }
+  const reading=smcChartCache.result;
+  const biasClass=reading.bias.direction==='BUY'?'buy':reading.bias.direction==='SELL'?'sell':'gray';
+  const htAsOf=(tf,r)=>r&&r.ok?tf+' state as of '+eatMoment(r.asOf,msNowSec())+' EAT':'No '+tf+' state';
+  biasEl.innerHTML='<span class="badge '+biasClass+'">H1/H4 '+reading.bias.direction+'</span><span>'+escHtml(reading.bias.reason)+'</span><span class="faint">'+escHtml(htAsOf('H1',h1))+' · '+escHtml(htAsOf('H4',h4))+'</span>';
+  if(!reading.available){
+    summary.textContent=reading.reason; grid.innerHTML=''; return;
+  }
+  const confluenceClass=reading.confluence.status==='ALIGNED'?'buy':'gray';
+  summary.innerHTML='<span class="badge '+confluenceClass+'">'+(reading.confluence.status==='ALIGNED'?'3/3 CHECKLISTS ALIGN':'WAIT · '+reading.confluence.count+'/3 confirmed')+'</span> '+escHtml(reading.confluence.text)
+    +' <span class="faint">As of completed M5 candle close '+escHtml(eatMoment(reading.asOf,msNowSec()))+' EAT · '+escHtml(ageText(Math.max(0,msNowSec()-reading.asOf)))+' ago.</span>';
+  const statusClass={CONFIRMED:'buy',CONFLICT:'ms-warn',WAIT:'ms-warn',NONE:'gray'};
+  const statusLabel={CONFIRMED:'Conditions found',CONFLICT:'HTF conflict · filtered',WAIT:'Wait / incomplete',NONE:'Not detected'};
+  grid.innerHTML=reading.setups.map((setup)=>{
+    const rule=SMC_SETUP_RULES.find((item)=>item.key===setup.key);
+    const when=setup.time?' · event bar opened '+eatMoment(setup.time,msNowSec())+' EAT':'';
+    return '<article class="chart-smc-tile" data-smc-setup="'+escHtml(setup.key)+'" data-smc-status="'+escHtml(setup.status)+'"><b>'+escHtml(rule?rule.name:setup.key)+' <span class="badge '+(statusClass[setup.status]||'gray')+'">'+escHtml(statusLabel[setup.status]||setup.status)+(setup.direction?' · '+escHtml(setup.direction):'')+'</span></b><div class="chart-smc-detail">'+escHtml(setup.detail)+when+'</div></article>';
+  }).join('');
 }
 function chartMsTile(tf,r,ctx){
   const title='<div class="chart-ms-tile-head"><b>'+tf.label+' · '+tf.name+'</b>';

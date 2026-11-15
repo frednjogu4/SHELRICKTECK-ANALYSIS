@@ -84,7 +84,10 @@ routes, no AI engines, no database. Scope and background are in
 `CLOUDFLARE_WORKER_MIGRATION.md`.
 
 Wrangler is a pinned devDependency (`wrangler@4.156.2`), installed by `npm ci`.
-Use the npm scripts or `npx wrangler`; no global install is needed.
+Use the npm scripts or `npx wrangler`; no global install is needed. `wrangler.jsonc`
+also declares separate `previews.ratelimits` namespaces for Cloudflare's
+`wrangler preview` build step; those IDs differ from the staging Worker's
+production rate-limit namespaces.
 
 ### One workspace, two places (cloud + PC)
 
@@ -942,6 +945,36 @@ stand-in for Deriv returns as many candles as were asked for unless a test
 gives the market closed hours, and then it answers the two kinds of request
 the way Deriv did on that day.
 
+### SMC setup checklist on the live chart
+
+The Chart & Trade view now includes a read-only Smart Money Concepts checklist
+(`src/smcplaybook.js`). It evaluates the latest 120 **completed M5 candles**;
+forming bars are excluded so the checklist does not repaint on every tick.
+Its higher-timeframe filter allows a directional context only when both H1
+and H4 trend readings agree on UP or DOWN; missing, ranging, unclear, or
+conflicting readings remain WAIT.
+
+The three visible checks are:
+
+- **Break & retest:** a close beyond a confirmed swing high/low, followed by a
+  retest and a rejecting close back on the breakout side.
+- **Liquidity sweep + MSS:** a wick passes a confirmed swing level and closes
+  back inside; a later close must break a confirmed internal swing in the
+  reversal direction.
+- **FVG + retest:** a measurable three-candle gap is revisited and a closed
+  M5 candle reacts in its direction. Invalidated gaps are not shown as current.
+
+The app labels a setup as confirmed only when its closed-candle conditions
+are met and its direction agrees with H1/H4. `3/3` means only those three
+filters align. It is **not** entry confirmation, an expected win rate, an
+execution approval, or a trade signal. The reference's separate lower-timeframe
+entry confirmation and structural stop/target (including its suggested 1:2
+planned R:R) are not automatically validated or calculated here. No order is
+placed and the Signal Analyzer is unchanged. Every result is timestamped as
+of its completed M5 bar; the H1/H4 filter also shows each timeframe's own
+as-of time. Stale data is never called live. The checks are heuristics and
+have no claimed profitability.
+
 ### Before any deployment
 
 ```bash
@@ -1304,6 +1337,7 @@ src/marketdata.js     Deriv public WS engine (reconnect + watchdog)
 src/derivhistory.js   cloud viewer: Deriv public candle history over one paced connection
 src/hostedscan.js     cloud viewer: signal scan in the browser, with one state per reading
 src/marketstate.js    Market state view: live trend/structure/volatility and equal-weight four-timeframe directional bias
+src/smcplaybook.js    Closed-candle SMC checklist: break/retest, sweep/MSS, FVG retest; read-only, H1/H4 filtered
 src/tradingview.js    Advanced Chart / timeline / calendar mounts
 src/notify.js         notifications engine
 src/vault.js          AI key vault (localStorage, x-ai-* headers)

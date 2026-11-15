@@ -3131,6 +3131,13 @@ test('the main live chart includes the four timeframe market-state view and foll
     assert.match(panel.textContent, /not profit probability/);
     assert.equal(panel.querySelectorAll('.btn.buy, .btn.sell, button').length, 0, 'bias is informational and is not an order control');
     assert.equal(app.doc.getElementById('msSym').value, symbol, 'the chart market is the panel market');
+    const smc = app.doc.getElementById('chartSmc');
+    await app.waitFor(() => smc.querySelectorAll('[data-smc-setup]').length === 3, 'the three SMC checklist cards');
+    assert.deepEqual([...smc.querySelectorAll('[data-smc-setup]')].map((card) => card.dataset.smcSetup), ['break-retest', 'liquidity-mss', 'fvg-retest']);
+    assert.match(smc.textContent, /H1\/H4 (BUY|SELL|WAIT)/);
+    assert.match(smc.textContent, /does not validate those, calculate levels, give a win-rate estimate, or place orders/);
+    assert.equal(smc.querySelectorAll('button, .btn.buy, .btn.sell').length, 0, 'SMC results do not become executable controls');
+    assert.doesNotMatch(smc.textContent, /\bLIVE\b/, 'closed-candle setup results are never called live');
 
     const code = codeOf(symbol);
     await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.style === 'ticks' && message.ticks_history === code)), 'the chart market tick subscription');
@@ -3150,6 +3157,8 @@ test('the main live chart includes the four timeframe market-state view and foll
     select.dispatchEvent(new app.window.Event('change', { bubbles: true }));
     assert.match(panel.textContent, /Four-timeframe candles are not available for NAS100/);
     assert.equal(panel.querySelectorAll('#chartMsGrid [data-chart-ms-tf]').length, 0, 'never leave another market\'s timeframes on the chart');
+    assert.match(smc.textContent, /SMC checklist is available only where intraday Deriv candle history is available/);
+    assert.equal(smc.querySelectorAll('[data-smc-setup]').length, 0, 'no stale SMC setup is carried onto an unsupported chart');
     select.value = 'EUR/USD';
     select.dispatchEvent(new app.window.Event('change', { bubbles: true }));
     await app.waitFor(() => app.doc.getElementById('msSym').value === 'EUR/USD' && app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf]').length === 4, 'the four-timeframe view follows the new chart symbol');

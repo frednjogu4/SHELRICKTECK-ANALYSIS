@@ -18,6 +18,22 @@
   "observability": {
     "logs": { "enabled": true, "invocation_logs": false }
   },
+  // `wrangler preview` uses isolated, preview-only rate-limit namespaces. These
+  // IDs intentionally differ from the deployed Worker namespaces below.
+  "previews": {
+    "ratelimits": [
+      {
+        "name": "AURUM_SIGNAL_LIMITER",
+        "namespace_id": "2026111401",
+        "simple": { "limit": 8, "period": 60 }
+      },
+      {
+        "name": "AURUM_MARKET_LIMITER",
+        "namespace_id": "2026111402",
+        "simple": { "limit": 60, "period": 60 }
+      }
+    ]
+  },
   // Both bindings are required: provider-backed routes answer 503 without them.
   // namespace_id values are numeric identifiers, not secrets; they must be
   // unique within the Cloudflare account.

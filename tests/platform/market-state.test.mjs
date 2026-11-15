@@ -575,9 +575,8 @@ test('what the replay measured: the module, the sentence on the page and the REA
 });
 
 test('nothing that makes a signal, an alert or an order reads the market state', () => {
-  /* The page says so under its heading ("the Buy, Sell and Wait of the signal pages are computed without it"),
-     and this is what keeps the sentence true. Only two files of the application import the module: the page's
-     own script, for this view, and the replay script that measures it. */
+  /* The Signal Analyzer remains independent. The page view, its closed-candle SMC checklist (which reuses
+     only candle-validation/ATR/swing helpers), and the replay that measures this module are its importers. */
   const importers = [];
   for (const folder of ['src', 'server', 'server/lib', 'cloudflare', 'scripts', 'bridge']) {
     for (const name of readdirSync(join(root, folder))) {
@@ -585,7 +584,7 @@ test('nothing that makes a signal, an alert or an order reads the market state',
       if (/from\s+['"][^'"]*marketstate\.js['"]/.test(readFileSync(join(root, folder, name), 'utf8'))) importers.push(folder + '/' + name);
     }
   }
-  assert.deepEqual(importers.sort(), ['scripts/state-replay.mjs', 'src/main.js']);
+  assert.deepEqual(importers.sort(), ['scripts/state-replay.mjs', 'src/main.js', 'src/smcplaybook.js']);
 
   /* In the page's script, what is imported from the module is used inside the view's own block and nowhere else... */
   const page = readFileSync(join(root, 'src', 'main.js'), 'utf8');

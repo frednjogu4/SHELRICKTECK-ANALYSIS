@@ -480,7 +480,16 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 .chart-ms-tile .badge{font-size:10px;padding:2px 6px}
 .chart-ms-tile .chart-ms-asof{margin-top:5px;font-size:10px;line-height:1.35;color:var(--text-3)}
 .chart-ms-note{margin-top:8px}
-@media(max-width:900px){.chart-ms-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.chart-smc{padding:12px 14px 14px;border-top:1px solid var(--border);background:var(--surface-2)}
+.chart-smc-head{display:flex;justify-content:space-between;align-items:center;gap:8px 14px;flex-wrap:wrap;margin-bottom:8px}
+.chart-smc-sub,.chart-smc-risk{font-size:11.5px;color:var(--text-2);line-height:1.5}
+.chart-smc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.chart-smc-tile{min-width:0;padding:9px;border:1px solid var(--border-soft);border-radius:var(--radius-sm);background:var(--surface)}
+.chart-smc-tile b{display:block;font-size:12px;margin-bottom:5px}
+.chart-smc-tile .badge{font-size:10px}
+.chart-smc-detail{font-size:11px;line-height:1.45;color:var(--text-2);margin-top:6px;overflow-wrap:anywhere}
+.chart-smc-risk{margin-top:8px}
+@media(max-width:900px){.chart-ms-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-smc-grid{grid-template-columns:1fr}}
 @media(max-width:480px){.chart-ms-grid{grid-template-columns:1fr}}
 .chart-tip{
   position:absolute; padding:7px 10px; border-radius:6px; background:var(--surface-3);
@@ -1018,6 +1027,15 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               </div>
               <div class="chart-ms-grid" id="chartMsGrid"></div>
               <div class="chart-ms-note" id="chartMsNote">Readings will appear when candle history is available. Each timeframe shows its own last observed time.</div>
+            </section>
+            <section class="chart-smc" id="chartSmc" aria-label="Smart Money Concepts setup checklist" aria-live="polite">
+              <div class="chart-smc-head">
+                <div><b>SMC setup checklist · closed M5 candles + H1/H4 bias</b><div class="chart-smc-sub">Break &amp; retest · liquidity sweep + MSS · FVG + retest. A filter for study, not an entry signal.</div></div>
+                <div id="chartSmcBias" class="chart-ms-bias">Waiting for H1/H4 readings…</div>
+              </div>
+              <div id="chartSmcConfluence" class="chart-smc-sub">Waiting for completed candle history.</div>
+              <div id="chartSmcGrid" class="chart-smc-grid"></div>
+              <div class="chart-smc-risk">The full A+ checklist also needs separate entry confirmation and a planned structural stop/target (the reference suggests at least 1:2 R:R). This panel does not validate those, calculate levels, give a win-rate estimate, or place orders. Check stale/as-of times before interpreting any result.</div>
             </section>
           </div>
 
