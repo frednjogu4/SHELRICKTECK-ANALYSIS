@@ -3115,6 +3115,48 @@ test('Market state on the website: four timeframes of one market, read by this b
   } finally { await app.close(); }
 });
 
+test('the main live chart includes the four timeframe market-state view and follows its selected market', async () => {
+  const app = await bootApp({ world: { ticks: true, candleRows: swingingMarket() } });
+  try {
+    const clock = pageClock(app);
+    clock.settle();
+    await app.enter();
+    await app.open('trade');
+    const symbol = app.doc.getElementById('chartSymbol').value;
+    const panel = app.doc.getElementById('chartMarketState');
+    await app.waitFor(() => app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf] svg.ms-sketch').length === 4, 'four timeframe tiles with candle readings on the live chart');
+    assert.equal(app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf]').length, 4);
+    assert.deepEqual([...app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf]')].map((tile) => tile.dataset.chartMsTf), ['h4', 'h1', 'm15', 'm5']);
+    assert.match(app.doc.getElementById('chartMsBias').textContent, /WAIT|BUY|SELL/);
+    assert.match(panel.textContent, /not profit probability/);
+    assert.equal(panel.querySelectorAll('.btn.buy, .btn.sell, button').length, 0, 'bias is informational and is not an order control');
+    assert.equal(app.doc.getElementById('msSym').value, symbol, 'the chart market is the panel market');
+
+    const code = codeOf(symbol);
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.style === 'ticks' && message.ticks_history === code)), 'the chart market tick subscription');
+    const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks' && message.ticks_history === code));
+    const quote = 2.12345, epoch = Math.floor(clock.now());
+    stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: code, quote, epoch } }) });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (const tile of app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf]')) {
+      assert.equal(tile.dataset.chartMsLive, 'true', tile.dataset.chartMsTf + ' candle is live only for a matching forming candle');
+      assert.match(tile.textContent, /LIVE tick at .* EAT/);
+      assert.ok(tile.querySelector('.ms-live-price'), tile.dataset.chartMsTf + ' chart draws the live tick');
+    }
+    assert.match(app.doc.getElementById('chartMsNote').textContent, /Deriv tick received/);
+
+    const select = app.doc.getElementById('chartSymbol');
+    select.value = 'NAS100';
+    select.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+    assert.match(panel.textContent, /Four-timeframe candles are not available for NAS100/);
+    assert.equal(panel.querySelectorAll('#chartMsGrid [data-chart-ms-tf]').length, 0, 'never leave another market\'s timeframes on the chart');
+    select.value = 'EUR/USD';
+    select.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+    await app.waitFor(() => app.doc.getElementById('msSym').value === 'EUR/USD' && app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf]').length === 4, 'the four-timeframe view follows the new chart symbol');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
 test('Market state recalculates all four forming candles from each real-time selected-market tick', async () => {
   const app = await bootApp({ world: { ticks: true, candleRows: swingingMarket() } });
   try {

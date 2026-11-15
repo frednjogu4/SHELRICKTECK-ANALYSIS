@@ -733,10 +733,14 @@ widen at a release, are not in the price bars.
 
 ### Market state: trend, structure and volatility on four timeframes
 
-The **Market state** view (`src/marketstate.js`, drawn in `src/main.js`)
-describes one market on the 4-hour, 1-hour, 15-minute and 5-minute chart. Each
-timeframe has a card with a small chart and three lines, and every line comes
-with the figures it was read from:
+The **Market State** view (`src/marketstate.js`, drawn in `src/main.js`)
+describes one market on the 4-hour, 1-hour, 15-minute and 5-minute chart. The
+four-timeframe view is also integrated beneath the main live Chart & Trade
+chart and follows that chart's selected market. Its compact tiles show the
+candle sketch, trend, structure, volatility and per-timeframe freshness; the
+full Market State view retains the detailed evidence and independent market
+selector. Each detailed timeframe card has a small chart and three lines, and
+every line comes with the figures it was read from:
 
 | Line | States | Read from |
 |---|---|---|

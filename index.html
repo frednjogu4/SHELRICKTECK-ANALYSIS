@@ -465,6 +465,23 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
   font-family:var(--mono); color:var(--text-2); background:color-mix(in srgb, var(--surface) 80%, transparent);
   padding:5px 10px; border-radius:6px; border:1px solid var(--border-soft); pointer-events:none;
 }
+.chart-ms{padding:12px 14px 14px;border-top:1px solid var(--border);background:var(--surface)}
+.chart-ms-head{display:flex;align-items:center;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;margin-bottom:10px}
+.chart-ms-head>div:first-child{display:grid;gap:3px}
+.chart-ms-caption,.chart-ms-note{font-size:11.5px;color:var(--text-2);line-height:1.5}
+.chart-ms-bias{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--text-2)}
+.chart-ms-bias strong{font-size:13px;color:var(--text)}
+.chart-ms-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.chart-ms-tile{min-width:0;padding:8px;border:1px solid var(--border-soft);border-radius:var(--radius-sm);background:var(--surface-2)}
+.chart-ms-tile-head{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:5px}
+.chart-ms-tile-head b{font-size:12px}
+.chart-ms-tile .ms-sketch{height:auto}
+.chart-ms-tile .chart-ms-state{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+.chart-ms-tile .badge{font-size:10px;padding:2px 6px}
+.chart-ms-tile .chart-ms-asof{margin-top:5px;font-size:10px;line-height:1.35;color:var(--text-3)}
+.chart-ms-note{margin-top:8px}
+@media(max-width:900px){.chart-ms-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:480px){.chart-ms-grid{grid-template-columns:1fr}}
 .chart-tip{
   position:absolute; padding:7px 10px; border-radius:6px; background:var(--surface-3);
   border:1px solid var(--border); font-size:11.5px; font-family:var(--mono); pointer-events:none;
@@ -994,6 +1011,14 @@ input[type=range].range{accent-color:var(--brand); width:220px}
             <div class="chart-body">
               <div id="tvChart" class="tv-chart-host"></div>
             </div>
+            <section class="chart-ms" id="chartMarketState" aria-label="Four-timeframe market state" aria-live="polite">
+              <div class="chart-ms-head">
+                <div><b>Market State · M5 / M15 / H1 / H4</b><span class="chart-ms-caption">Four-timeframe descriptions for the chart market; each tile marks LIVE only for a fresh tick in its forming candle. Bias is informational, not profit probability.</span></div>
+                <div id="chartMsBias" class="chart-ms-bias">Waiting for readings…</div>
+              </div>
+              <div class="chart-ms-grid" id="chartMsGrid"></div>
+              <div class="chart-ms-note" id="chartMsNote">Readings will appear when candle history is available. Each timeframe shows its own last observed time.</div>
+            </section>
           </div>
 
           <div class="grid" style="gap:16px">

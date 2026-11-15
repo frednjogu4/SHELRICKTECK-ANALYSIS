@@ -436,7 +436,7 @@ setInterval(()=>{ try{
   /* The calendar is read again while the News view or the chart stays open: a page left open over a
      week-end must not go on showing last week's releases, and a read that failed is tried again. */
   if((state.view==='news'||state.view==='trade')&&calendarDue())loadCalendar().then(()=>{ if(state.view==='news')paintNewsCal(); }).catch(()=>{}); /* the chart's line is redrawn by the next round, a second later */
-  if(state.view==='news')updateNewsTimeline(); else if(state.view==='trade')updateChartLevels(); else if(state.view==='state')msTick();
+  if(state.view==='news')updateNewsTimeline(); else if(state.view==='trade'){ updateChartLevels(); msTick(); } else if(state.view==='state')msTick();
 }catch(e){} },1000);
 /* News view: a market named beside a headline or a release opens its chart. */
 document.addEventListener('click',e=>{
@@ -2020,6 +2020,8 @@ function setChartSymbol(sym,keepLevels){
     levelsForSym=null; /* refresh the same symbol without discarding user edits */
   }
   autofillLevels(sym);
+  if(state.view==='trade'&&DERIV_CODE_MAP[sym])msInit({followChart:true});
+  else if(state.view==='trade')updateChartMarketState();
 }
 /* auto-fill SL/TP in the order ticket from the LIVE analysis of the selected
    market (scan result levels — entry/stop/tp1/tp2 from the 1m/5m/1h engine).
@@ -4729,7 +4731,7 @@ const msView={sym:'',shown:'',readings:{},candles:{},sources:{},failed:{},readAt
 function msMarkets(){ return INSTR.filter(I=>DERIV_CODE_MAP[I.s]); }
 /* Candle times are the feed's: its clock when a recent tick tells it, this device's otherwise. */
 function msNowSec(){ return feedTimeMs(Date.now(),feed.feedClock())/1000; }
-function msInit(){
+function msInit({followChart=false}={}){
   const sel=$('#msSym'); if(!sel)return;
   if(!sel.options.length)sel.innerHTML=msMarkets().map(I=>'<option value="'+escHtml(I.s)+'">'+escHtml(I.s+' — '+I.n)+'</option>').join('');
   if(!msView.wired){
@@ -4738,12 +4740,16 @@ function msInit(){
     $('#msBtn').onclick=()=>msLoad({force:true});
     $('#msMeasured').textContent=STATE_MEASURED_TEXT;
   }
+  /* The chart panel follows its chart's market. The standalone Market State view retains its own selector. */
+  const chart=state.chart&&state.chart.sym;
+  if(followChart&&DERIV_CODE_MAP[chart])msView.sym=chart;
   /* First visit: the market of the chart when it has candles here, gold otherwise. */
-  if(!msView.sym){ const chart=state.chart&&state.chart.sym; msView.sym=DERIV_CODE_MAP[chart]?chart:DERIV_CODE_MAP['XAU/USD']?'XAU/USD':((msMarkets()[0]||{}).s||''); }
+  if(!msView.sym)msView.sym=DERIV_CODE_MAP[chart]?chart:DERIV_CODE_MAP['XAU/USD']?'XAU/USD':((msMarkets()[0]||{}).s||'');
+  const changed=sel.value!==msView.sym;
   sel.value=msView.sym;
-  msSubscribe(msView.sym);
-  msRender();
-  msLoad();
+  if(changed||!msView.unsubscribe)msSubscribe(msView.sym);
+  /* msLoad clears another market's cached readings before it paints the chart panel. */
+  msLoad({force:followChart&&changed});
 }
 /* Subscribe to the selected market's actual Deriv tick stream. A candle-history refresh is still used
    at each timeframe boundary; ticks update the forming candle locally between those reads. */
@@ -4772,7 +4778,7 @@ function msApplyTick(sym,q){
     const reading=timeframeState(candles,tf,{includeForming:true,asOfSec:sec});
     if(reading.ok)msView.readings[tf.key]=reading;
   }
-  if(state.view==='state')msRender();
+  if(state.view==='state'||state.view==='trade')msRender();
 }
 /* Reads the timeframes whose state may have changed (all of them with `force`), then draws the view.
    A look that is overtaken by a newer one (another market, Read again) draws nothing. */
@@ -4828,7 +4834,7 @@ function msTick(){
   if(!msView.sym)return;
   const liveFresh=msView.lastTickAt>0&&Date.now()-msView.lastTickAt<15000;
   if(msView.liveFresh!==liveFresh){ msView.liveFresh=liveFresh; msRender(); }
-  else msFreshness();
+  else { msFreshness(); updateChartMarketState(); }
   if(msView.busy||Date.now()<msView.nextAt)return;
   try{ if(document.hidden)return; }catch(e){}
   msLoad();
@@ -4894,6 +4900,59 @@ function msRender(){
   msFreshness();
   const ctx={px:(v)=>fmtPx(v,dec),when:(sec)=>escHtml(eatMoment(sec,nowSec))};
   grid.innerHTML=MS_SHOWN.map(tf=>msCard(tf,msView.readings[tf.key],ctx)).join('');
+  updateChartMarketState();
+}
+function updateChartMarketState(){
+  const grid=$('#chartMsGrid'), biasEl=$('#chartMsBias'), note=$('#chartMsNote');
+  if(!grid||!biasEl||!note)return;
+  const chartSym=state.chart&&state.chart.sym;
+  if(!DERIV_CODE_MAP[chartSym]){
+    biasEl.innerHTML='<span class="badge gray">WAIT</span><span>Four-timeframe candles are not available for '+escHtml(chartSym||'this market')+'.</span>';
+    grid.innerHTML='<div class="empty" style="grid-column:1/-1">Market State is available for Deriv markets with intraday candle history; this chart remains unchanged.</div>';
+    note.textContent='No four-timeframe reading is shown for this market.';
+    return;
+  }
+  if(msView.sym!==chartSym){
+    biasEl.innerHTML='<span class="badge gray">WAIT</span><span>Loading '+escHtml(chartSym)+' readings…</span>';
+    grid.innerHTML=''; note.textContent='Waiting for the chart market’s candle history.'; return;
+  }
+  const readings=STATE_TIMEFRAMES.map(tf=>msView.readings[tf.key]||null);
+  const bias=directionalBias(readings);
+  if(!bias.available){
+    biasEl.innerHTML='<span class="badge gray">WAIT</span><strong>Directional bias</strong><span>Alignment unavailable until all four timeframes have readings.</span>';
+  }else{
+    const cls=bias.direction==='BUY'?'buy':bias.direction==='SELL'?'sell':'gray';
+    const desc=bias.direction==='WAIT'?'No aligned direction':'Timeframe bias';
+    biasEl.innerHTML='<span class="badge '+cls+'">'+bias.direction+'</span><strong>'+desc+'</strong><span>'+bias.strengthLabel+' · '+bias.strength+'/100 alignment · '+bias.up+' up / '+bias.down+' down / '+bias.neutral+' neutral</span>';
+  }
+  const dec=bySym[chartSym]&&bySym[chartSym].d!=null?bySym[chartSym].d:2;
+  const ctx={px:(v)=>fmtPx(v,dec),when:(sec)=>escHtml(eatMoment(sec,msNowSec()))};
+  grid.innerHTML=MS_SHOWN.map(tf=>chartMsTile(tf,msView.readings[tf.key]||null,ctx)).join('');
+  const tickAge=msView.lastTickAt?Date.now()-msView.lastTickAt:Infinity;
+  note.textContent=tickAge<15000
+    ?'Deriv tick received '+eatClock(msView.lastTickSec*1000)+' EAT · cards mark LIVE only when that tick belongs to the timeframe’s forming candle. Readings can change before close. Alignment is not probability of profit.'
+    :msView.lastTickAt
+      ?'No recent tick · last received '+eatClock(msView.lastTickSec*1000)+' EAT. Each card shows the time of its last observed reading; none is labelled LIVE. Alignment is not probability of profit.'
+      :'No timestamped live tick received yet. Each card shows the time of its last observed reading; alignment is not probability of profit.';
+}
+function chartMsTile(tf,r,ctx){
+  const title='<div class="chart-ms-tile-head"><b>'+tf.label+' · '+tf.name+'</b>';
+  if(!r)return '<article class="chart-ms-tile" data-chart-ms-tf="'+tf.key+'">'+title+'<span class="badge gray">Waiting</span></div><div class="chart-ms-asof">No reading yet</div></article>';
+  if(!r.ok){
+    const why=UNAVAILABLE_WORDS[r.reason]||UNAVAILABLE_WORDS.FEED;
+    return '<article class="chart-ms-tile" data-chart-ms-tf="'+tf.key+'">'+title+'<span class="badge gray">Unavailable</span></div><div class="chart-ms-asof">'+escHtml(why+(r.detail?': '+r.detail:''))+'</div></article>';
+  }
+  const tickInPeriod=msView.lastTickSec>0&&Math.floor(msView.lastTickSec/tf.seconds)*tf.seconds===r.newestStart;
+  const live=!!(r.forming&&msView.liveFresh&&tickInPeriod);
+  const t=r.trend,s=r.structure,v=r.volatility;
+  const trendBadge={UP:['ms-up','▲ '+TREND_WORDS.UP],DOWN:['ms-down','▼ '+TREND_WORDS.DOWN],RANGE:['ms-flat',TREND_WORDS.RANGE],UNCLEAR:['ms-flat',TREND_WORDS.UNCLEAR]}[t.state];
+  const structBadge=s.state==='UP'?['ms-up','▲ '+structureWords(s)]:s.state==='DOWN'?['ms-down','▼ '+structureWords(s)]:['ms-flat',structureWords(s)];
+  const volClass={QUIET:'ms-flat',NORMAL:'ms-flat',HIGH:'ms-warn',EXTREME:'ms-hot',UNKNOWN:'ms-flat'}[v.state];
+  const asOf=r.forming?(live?'LIVE tick at ':'last tick at ')+ctx.when(r.asOf)+' EAT':'as of '+ctx.when(r.asOf)+' EAT';
+  return '<article class="chart-ms-tile" data-chart-ms-tf="'+tf.key+'" data-chart-ms-live="'+(live?'true':'false')+'">'+title+(live?'<span class="badge buy">LIVE</span>':'<span class="badge gray">'+(r.forming?'Provisional':'Closed')+'</span>')+'</div>'
+    +msSketch(tf,r,ctx.px,'-chart')
+    +'<div class="chart-ms-state"><span class="badge '+trendBadge[0]+'">'+trendBadge[1]+'</span><span class="badge '+structBadge[0]+'">'+escHtml(structBadge[1])+'</span><span class="badge '+volClass+'">'+VOLATILITY_WORDS[v.state]+'</span></div>'
+    +'<div class="chart-ms-asof">'+asOf+' · close '+ctx.px(r.price)+'</div></article>';
 }
 function msCard(tf,r,ctx){
   const open=(stateName,extra)=>'<article class="card ms-card" data-ms-tf="'+tf.key+'" data-ms-state="'+stateName+'"'+(extra||'')+' aria-label="'+tf.name+'">';
@@ -4936,7 +4995,7 @@ function msCard(tf,r,ctx){
     +'<dl class="ms-rows">'+trend+structure+volatility+'</dl><div class="ms-asof" style="margin-top:8px">'+source+'</div></article>';
 }
 /* The candles of one timeframe as high-low bars, with EMA 50 and EMA 200 and the swings the structure was read from. */
-function msSketch(tf,r,formatPrice=(value)=>String(value)){
+function msSketch(tf,r,formatPrice=(value)=>String(value),idSuffix=''){
   const W=320,H=120,padX=8,padTop=15,padBottom=15;
   const cs=r.sketch.candles,n=cs.length;
   let lo=Infinity,hi=-Infinity;
@@ -4965,7 +5024,7 @@ function msSketch(tf,r,formatPrice=(value)=>String(value)){
   const liveMark=liveTick
     ?'<path class="ms-live-price '+liveClass+'" d="M'+f(padX)+' '+f(liveY)+'H'+f(W-padX)+'"/><circle class="ms-live-point '+liveClass+'" cx="'+f(X(n-1))+'" cy="'+f(liveY)+'" r="3"/><text class="ms-live-label '+liveClass+'" x="'+f(W-padX-2)+'" y="'+f(Math.max(9,liveY-4))+'" text-anchor="end">LIVE '+formatPrice(r.price)+'</text>'
     :'';
-  const clip='msClip-'+tf.key;
+  const clip='msClip-'+tf.key+idSuffix;
   const candleDescription=liveTick?(Math.max(0,n-1)+' finished candles plus the forming candle'):n+' finished candles';
   const liveDescription=liveTick?'; live price '+formatPrice(r.price):'';
   return '<svg class="ms-sketch" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+tf.label+': the last '+candleDescription+' with EMA 50, EMA 200 and the swing highs and lows'+liveDescription+'">'
@@ -4981,7 +5040,7 @@ function render(view){
   switch(view){
     case 'overview': renderOverview(); break;
     case 'markets': renderMarkets(); break;
-    case 'trade': updateTradeHeader(); syncSide(); break;
+    case 'trade': updateTradeHeader(); syncSide(); msInit({followChart:true}); break;
     case 'state': msInit(); break;
     case 'signals': if(state.scanStatus==='idle')scanSignals(); else renderSignals(); break;
     case 'sniper': renderSniperView(); break;
