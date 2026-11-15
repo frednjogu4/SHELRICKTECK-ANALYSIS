@@ -84,7 +84,10 @@ routes, no AI engines, no database. Scope and background are in
 `CLOUDFLARE_WORKER_MIGRATION.md`.
 
 Wrangler is a pinned devDependency (`wrangler@4.156.2`), installed by `npm ci`.
-Use the npm scripts or `npx wrangler`; no global install is needed.
+Use the npm scripts or `npx wrangler`; no global install is needed. `wrangler.jsonc`
+also declares separate `previews.ratelimits` namespaces for Cloudflare's
+`wrangler preview` build step; those IDs differ from the staging Worker's
+production rate-limit namespaces.
 
 ### One workspace, two places (cloud + PC)
 
@@ -779,16 +782,20 @@ widen at a release, are not in the price bars.
 
 ### Market state: trend, structure and volatility on four timeframes
 
-The **Market state** view (`src/marketstate.js`, drawn in `src/main.js`)
-describes one market on the 4-hour, 1-hour, 15-minute and 5-minute chart. Each
-timeframe has a card with a small chart and three lines, and every line comes
-with the figures it was read from:
+The **Market State** view (`src/marketstate.js`, drawn in `src/main.js`)
+describes one market on the 4-hour, 1-hour, 15-minute and 5-minute chart. The
+four-timeframe view is also integrated beneath the main live Chart & Trade
+chart and follows that chart's selected market. Its compact tiles show the
+candle sketch, trend, structure, volatility and per-timeframe freshness; the
+full Market State view retains the detailed evidence and independent market
+selector. Each detailed timeframe card has a small chart and three lines, and
+every line comes with the figures it was read from:
 
 | Line | States | Read from |
 |---|---|---|
-| Trend | **Uptrend**: EMA 20 above EMA 50 above EMA 200, close above EMA 50, ADX 14 at 25 or more. **Downtrend**: the reverse. **Range**: ADX below 20, whatever order the averages are in. **Unclear**: everything else | The close, EMA 20 / 50 / 200 and ADX 14 of the last finished candle; for how many candles the state has held |
-| Structure | Higher highs and higher lows, lower highs and lower lows, higher highs and lower lows (widening), lower highs and higher lows (narrowing) | The last two swing highs and the last two swing lows, each with its price and time, and where the last close stands against them. A swing high is a candle whose high stands above the five candles before it and is not passed by the five after it |
-| Volatility | **Quiet**, **Normal**, **High**, **Extreme** | ATR 14 of the last finished candle against the 200 candles before it: quiet when fewer than 20 in 100 of them were smaller, high from 80, extreme from 95 |
+| Trend | **Uptrend**: EMA 20 above EMA 50 above EMA 200, close above EMA 50, ADX 14 at 25 or more. **Downtrend**: the reverse. **Range**: ADX below 20, whatever order the averages are in. **Unclear**: everything else | The current forming candle's live close, EMA 20 / 50 / 200 and ADX 14, recalculated on each tick; when no live tick is arriving, the last observed figures remain labelled |
+| Structure | Higher highs and higher lows, lower highs and lower lows, higher highs and lower lows (widening), lower highs and higher lows (narrowing) | The last two swing highs and the last two swing lows, each with its price and time, and where the current live price stands against them. A swing high is a candle whose high stands above the five candles before it and is not passed by the five after it |
+| Volatility | **Quiet**, **Normal**, **High**, **Extreme** | ATR 14 of the current forming candle against the 200 candles before it: quiet when fewer than 20 in 100 of them were smaller, high from 80, extreme from 95 |
 
 Above the cards one sentence puts the four trend states side by side, the
 larger picture first: `H4: unclear. H1 and M15: range. M5: downtrend.` When one
@@ -796,18 +803,9 @@ timeframe is in an uptrend and another in a downtrend it says that the
 timeframes disagree and names them; it does not pick one. When a timeframe
 could not be read it says nothing about the whole.
 
-**It is a description, not a signal.** The Buy, Sell and Wait of the signal
-pages are computed without it, by the same code as before, and no alert, order
-ticket or risk check reads it. What a replay measured about it is below.
+**Directional bias, not a trade instruction.** The view shows BUY or SELL only when at least two timeframes agree and lead the opposite direction by at least two votes; otherwise it shows WAIT. Strength is the absolute difference between Up and Down votes, out of four equally weighted timeframes. It is an alignment score, not a probability of profit. The bias does not place orders or alter the separate Signal Analyzer, alerts or risk checks. What a replay measured about the descriptive states is below.
 
-**Finished candles only.** In every series the newest candle may still be
-forming and is never used; a state is "as of" the close of the candle before
-it, and the card names that close in Nairobi time. A state therefore changes
-at most once per candle of its timeframe, and a swing that has been drawn
-never moves: it needs five finished candles after it, and from then on it
-depends on no later candle. The figures follow the definitions a chart uses
-(EMA seeded with a simple average, ATR and ADX with Wilder's smoothing), so
-they can be compared with TradingView or MetaTrader on the same candles.
+**Live and provisional.** The historical series is read from finished candles, then the selected market's timestamped Deriv tick updates the current candle's close, high and low locally. Trend, structure and volatility are recalculated on every tick, so the figures and summary can change before that candle closes. Each card identifies its most recent live tick; if ticks stop, it says so and leaves the last observed values visible. The swing logic still needs five candles after a candidate to confirm it; confirmed swings do not move. The calculations follow the definitions a chart uses (EMA seeded with a simple average, ATR and ADX with Wilder's smoothing), so they can be compared with TradingView or MetaTrader on the same candles.
 (Since 13 November 2026 the signal rule computes its RSI and ATR the same way;
 before that it used averages of the last 14 values, see
 `docs/ANALYSIS_ENGINE_AUDIT.md` B2. This view has its own series either way,
@@ -1005,6 +1003,36 @@ not been sent to Deriv from a PC. The tests use written candles throughout;
 their stand-in for Deriv returns as many candles as were asked for unless a
 test gives the market closed hours, and then it answers the two kinds of
 request the way Deriv did on that day.
+
+### SMC setup checklist on the live chart
+
+The Chart & Trade view now includes a read-only Smart Money Concepts checklist
+(`src/smcplaybook.js`). It evaluates the latest 120 **completed M5 candles**;
+forming bars are excluded so the checklist does not repaint on every tick.
+Its higher-timeframe filter allows a directional context only when both H1
+and H4 trend readings agree on UP or DOWN; missing, ranging, unclear, or
+conflicting readings remain WAIT.
+
+The three visible checks are:
+
+- **Break & retest:** a close beyond a confirmed swing high/low, followed by a
+  retest and a rejecting close back on the breakout side.
+- **Liquidity sweep + MSS:** a wick passes a confirmed swing level and closes
+  back inside; a later close must break a confirmed internal swing in the
+  reversal direction.
+- **FVG + retest:** a measurable three-candle gap is revisited and a closed
+  M5 candle reacts in its direction. Invalidated gaps are not shown as current.
+
+The app labels a setup as confirmed only when its closed-candle conditions
+are met and its direction agrees with H1/H4. `3/3` means only those three
+filters align. It is **not** entry confirmation, an expected win rate, an
+execution approval, or a trade signal. The reference's separate lower-timeframe
+entry confirmation and structural stop/target (including its suggested 1:2
+planned R:R) are not automatically validated or calculated here. No order is
+placed and the Signal Analyzer is unchanged. Every result is timestamped as
+of its completed M5 bar; the H1/H4 filter also shows each timeframe's own
+as-of time. Stale data is never called live. The checks are heuristics and
+have no claimed profitability.
 
 ### Before any deployment
 
@@ -1367,7 +1395,8 @@ src/main.js           app logic (feed wiring, scanner, trading, notifications)
 src/marketdata.js     Deriv public WS engine (reconnect + watchdog)
 src/derivhistory.js   cloud viewer: Deriv public candle history over one paced connection
 src/hostedscan.js     cloud viewer: signal scan in the browser, with one state per reading
-src/marketstate.js    Market state view: trend, structure and volatility per timeframe (a description, not a signal)
+src/marketstate.js    Market state view: live trend/structure/volatility and equal-weight four-timeframe directional bias
+src/smcplaybook.js    Closed-candle SMC checklist: break/retest, sweep/MSS, FVG retest; read-only, H1/H4 filtered
 src/tradingview.js    Advanced Chart / timeline / calendar mounts
 src/notify.js         notifications engine
 src/vault.js          AI key vault (localStorage, x-ai-* headers)

@@ -1,0 +1,58 @@
+name: Deploy Cloudflare staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: Type deploy to publish the current main branch to the cloudflare-staging Worker
+        required: true
+        type: choice
+        options:
+          - no
+          - deploy
+        default: no
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy the staging Worker
+    if: github.ref == 'refs/heads/main' && inputs.confirm_deploy == 'deploy'
+    runs-on: ubuntu-latest
+    environment: cloudflare-staging
+    timeout-minutes: 15
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-fund
+
+      - name: Confirm Cloudflare deployment secret is configured
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Add CLOUDFLARE_API_TOKEN as a secret on the cloudflare-staging GitHub environment."
+            exit 1
+          fi
+
+      - name: Build and deploy only the configured cloudflare-staging Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: npm run cf:deploy:staging

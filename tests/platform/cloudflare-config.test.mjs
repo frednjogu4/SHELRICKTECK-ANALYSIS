@@ -105,6 +105,20 @@ test('both rate-limit bindings used by the Worker are declared, with the period 
   assert.match(workerSource, /const RATE_LIMIT_PERIOD_SECONDS = 60;/);
 });
 
+test('Wrangler previews declare isolated preview rate-limit namespaces for every production binding', () => {
+  const production = new Map(wrangler.ratelimits.map((binding) => [binding.name, binding]));
+  const preview = wrangler.previews && wrangler.previews.ratelimits;
+  assert.ok(Array.isArray(preview), 'wrangler preview requires a previews.ratelimits block');
+  assert.deepEqual(new Set(preview.map((binding) => binding.name)), new Set(production.keys()));
+  const previewIds = preview.map((binding) => String(binding.namespace_id));
+  assert.equal(new Set(previewIds).size, previewIds.length, 'preview namespace IDs are unique');
+  for (const binding of preview) {
+    assert.match(String(binding.namespace_id), /^\d+$/, `${binding.name} preview namespace_id is numeric`);
+    assert.notEqual(String(binding.namespace_id), String(production.get(binding.name).namespace_id), `${binding.name} preview does not reuse its production namespace`);
+    assert.deepEqual(binding.simple, production.get(binding.name).simple, `${binding.name} preview keeps the documented rate limits`);
+  }
+});
+
 test('the config holds no secrets, variables, custom domains or stateful bindings', () => {
   for (const key of ['vars', 'secrets', 'routes', 'route', 'kv_namespaces', 'd1_databases', 'r2_buckets', 'durable_objects', 'services', 'queues', 'triggers', 'env']) {
     assert.equal(wrangler[key], undefined,

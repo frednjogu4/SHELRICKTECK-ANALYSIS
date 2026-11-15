@@ -351,6 +351,9 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 .ms-controls{gap:10px; align-items:flex-end}
 .ms-controls label.field{margin-bottom:0; min-width:230px}
 .ms-summary{margin-top:14px; font-size:16.5px; font-weight:650; line-height:1.4}
+.ms-bias{display:flex; align-items:center; gap:7px 11px; flex-wrap:wrap; margin-top:10px; padding:10px 12px; border:1px solid var(--border-soft); border-radius:var(--radius-sm); background:var(--surface-2); font-size:12.5px}
+.ms-bias strong{font-size:13.5px}
+.ms-bias-detail{color:var(--text-2)}
 .ms-note{margin-top:6px; font-size:12.5px; color:var(--text-2); line-height:1.55}
 .ms-note.warn{color:var(--amber)}
 .ms-grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; margin-bottom:14px}
@@ -363,10 +366,15 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 .ms-sketch .ms-bar-up{stroke:var(--green)} .ms-sketch .ms-bar-down{stroke:var(--red)}
 .ms-sketch .ms-ema50{stroke:var(--brand); stroke-width:1.1} .ms-sketch .ms-ema200{stroke:var(--blue); stroke-width:1.1}
 .ms-sketch .ms-level{stroke:var(--text-3); stroke-width:.7; stroke-dasharray:3 3}
+.ms-sketch .ms-live-price{stroke-width:1; stroke-dasharray:4 2; opacity:.9}
+.ms-sketch .ms-live-up{stroke:var(--green); fill:var(--green)} .ms-sketch .ms-live-down{stroke:var(--red); fill:var(--red)}
+.ms-sketch .ms-live-point{stroke:var(--surface-2); stroke-width:1.2}
+.ms-sketch .ms-live-label{font-size:8px; font-weight:700}
 .ms-sketch .ms-swing{fill:var(--text)}
 .ms-key{display:flex; gap:4px 14px; flex-wrap:wrap; font-size:11px; color:var(--text-3); margin:6px 0 4px}
 .ms-key i{display:inline-block; width:14px; height:2px; vertical-align:middle; margin-right:5px; border-radius:2px}
 .ms-key i.e50{background:var(--brand)} .ms-key i.e200{background:var(--blue)}
+.ms-key i.live{height:1px; border-top:1px dashed var(--green); background:none}
 .ms-rows{margin:0}
 .ms-row{display:grid; grid-template-columns:86px minmax(0,1fr); gap:4px 12px; padding:10px 0; border-top:1px solid var(--border-soft)}
 .ms-row:last-child{padding-bottom:0}
@@ -457,6 +465,32 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
   font-family:var(--mono); color:var(--text-2); background:color-mix(in srgb, var(--surface) 80%, transparent);
   padding:5px 10px; border-radius:6px; border:1px solid var(--border-soft); pointer-events:none;
 }
+.chart-ms{padding:12px 14px 14px;border-top:1px solid var(--border);background:var(--surface)}
+.chart-ms-head{display:flex;align-items:center;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;margin-bottom:10px}
+.chart-ms-head>div:first-child{display:grid;gap:3px}
+.chart-ms-caption,.chart-ms-note{font-size:11.5px;color:var(--text-2);line-height:1.5}
+.chart-ms-bias{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--text-2)}
+.chart-ms-bias strong{font-size:13px;color:var(--text)}
+.chart-ms-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.chart-ms-tile{min-width:0;padding:8px;border:1px solid var(--border-soft);border-radius:var(--radius-sm);background:var(--surface-2)}
+.chart-ms-tile-head{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:5px}
+.chart-ms-tile-head b{font-size:12px}
+.chart-ms-tile .ms-sketch{height:auto}
+.chart-ms-tile .chart-ms-state{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+.chart-ms-tile .badge{font-size:10px;padding:2px 6px}
+.chart-ms-tile .chart-ms-asof{margin-top:5px;font-size:10px;line-height:1.35;color:var(--text-3)}
+.chart-ms-note{margin-top:8px}
+.chart-smc{padding:12px 14px 14px;border-top:1px solid var(--border);background:var(--surface-2)}
+.chart-smc-head{display:flex;justify-content:space-between;align-items:center;gap:8px 14px;flex-wrap:wrap;margin-bottom:8px}
+.chart-smc-sub,.chart-smc-risk{font-size:11.5px;color:var(--text-2);line-height:1.5}
+.chart-smc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.chart-smc-tile{min-width:0;padding:9px;border:1px solid var(--border-soft);border-radius:var(--radius-sm);background:var(--surface)}
+.chart-smc-tile b{display:block;font-size:12px;margin-bottom:5px}
+.chart-smc-tile .badge{font-size:10px}
+.chart-smc-detail{font-size:11px;line-height:1.45;color:var(--text-2);margin-top:6px;overflow-wrap:anywhere}
+.chart-smc-risk{margin-top:8px}
+@media(max-width:900px){.chart-ms-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-smc-grid{grid-template-columns:1fr}}
+@media(max-width:480px){.chart-ms-grid{grid-template-columns:1fr}}
 .chart-tip{
   position:absolute; padding:7px 10px; border-radius:6px; background:var(--surface-3);
   border:1px solid var(--border); font-size:11.5px; font-family:var(--mono); pointer-events:none;
@@ -986,6 +1020,23 @@ input[type=range].range{accent-color:var(--brand); width:220px}
             <div class="chart-body">
               <div id="tvChart" class="tv-chart-host"></div>
             </div>
+            <section class="chart-ms" id="chartMarketState" aria-label="Four-timeframe market state" aria-live="polite">
+              <div class="chart-ms-head">
+                <div><b>Market State · M5 / M15 / H1 / H4</b><span class="chart-ms-caption">Four-timeframe descriptions for the chart market; each tile marks LIVE only for a fresh tick in its forming candle. Bias is informational, not profit probability.</span></div>
+                <div id="chartMsBias" class="chart-ms-bias">Waiting for readings…</div>
+              </div>
+              <div class="chart-ms-grid" id="chartMsGrid"></div>
+              <div class="chart-ms-note" id="chartMsNote">Readings will appear when candle history is available. Each timeframe shows its own last observed time.</div>
+            </section>
+            <section class="chart-smc" id="chartSmc" aria-label="Smart Money Concepts setup checklist" aria-live="polite">
+              <div class="chart-smc-head">
+                <div><b>SMC setup checklist · closed M5 candles + H1/H4 bias</b><div class="chart-smc-sub">Break &amp; retest · liquidity sweep + MSS · FVG + retest. A filter for study, not an entry signal.</div></div>
+                <div id="chartSmcBias" class="chart-ms-bias">Waiting for H1/H4 readings…</div>
+              </div>
+              <div id="chartSmcConfluence" class="chart-smc-sub">Waiting for completed candle history.</div>
+              <div id="chartSmcGrid" class="chart-smc-grid"></div>
+              <div class="chart-smc-risk">The full A+ checklist also needs separate entry confirmation and a planned structural stop/target (the reference suggests at least 1:2 R:R). This panel does not validate those, calculate levels, give a win-rate estimate, or place orders. Check stale/as-of times before interpreting any result.</div>
+            </section>
           </div>
 
           <div class="grid" style="gap:16px">
@@ -1055,8 +1106,8 @@ input[type=range].range{accent-color:var(--brand); width:220px}
       <!-- ======= MARKET STATE (a description per timeframe; src/marketstate.js) ======= -->
       <section class="view" id="view-state">
         <div class="card ms-about">
-          <b>Market state: what the chart looks like on four timeframes</b>
-          <div class="ms-lede">Trend, structure and volatility on the 4-hour, 1-hour, 15-minute and 5-minute chart, each read from finished candles and shown with the figures it was read from. <b>It is a description, not a signal:</b> the Buy, Sell and Wait of the signal pages are computed without it. <span id="msMeasured"></span></div>
+          <b>Market state: live description and directional bias across four timeframes</b>
+          <div class="ms-lede">Trend, structure and volatility on the 4-hour, 1-hour, 15-minute and 5-minute charts update from live Deriv ticks; readings are provisional until each candle closes. If ticks stop, the last observed reading is labelled. <b>The BUY / SELL / WAIT bias is a transparent timeframe vote, not an instruction to trade or a probability of profit;</b> signal pages remain independent. <span id="msMeasured"></span></div>
         </div>
         <div class="card ms-head">
           <div class="row wrap ms-controls">
@@ -1065,6 +1116,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
             <span class="pill" id="msFeed"><span class="dot" id="msFeedDot"></span> <span id="msFeedText">Not read yet</span></span>
           </div>
           <div class="ms-summary" id="msSummary" role="status" aria-live="polite"></div>
+          <div class="ms-bias" id="msBias" role="status" aria-live="polite"></div>
           <div class="ms-note" id="msNote"></div>
         </div>
         <div class="ms-grid" id="msGrid"></div>
@@ -1073,8 +1125,9 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <ul>
             <li><b>Trend.</b> <b>Uptrend:</b> EMA 20 above EMA 50 above EMA 200, the close above EMA 50, and ADX 14 at 25 or more. <b>Downtrend:</b> the reverse. <b>Range:</b> ADX below 20, whatever order the averages are in. <b>Unclear:</b> everything else.</li>
             <li><b>Structure.</b> The last two swing highs and the last two swing lows. A swing high is a candle whose high stands above the five candles before it and is not passed by the five after it, so the newest swing is at least five candles old and never moves once it is drawn.</li>
-            <li><b>Volatility.</b> ATR 14 of the last finished candle against the 200 candles before it: <b>Quiet</b> when fewer than 20 in 100 of them were smaller, <b>High</b> from 80, <b>Extreme</b> from 95.</li>
-            <li><b>Finished candles only.</b> The candle still forming is never used, so a state changes at most once per candle of its timeframe. Times are Nairobi time (EAT). Index markets are not offered here: this app has no intraday candles for them.</li>
+            <li><b>Volatility.</b> ATR 14 of the current forming candle against the 200 candles before it: <b>Quiet</b> when fewer than 20 in 100 of them were smaller, <b>High</b> from 80, <b>Extreme</b> from 95.</li>
+            <li><b>Directional bias.</b> Each timeframe gets one equal vote. BUY or SELL is shown only with at least two matching trend votes and a net lead of two votes; otherwise it says WAIT. Strength is the absolute Up-vote minus Down-vote total out of four, not a probability of profit. The bias never places an order and does not alter the Signal Analyzer.</li>
+            <li><b>Live, provisional reading.</b> Historical calculations start from finished candles; a timestamped live tick updates the current candle's close, high and low and redraws the four descriptions immediately. Those values can change before the candle closes. If ticks stop, the cards say when their last tick arrived. Times are Nairobi time (EAT). Index markets are not offered here: this app has no intraday candles for them.</li>
           </ul>
         </div>
       </section>

@@ -3102,19 +3102,104 @@ test('Market state on the website: four timeframes of one market, read by this b
     }
     assert.ok(view.summary.startsWith(chartMarket + ' \u00b7 '), 'the summary names the market: ' + view.summary);
     assert.match(view.feed, /^Feed current \u00b7 read \d\d:\d\d EAT$/);
-    assert.match(view.note, /^The newest M5 candle started \d+ (s|min) ago\. Each state is as of the close named on its card and changes at most once per candle of its timeframe\.$/);
+    assert.match(view.note, /^The newest M5 candle started \d+ (s|min) ago, but no recent live tick is arriving\. Cards show the last observed price until ticks resume\.$/);
     assert.equal(view.noteWarns, false);
 
     /* Read by this browser: four series of 600 candles for this market, and the AURUM cloud is not asked. */
     assert.deepEqual(stateRequests(app).sort(), STATE_TIMEFRAMES.map((timeframe) => [codeOf(chartMarket), timeframe.seconds]).sort());
     assert.equal(historyCalls(app).length, 0);
 
-    /* A description, not a signal: no direction to trade, no order button, and what a replay measured about it. */
+    /* The live bias is visible but is informational only: it is a vote tally, with no order button. */
     const section = app.doc.getElementById('view-state');
-    assert.equal(section.querySelectorAll('.badge.buy, .badge.sell, .badge.lean-up, .badge.lean-dn, .badge.wait').length, 0);
+    assert.equal(section.querySelectorAll('#msBias .badge.buy, #msBias .badge.sell, #msBias .badge.gray').length, 1, 'one informational BUY/SELL/WAIT bias badge');
+    assert.equal(section.querySelectorAll('.btn.buy, .btn.sell, .btn.lean-up, .btn.lean-dn').length, 0, 'no order button');
     assert.deepEqual([...section.querySelectorAll('button')].map((button) => button.textContent), ['Read again']);
-    assert.ok(app.visibleText(section).includes('It is a description, not a signal:'));
+    assert.ok(app.visibleText(section).includes('transparent timeframe vote, not an instruction to trade'));
+    assert.ok(app.doc.getElementById('msBias').textContent.includes('WAIT') || /\b(BUY|SELL)\b/.test(app.doc.getElementById('msBias').textContent));
     assert.equal(app.doc.getElementById('msMeasured').textContent, STATE_MEASURED_TEXT);
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('the main live chart includes the four timeframe market-state view and follows its selected market', async () => {
+  const app = await bootApp({ world: { ticks: true, candleRows: swingingMarket() } });
+  try {
+    const clock = pageClock(app);
+    clock.settle();
+    await app.enter();
+    await app.open('trade');
+    const symbol = app.doc.getElementById('chartSymbol').value;
+    const panel = app.doc.getElementById('chartMarketState');
+    await app.waitFor(() => app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf] svg.ms-sketch').length === 4, 'four timeframe tiles with candle readings on the live chart');
+    assert.equal(app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf]').length, 4);
+    assert.deepEqual([...app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf]')].map((tile) => tile.dataset.chartMsTf), ['h4', 'h1', 'm15', 'm5']);
+    assert.match(app.doc.getElementById('chartMsBias').textContent, /WAIT|BUY|SELL/);
+    assert.match(panel.textContent, /not profit probability/);
+    assert.equal(panel.querySelectorAll('.btn.buy, .btn.sell, button').length, 0, 'bias is informational and is not an order control');
+    assert.equal(app.doc.getElementById('msSym').value, symbol, 'the chart market is the panel market');
+    const smc = app.doc.getElementById('chartSmc');
+    await app.waitFor(() => smc.querySelectorAll('[data-smc-setup]').length === 3, 'the three SMC checklist cards');
+    assert.deepEqual([...smc.querySelectorAll('[data-smc-setup]')].map((card) => card.dataset.smcSetup), ['break-retest', 'liquidity-mss', 'fvg-retest']);
+    assert.match(smc.textContent, /H1\/H4 (BUY|SELL|WAIT)/);
+    assert.match(smc.textContent, /does not validate those, calculate levels, give a win-rate estimate, or place orders/);
+    assert.equal(smc.querySelectorAll('button, .btn.buy, .btn.sell').length, 0, 'SMC results do not become executable controls');
+    assert.doesNotMatch(smc.textContent, /\bLIVE\b/, 'closed-candle setup results are never called live');
+
+    const code = codeOf(symbol);
+    await app.waitFor(() => app.sockets.some((entry) => entry.sent.some((message) => message.style === 'ticks' && message.ticks_history === code)), 'the chart market tick subscription');
+    const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks' && message.ticks_history === code));
+    const quote = 2.12345, epoch = Math.floor(clock.now());
+    stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: code, quote, epoch } }) });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (const tile of app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf]')) {
+      assert.equal(tile.dataset.chartMsLive, 'true', tile.dataset.chartMsTf + ' candle is live only for a matching forming candle');
+      assert.match(tile.textContent, /LIVE tick at .* EAT/);
+      assert.ok(tile.querySelector('.ms-live-price'), tile.dataset.chartMsTf + ' chart draws the live tick');
+    }
+    assert.match(app.doc.getElementById('chartMsNote').textContent, /Deriv tick received/);
+
+    const select = app.doc.getElementById('chartSymbol');
+    select.value = 'NAS100';
+    select.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+    assert.match(panel.textContent, /Four-timeframe candles are not available for NAS100/);
+    assert.equal(panel.querySelectorAll('#chartMsGrid [data-chart-ms-tf]').length, 0, 'never leave another market\'s timeframes on the chart');
+    assert.match(smc.textContent, /SMC checklist is available only where intraday Deriv candle history is available/);
+    assert.equal(smc.querySelectorAll('[data-smc-setup]').length, 0, 'no stale SMC setup is carried onto an unsupported chart');
+    select.value = 'EUR/USD';
+    select.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+    await app.waitFor(() => app.doc.getElementById('msSym').value === 'EUR/USD' && app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf]').length === 4, 'the four-timeframe view follows the new chart symbol');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
+test('Market state recalculates all four forming candles from each real-time selected-market tick', async () => {
+  const app = await bootApp({ world: { ticks: true, candleRows: swingingMarket() } });
+  try {
+    const clock = pageClock(app);
+    clock.settle();
+    await app.enter();
+    await app.open('state');
+    await app.waitFor(() => stateSettled(app), 'four timeframes read');
+    const symbol = stateView(app).market, code = codeOf(symbol);
+    const stream = app.sockets.find((entry) => entry.sent.some((message) => message.style === 'ticks' && message.ticks_history === code));
+    assert.ok(stream, 'selected market has an explicit live tick subscription');
+    const quote = 2.12345, epoch = Math.floor(clock.now());
+    stream.socket.onmessage({ data: JSON.stringify({ msg_type: 'tick', tick: { symbol: code, quote, epoch } }) });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const view = stateView(app);
+    assert.match(view.feed, /^Live tick · \d\d:\d\d EAT$/);
+    const bias=app.doc.getElementById('msBias');
+    assert.ok(['BUY','SELL','WAIT'].includes(bias.dataset.bias));
+    assert.match(bias.textContent,/Strength: (Strong|Moderate|Limited|Weak) · \d+\/100 timeframe alignment/);
+    for (const card of view.cards) {
+      assert.match(card.asOf, /live tick at .* EAT · \d+ finished \+ forming/);
+      assert.match(card.text, /close 2\.12345:/, card.timeframe + ' uses the latest tick as the current candle close');
+      assert.ok(card.sketch.querySelector('.ms-live-price'), card.timeframe + ' draws the current market price on the graph');
+      assert.equal(card.sketch.querySelector('.ms-live-label').textContent, 'LIVE 2.12345');
+      assert.match(card.text,/Live price/);
+      assert.match(card.sketch.getAttribute('aria-label'), /forming candle with EMA 50, EMA 200 and the swing highs and lows; live price 2\.12345$/);
+    }
+    assert.match(view.note, /^Live quotes update each forming candle/);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -3134,7 +3219,7 @@ test('Market state: a state changes at most once per candle of its timeframe, an
 
     /* The clock of the page keeps running; before the next 5-minute close nothing is read and no state changes.
        Only the age of the newest candle is said anew, every second. */
-    const ageOf = (note) => { const [, count, unit] = /^The newest M5 candle started (\d+) (s|min) ago\./.exec(note); return Number(count) * (unit === 'min' ? 60 : 1); };
+    const ageOf = (note) => { const [, count, unit] = /^The newest M5 candle started (\d+) (s|min) ago/.exec(note); return Number(count) * (unit === 'min' ? 60 : 1); };
     const ageBefore = ageOf(first.note);
     clock.advance(60);
     app.runIntervals(1000);
