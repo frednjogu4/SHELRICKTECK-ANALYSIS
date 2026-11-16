@@ -1,0 +1,19 @@
+FREDRICK AURUM LOCAL UPDATE — 16 NOVEMBER 2026
+
+What changed
+- The local Windows launcher now identifies an MT5 terminal that is already open and saves that exact terminal64.exe path for the Python bridge.
+- If more than one MT5 installation is already running, the interactive startup asks which Exness terminal to use rather than silently guessing. Automatic startup reuses a saved path only when it matches a running terminal.
+- The start guide clarifies that an account name in the MT5 title bar does not prove the terminal is connected. Wait for connection bars/speed and changing Market Watch prices before connecting in AURUM.
+- The complete local package includes the built PC app, bridge, local API, launch scripts, and required runtime source. It excludes credentials, bridge tokens, account details, logs, and machine-specific terminal paths.
+
+Install
+1. Extract this ZIP to a normal writable folder. Do not run files inside the ZIP preview.
+2. Copy the extracted package contents over the existing local package folder and choose Replace files. Preserve local-only files if prompted; the update ZIP does not contain them.
+3. Close the minimized "Fredrick AURUM Local API" window. Run START_ALL_LOCAL.bat from the updated folder and choose the Exness MT5 installation if prompted.
+4. In MT5, confirm a live connection (connection speed/bars and updating Market Watch), then press Connect in the local app.
+
+Limit
+This update can make the bridge target the correct running MT5 installation, but it cannot restore an Exness network connection or validate account credentials. If MT5 still shows "No connection" or stale prices, resolve that in the MT5 terminal first. The local app remains read-only for Exness; this update does not enable order execution.
+
+Privacy
+Do not share MT5 passwords, bridge_token.txt, terminal_path.txt, or unredacted startup logs.

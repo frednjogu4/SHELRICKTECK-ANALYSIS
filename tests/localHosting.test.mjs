@@ -54,7 +54,11 @@ test('single local launcher runs setup with a diagnostic log and stays private',
   assert.match(bridgeSetup, /browser is not force-closed/);
   assert.match(bridgeSetup, /start "Fredrick TRADING - Exness MT5 Bridge"/);
   assert.match(mt5Start, /Get-Process -Name 'terminal64', 'terminal'/);
-  assert.match(mt5Start, /MT5 is already running; leaving the existing terminal untouched/);
+  assert.match(mt5Start, /Get-CimInstance -ClassName Win32_Process/);
+  assert.match(mt5Start, /Several MT5 installations are already running/);
+  assert.match(mt5Start, /Enter the number of the Exness terminal, or press Enter to skip/);
+  assert.match(mt5Start, /saving its path:/);
+  assert.match(mt5Start, /MT5 is already running; leaving it untouched/);
   assert.match(mt5Start, /Start-Process -FilePath/);
   assert.doesNotMatch(mt5Start, /Stop-Process|taskkill/i, 'MT5 launcher must never terminate a running terminal');
   assert.match(auto, /LOCAL_HOST_ONLY\.txt[\s\S]*?START_LOCAL_API\.bat[\s\S]*?if errorlevel 1 exit \/b 1/);

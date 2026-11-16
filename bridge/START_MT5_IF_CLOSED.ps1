@@ -24,12 +24,78 @@ function Add-TerminalCandidate([string]$Value, [string]$Source, [int]$Priority) 
   }
 }
 
-# Never kill or restart a terminal. If one is already open, leave it alone.
+# Never kill or restart a terminal. If one is already open, identify and save
+# the executable path so the Python connector attaches to that exact install.
+# Multiple open terminals are not guessed: let the user choose interactively,
+# or reuse a previously saved path only when it matches a running instance.
 $running = @(Get-Process -Name 'terminal64', 'terminal' -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
-  Write-Host 'MT5 is already running; leaving the existing terminal untouched.' -ForegroundColor Green
-  if ($running.Count -eq 1) {
-    try { if ($running[0].Path) { Save-TerminalPath $running[0].Path } } catch { }
+  $runningPaths = @()
+  try {
+    $processIds = @($running | ForEach-Object { [int]$_.Id })
+    $processFilter = ($processIds | ForEach-Object { "ProcessId=$_" }) -join ' OR '
+    $processDetails = @(Get-CimInstance -ClassName Win32_Process -Filter $processFilter -ErrorAction Stop)
+    foreach ($process in $processDetails) {
+      if ($process.ExecutablePath) {
+        $runningPaths += [System.IO.Path]::GetFullPath([string]$process.ExecutablePath)
+      }
+    }
+  } catch { }
+  if ($runningPaths.Count -eq 0) {
+    foreach ($process in $running) {
+      try { if ($process.Path) { $runningPaths += [System.IO.Path]::GetFullPath([string]$process.Path) } } catch { }
+    }
+  }
+  $runningPaths = @($runningPaths | Where-Object { $_ } | Select-Object -Unique)
+
+  $savedPath = ''
+  if (Test-Path -LiteralPath $PathFile -PathType Leaf) {
+    try { $savedPath = [Environment]::ExpandEnvironmentVariables((Get-Content -LiteralPath $PathFile -Raw).Trim().Trim('"')) } catch { }
+    if ($savedPath -and (Test-Path -LiteralPath $savedPath -PathType Container)) { $savedPath = Join-Path $savedPath 'terminal64.exe' }
+    try { if ($savedPath) { $savedPath = [System.IO.Path]::GetFullPath($savedPath) } } catch { $savedPath = '' }
+  }
+  $configuredPath = ''
+  if ($env:AURUM_MT5_PATH) {
+    $configuredPath = [Environment]::ExpandEnvironmentVariables($env:AURUM_MT5_PATH.Trim().Trim('"'))
+    if ($configuredPath -and (Test-Path -LiteralPath $configuredPath -PathType Container)) { $configuredPath = Join-Path $configuredPath 'terminal64.exe' }
+    try { $configuredPath = [System.IO.Path]::GetFullPath($configuredPath) } catch { $configuredPath = '' }
+  }
+
+  $selectedRunningPath = $null
+  foreach ($preferredPath in @($configuredPath, $savedPath)) {
+    if ($preferredPath -and ($runningPaths | Where-Object { $_ -ieq $preferredPath })) {
+      $selectedRunningPath = $preferredPath
+      break
+    }
+  }
+  if (!$selectedRunningPath -and $runningPaths.Count -eq 1) {
+    $selectedRunningPath = $runningPaths[0]
+  }
+  if (!$selectedRunningPath -and $runningPaths.Count -gt 1 -and !$NoPrompt) {
+    Write-Host '[!] Several MT5 installations are already running. Choose the Exness terminal; none will be closed.' -ForegroundColor Yellow
+    for ($i = 0; $i -lt $runningPaths.Count; $i++) { Write-Host (('  {0}. {1}' -f ($i + 1), $runningPaths[$i])) }
+    $answer = Read-Host 'Enter the number of the Exness terminal, or press Enter to skip'
+    $number = 0
+    if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $runningPaths.Count) {
+      $selectedRunningPath = $runningPaths[$number - 1]
+    }
+  }
+
+  if ($selectedRunningPath) {
+    Save-TerminalPath $selectedRunningPath
+    Write-Host ('MT5 is already running; leaving it untouched and saving its path: ' + $selectedRunningPath) -ForegroundColor Green
+  } elseif ($runningPaths.Count -gt 1) {
+    if (!$savedPath -or !($runningPaths | Where-Object { $_ -ieq $savedPath })) { Save-TerminalPath '' }
+    Write-Host '[!] Several MT5 terminals are running and none was selected. The bridge may not attach to the Exness terminal.' -ForegroundColor Yellow
+    Write-Host '    Close the extra MT5 windows yourself, or run START_ALL_LOCAL.bat again and select the Exness terminal.' -ForegroundColor Yellow
+  } else {
+    Write-Host '[!] MT5 is running, but Windows did not reveal its executable path.' -ForegroundColor Yellow
+    if ($savedPath -and (Test-Path -LiteralPath $savedPath -PathType Leaf)) {
+      Write-Host ('    Keeping the previously saved terminal path: ' + $savedPath) -ForegroundColor Yellow
+    } else {
+      Save-TerminalPath ''
+      Write-Host '    Set AURUM_MT5_PATH in bridge\SETUP_AND_RUN.bat to the Exness terminal64.exe, then rerun setup.' -ForegroundColor Yellow
+    }
   }
   exit 0
 }
