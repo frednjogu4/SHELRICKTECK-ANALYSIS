@@ -1,6 +1,6 @@
-# AURUM ↔ Exness MT5 local bridge — Phase 1 (read-only)
+# AURUM ↔ Exness MT5 local bridge — demo-only manual orders
 
-This bridge runs on the Windows PC that has the official Exness MetaTrader 5 terminal. It gives the local AURUM app read-only access to account details, positions, quotes, verified symbols, and candle history. **Order sends and closes are deliberately disabled in both the app client and the Python bridge for this phase.** No connection to an account has been made from this workspace, and this guide does not authorize any trade.
+This bridge runs on the Windows PC that has the official Exness MetaTrader 5 terminal. It gives the local AURUM app access to account details, positions, quotes, verified symbols, and candle history. It can also request one manually confirmed market order, but **only after the bridge independently verifies a DEMO account and passes its fresh local risk checks**. Live-account orders, app-side closes, and automated/Sniper entries remain disabled. No connection to an account has been made from this workspace, and this guide does not authorize any trade.
 
 The bridge is PC-local: credentials are entered into the local app and passed to the local MT5 terminal, not to a cloud market-data route. A phone on the same private Wi-Fi/LAN can use the PC-hosted app/bridge; it shares the same single account and exact server as the PC connection. No cloud relay is used.
 
@@ -17,7 +17,7 @@ The bridge is PC-local: credentials are entered into the local app and passed to
 3. Run `SETUP_AND_RUN.bat` once. It installs the Python requirements, creates/reuses the local bridge token, starts the bridge, creates the desktop app shortcut, and installs a per-user Windows Startup shortcut.
 4. The Startup shortcut launches the bridge minimized and opens `http://127.0.0.1:8788/app` at each Windows sign-in. The desktop shortcut also starts/reuses the bridge and opens the app if you close it. Keep the bridge folder in the same location after setup. Exness MT5 must be installed for MT5 data. When it is open but not logged in, **Connect** has it log in with the account number, password and exact server entered in the app; the bridge never stores your MT5 password.
 5. On this PC, the app page is `http://127.0.0.1:8788/app`, but the **Bridge URL** field is the WebSocket endpoint `ws://127.0.0.1:8787` (not `http://...:8788`). From a phone on the same Wi-Fi, use the PC LAN WebSocket address printed in the bridge window, normally `ws://<PC-IP>:8787`, and the local bridge token.
-6. Use **Test bridge** or connect read-only. A successful connection must report the exact server and an MT5 company identity containing Exness. A different account/server or unverified broker identity is refused. To disable automatic startup, run `REMOVE_AUTO_START.bat`; it does not delete the local token or stop a running bridge.
+6. Use **Test bridge** or connect. A successful connection must report the exact server and an MT5 company identity containing Exness. A different account/server or unverified broker identity is refused. A DEMO account may use the manual order path only after a separate risk preview and explicit confirmation. To disable automatic startup, run `REMOVE_AUTO_START.bat`; it does not delete the local token or stop a running bridge.
 
 ## Same account on PC and phone
 
@@ -25,13 +25,13 @@ The bridge keeps the first successfully verified Exness account number and serve
 
 For phone access, keep the phone on the same private Wi-Fi/LAN, open the PC address printed by the bridge window, and enter the locally stored token from `bridge_token.txt` in the app. Do not port-forward the bridge or expose it to the public internet. A phone's `127.0.0.1` refers to the phone itself, not the PC.
 
-## Read-only scope and safety
+## Demo-only scope and safety
 
-- Read-only calls: account balance/equity/free margin, open-position snapshot, quote, symbol catalogue, and M1/M5/H1 history. These use the local MT5 terminal and stay on the PC/LAN.
-- `MT5_EXECUTION_ENABLED` is hard-coded `False` in the Python bridge and the app client. Order and close requests are refused before reaching MT5. Changing that requires a separate risk review and explicit approval.
-- The existing 10-position cap, server-side risk checks, fail-closed unknowns, and duplicate-order protection remain in place; this phase does not relax them.
-- The new index route remains Exness MT5 only, never Deriv, and indices remain excluded from sniper/automation. A symbol must resolve in the authenticated terminal; otherwise the request fails closed.
-- This is not a reset of app position counters or reservations. Do not clear any stored state as part of testing.
+- Account balance/equity/free-margin, open positions, quotes, symbol catalogue, and M1/M5/H1 history come from the local MT5 terminal. The app's demo execution preview and send path also run through this local bridge, not the cloud risk API.
+- The bridge requires MT5-reported DEMO trade mode, the already authenticated Exness account/server identity, a connected terminal with trade permission, and a USD account. Missing or unverifiable account, quote, broker spec, position, daily-history, sizing, or margin data blocks the action.
+- A fresh preview is held by the bridge for 30 seconds. The app requires a manual confirmation; before its single send attempt the bridge rechecks account, quote movement, size, stop/target, estimated risk, margin, and open positions. A repeated intent replays its cached reply instead of sending again. An uncertain/partial/pending result halts further app orders until the user inspects MT5 positions/history and restarts the bridge after understanding the outcome. There is no automatic retry.
+- Current bridge limits: at most one open MT5 position, no more than 0.5% buffered *estimated* stop risk per order, at least 1.2 reward/risk, at most 80% of free margin, and a 2% threshold on UTC-day broker-reported realized losses. These are guards and estimates, not guaranteed maximum losses; floating losses, gaps, slippage, and external MT5 actions can change outcomes.
+- The app cannot close positions and cannot place automated/Sniper entries. Manage/close any demo position directly in MT5. Live Exness accounts remain read-only. Do not use this path with a live account.
 - The bridge token is stored locally beside the batch file. Keep it private; do not paste it into chat or screenshots.
 
 ## Troubleshooting
@@ -39,9 +39,9 @@ For phone access, keep the phone on the same private Wi-Fi/LAN, open the PC addr
 - If **Connect** answers `Cannot attach to MetaTrader 5: ...`, the words after the colon are the reason and the steps follow them; the message ends with the terminal that was tried. The bridge window prints the same text when it starts without MetaTrader 5. `(step terminal, code 1: Success)` comes from an `mt5_bridge.py` older than 13 November 2026 and hides the reason: replace the file and restart the bridge.
 - If **Connect** answers that MetaTrader 5 `did not log in with the account number, password and server entered in the app`, look at the bottom-right corner of MetaTrader 5: a connection speed means it has logged in meanwhile (press Connect again), `Invalid account` means Exness did not accept the three, `No connection` means MetaTrader 5 cannot get through to Exness. An account name in the title bar alone does not prove the terminal is online; wait for connection bars/speed and updating Market Watch prices. Logging in inside MetaTrader 5 (File > Login to Trade Account) and pressing Connect afterwards works as well.
 - The local launcher now saves the executable path of an already-running MT5 terminal. If several MT5 windows are open, select the Exness installation at the prompt; auto-start reuses a previously saved path only when it matches a running instance. If Windows cannot reveal the path or selection is skipped, set `AURUM_MT5_PATH` to the exact Exness `terminal64.exe` path in `SETUP_AND_RUN.bat`, then rerun setup.
-- If login is rejected, confirm the account number, MT5 password, and exact Exness server in the Exness Personal Area. An investor/read-only password is sufficient for the read-only phase.
+- Use the MT5 trading password for demo orders. An investor/read-only password may connect for account viewing, but the bridge will refuse order preview/send unless MT5 confirms trade permission is enabled on the verified DEMO account. Live accounts and automated entry stay blocked.
 - If the app reports a server/company mismatch, stop. Do not try a different broker terminal as a fallback.
 - If positions, quotes, symbols, or history are unavailable, the app should report unavailable and block dependent actions; it must not invent prices or symbols.
 - If the app on this PC looks different from the website, the files in this folder are older than the website. `app.html` and the `pwa` folder are the page itself (a copy of the website's build, made by `npm run build`; do not edit them here). See "Bringing the PC app up to date" in the main `README.md`: replace the whole package folder, close the **Fredrick AURUM Local API** window, run `START_ALL_LOCAL.bat` again and press Ctrl+F5 in the app.
 
-Bundle name: `FREDRICK_EXNESS_BRIDGE.zip` (Phase 1 local read-only build).
+Bundle name: `FREDRICK_EXNESS_BRIDGE.zip` (local Exness bridge; demo-only manual order path).

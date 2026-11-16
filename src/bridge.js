@@ -22,9 +22,10 @@
  *   -> {id, type:'history', symbol, timeframe:'M1'|'M5'|'H1', count}
  * ================================================================ */
 
-// Phase 1 Exness migration is read-only: keep this hard-coded OFF until a
-// separate risk review and explicit user approval authorizes real execution.
-const MT5_EXECUTION_ENABLED = false;
+// Demo-only manual order preview/send is allowed after explicit confirmation.
+// The bridge independently verifies the authenticated MT5 DEMO account and
+// applies local hard risk caps. Live accounts, closes and automation stay off.
+const MT5_DEMO_EXECUTION_ENABLED = true;
 
 const statusCbs = new Set();
 let sock = null;
@@ -267,7 +268,7 @@ export function connectBridge(url, creds) {
         .then((res) => {
           if (t) clearTimeout(t);
           if (res && res.type === 'logged') {
-            account = { balance: res.balance, equity: res.equity, margin_free: res.margin_free, currency: res.currency, login: maskAccountId(res.account || creds.login), server: res.server || creds.server || '', terminal: res.terminal || '', leverage: res.leverage || null };
+            account = { balance: res.balance, equity: res.equity, margin_free: res.margin_free, currency: res.currency, login: maskAccountId(res.account || creds.login), server: res.server || creds.server || '', terminal: res.terminal || '', leverage: res.leverage || null, demo: res.demo === true, tradeMode: res.trade_mode ?? null };
             setStatus('connected');
             resolve(account);
           } else {
@@ -330,16 +331,18 @@ export function disconnectBridge(reason) {
   setStatus('not_running');
 }
 
-export function placeBridgeOrder(o) {
-  if (!MT5_EXECUTION_ENABLED) return Promise.reject(new Error('Exness MT5 order execution is disabled in this local verification build. No order was sent; separate approval is required before execution can be enabled.'));
-  /* NB: no duplicate `type` key here — the request type is 'order' and
-     the execution mode rides in `exec` (a duplicate key would silently
-     overwrite the request type in a JS object literal). */
-  return frame({ type: 'order', symbol: o.symbol, side: o.side, volume: o.volume, sl: o.sl || 0, tp: o.tp || 0, max_open_trades: o.maxOpenTrades, exec: 'market' });
+export function previewBridgeOrder(o) {
+  if (!MT5_DEMO_EXECUTION_ENABLED || account?.demo !== true) return Promise.reject(new Error('The local order path is demo-only; MT5 has not verified a demo account. No order was sent.'));
+  return frame({ type: 'preview_order', symbol: o.symbol, side: o.side, volume: o.volume, sl: o.sl, tp: o.tp });
 }
-export function closeBridgeOrder(ticket) {
-  if (!MT5_EXECUTION_ENABLED) return Promise.reject(new Error('Exness MT5 close execution is disabled in this local verification build. No close was sent; separate approval is required before execution can be enabled.'));
-  return frame({ type: 'close', ticket });
+export function placeBridgeOrder(o) {
+  if (!MT5_DEMO_EXECUTION_ENABLED || account?.demo !== true) return Promise.reject(new Error('The local order path is demo-only; MT5 has not verified a demo account. No order was sent.'));
+  if (o?.manualConfirmed !== true || !o.previewId || !o.intentId) return Promise.reject(new Error('A fresh preview and explicit manual confirmation are required. No order was sent.'));
+  return frame({ type: 'order', symbol: o.symbol, side: o.side, volume: o.volume, sl: o.sl, tp: o.tp,
+    preview_id: o.previewId, intent_id: o.intentId, confirmed: true });
+}
+export function closeBridgeOrder(_ticket) {
+  return Promise.reject(new Error('Closing Exness demo positions is not enabled in the app. Close or manage this position directly in MetaTrader 5.'));
 }
 export function bridgePositions() { return frame({ type: 'positions' }); }
 export function bridgeAccount() { return frame({ type: 'account' }); }
@@ -416,7 +419,7 @@ export async function diagnoseBridge(url, token, creds) {
       const r5 = await probe({ id: 'd5', type: 'login', login: creds.login, password: creds.password, server: creds.server || '', token: token || '' }, 8000);
       add('MT5 login', r5.ok, r5.ok
         ? ('logged in \u00b7 ' + (r5.m && r5.m.balance != null ? ('balance ' + r5.m.balance + ' ' + (r5.m.currency || '')) : 'account ready'))
-        : ((r5.message || 'rejected') + ' \u2014 enter the exact Exness server from the Personal Area; read-only/investor password is sufficient'));
+        : ((r5.message || 'rejected') + ' \u2014 enter the exact Exness server from the Personal Area; use the trading password for demo orders (investor/read-only is view-only)'));
     } else {
       add('MT5 login', null, 'fill account, MT5 password, and exact server first, then run the test again');
     }

@@ -730,13 +730,13 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         <label class="field"><span>Exness MT5 account login</span>
           <input class="input" id="exnessLogin" type="text" required placeholder="account number">
         </label>
-        <label class="field"><span>MT5 password (investor/read-only is sufficient)</span>
-          <input class="input" id="exnessPass" type="password" autocomplete="off" required placeholder="MT5 password (investor/read-only is sufficient)">
+        <label class="field"><span>MT5 account password</span>
+          <input class="input" id="exnessPass" type="password" autocomplete="off" required placeholder="trading password for demo orders; investor password is view-only">
         </label>
         <label class="field"><span>Exact Exness MT5 server (required)</span>
           <input class="input" id="exnessServer" type="text" required placeholder="exact server name from Exness Personal Area">
         </label>
-        <button class="btn lg" type="submit" id="exnessLoginBtn" style="width:100%">Connect Exness (read-only)</button>
+        <button class="btn lg" type="submit" id="exnessLoginBtn" style="width:100%">Connect Exness locally</button>
         <p class="auth-note">For refresh recovery, this tab keeps the Exness account login, server, MT5 password and bridge token in session storage only. They are cleared on disconnect/sign-out or when the browser tab session ends. Use only on a device you control. The local bridge and MT5 terminal must remain running.</p>
         <button class="btn ghost sm" id="mt5ForgetAuth" type="button">Forget saved Exness details</button>
       </form>
@@ -1093,7 +1093,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
                 <div id="sizePlanBody" class="tiny">Pick a market and set a stop-loss — the size plan appears here. Nothing is assumed: missing inputs are listed, never invented.</div>
               </div>
               <button class="btn buy lg" id="placeOrderBtn" style="width:100%">Place BUY order</button>
-              <p class="hint">Deriv orders use their existing gated path. Exness is connected read-only in this local verification build; its order and close routes are disabled. Risk: <b id="riskTxt">—</b> if stop-loss is hit.</p>
+              <p class="hint">Deriv orders use their existing gated path. Exness orders are available only in the local app on a broker-verified DEMO account, with a fresh risk preview and your manual confirmation. Live Exness accounts, app-side closes, and all automated entries remain disabled. Stop risk is estimated, not guaranteed. Risk: <b id="riskTxt">—</b> if stop-loss is hit.</p>
             </div>
             <div class="card">
               <div class="card-head"><h3>Instrument info</h3></div>
@@ -1412,7 +1412,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           </div>
           <div class="notice hidden" id="goldAnalysisNotice" style="margin:0 0 14px;align-items:center;justify-content:space-between;flex-wrap:wrap">
             <div><b id="goldAnalysisNoticeTitle">Gold analysis status</b><div class="tiny" id="goldAnalysisNoticeText" style="margin-top:3px"></div></div>
-            <button class="btn ghost sm hidden" id="goldConnectBtn" type="button">Connect Exness (read-only)</button>
+            <button class="btn ghost sm hidden" id="goldConnectBtn" type="button">Connect Exness locally</button>
           </div>
           <div class="grid c2" style="margin-bottom:14px">
             <div class="card" style="background:var(--surface-2)">
@@ -1565,7 +1565,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
         <div class="notice warn" style="margin-bottom:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-          <div><b>Exness verification is read-only in this build.</b> The local MT5 bridge reads account data, positions, quotes, symbols, and history; order sends and closes are disabled at both the app and bridge. Exness credentials stay between this local app and your PC terminal. The bridge must run beside MT5 and uses the same exact account/server for PC and phone.</div>
+          <div><b>Exness execution is DEMO-only and manual.</b> The local MT5 bridge independently verifies the Exness demo account and checks fresh quotes, broker sizing, stop risk, margin, daily realized loss, and open positions before each manually confirmed order. Live accounts, app-side closes, and automated entries remain blocked. Risk estimates are not guaranteed maximum losses. Credentials stay between this local app and your PC terminal; keep the bridge beside MT5 and use the same exact account/server for PC and phone.</div>
         </div>
 
         <div class="grid c3" id="connGrid">
@@ -1589,9 +1589,9 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div class="hint">If it says unreachable: (1) is the black bridge window open with "listening"? (2) the cloud page may be blocked from reaching your PC — the guaranteed path is the bridge's own app: <a id="openLocalMode" href="http://127.0.0.1:8788/app" target="_blank" rel="noopener" style="color:var(--brand);font-weight:700">Open the local trading app (Exness works there) ↗</a>. To allow the cloud page instead: padlock → Site settings → Insecure content → Allow, and allow Local-network access, then reload.</div></label>
             <label class="field" style="margin:0"><span>Account login</span><input class="input" id="mt5Login" required placeholder="account number"></label>
             <label class="field" style="margin:0"><span>MT5 server (enter exact server for this account)</span><input class="input" id="mt5Server" required placeholder="copy the exact server from Exness Personal Area"></label>
-            <label class="field" style="margin:0"><span>MT5 password</span><input class="input" type="password" autocomplete="off" id="mt5Pass" required placeholder="investor/read-only password is sufficient"></label>
+            <label class="field" style="margin:0"><span>MT5 account password</span><input class="input" type="password" autocomplete="off" id="mt5Pass" required placeholder="trading password for demo orders; investor password is view-only"></label>
             <label class="field" style="margin:0"><span>Bridge token <span class="faint">(required from phone/LAN)</span></span><input class="input" type="password" autocomplete="off" id="mt5Token" placeholder="shared secret — use local bridge_token.txt"><div class="hint">On the PC this is optional. From a phone, use the token from the PC's local bridge_token.txt; it stays in this browser tab only and is also required for phone access to the local analysis API.</div></label>
-            <button class="btn primary conn-btn" data-conn="mt5">Connect Exness (read-only)</button>
+            <button class="btn primary conn-btn" data-conn="mt5">Connect Exness locally</button>
             <div class="hint">This browser tab keeps the Exness login, server, password and bridge token in session storage for refresh recovery. They clear on disconnect, sign-out, or tab-session end.</div>
             <button class="btn ghost sm" id="mt5ForgetSettings" type="button" style="margin-top:6px">Forget saved Exness details</button>
             <button class="btn ghost" id="bridgeTestBtn" type="button" style="margin-top:8px;width:100%">Test bridge (step-by-step)</button>
@@ -1603,7 +1603,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div><h3>Live markets only</h3><div class="sub">Browse &amp; analyse &middot; trading locked</div></div>
             </div>
             <div class="status-line" id="liveStatus"><span class="dot live"></span> Active — no broker</div>
-            <p class="hint" style="margin-top:10px">Real prices, TradingView charts, news and AI analysis all work. Deriv keeps its existing gated route; Exness remains read-only in this verification build.</p>
+            <p class="hint" style="margin-top:10px">Real prices, TradingView charts, news and AI analysis all work. Deriv keeps its existing gated route. Exness order entry requires the local app and a verified demo account; live Exness orders remain disabled.</p>
             <button class="btn conn-btn" data-conn="live" disabled>Always on without a broker</button>
           </div>
         </div>

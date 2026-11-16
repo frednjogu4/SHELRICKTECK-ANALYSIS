@@ -12,7 +12,7 @@ test('Gold panel exposes actionable selected-source and retry status', () => {
   assert.match(html, /id="goldConnectBtn"/);
   assert.match(main, /Exness MT5 is unavailable in this tab/);
   assert.match(main, /A clearly labelled Deriv fallback was attempted/);
-  assert.match(main, /Connect Exness \(read-only\)/);
+  assert.match(main, /Connect Exness locally/);
 });
 
 test('enabling Auto-refresh triggers an immediate check; later retries are 60 seconds apart', () => {
