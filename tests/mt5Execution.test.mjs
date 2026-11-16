@@ -2,16 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { placeBridgeOrder, closeBridgeOrder } from '../src/bridge.js';
 
-test('Phase 1 client refuses Exness MT5 order sends before bridge transport', async () => {
+test('client refuses Exness order sends unless MT5 verifies a demo account', async () => {
   await assert.rejects(
-    placeBridgeOrder({ symbol: 'US30', side: 'BUY', volume: 1 }),
-    /disabled in this local verification build.*No order was sent/,
+    placeBridgeOrder({ symbol: 'US30', side: 'BUY', volume: 1, manualConfirmed: true, previewId: 'preview', intentId: 'demoIntent1234567890' }),
+    /demo-only.*MT5 has not verified a demo account.*No order was sent/,
   );
 });
 
-test('Phase 1 client refuses Exness MT5 closes before bridge transport', async () => {
-  await assert.rejects(
-    closeBridgeOrder(123),
-    /disabled in this local verification build.*No close was sent/,
-  );
+test('app-side Exness closes remain disabled even in demo mode', async () => {
+  await assert.rejects(closeBridgeOrder(123), /not enabled in the app/);
 });

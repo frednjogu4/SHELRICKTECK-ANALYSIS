@@ -1,8 +1,22 @@
-# Exness order-execution safety review (local Phase 1 build)
+# Exness order-execution safety review (local app)
 
-**Decision:** Do not enable real-account order execution yet. No order was sent; no execution guard or deployment was changed in this review.
+## Current implementation status (2026-11-14)
 
-## Verification performed
+The user-approved scope is **manual DEMO-account order entry only**. The local bridge now implements a broker-verified demo gate, short-lived risk preview, explicit in-app confirmation, and one market-order attempt. Live accounts, app-side position closes, and automated/sniper entries remain blocked. The prior Phase 1 review below is retained as historical context; some of its blockers have since been addressed in code.
+
+**This is not yet verified for use with a real Exness terminal, even on demo.** The latest tests use mocked MT5 responses; no live terminal end-to-end order test was performed. Do not treat this as a validated or production-safe trading path, and do not test against a live account.
+
+Current local checks: `npm run build` passed; `npm test` passed (388 smoke assertions; 836 Node tests passed, 1 skipped); `python3 -m unittest discover -s tests` passed (62 tests). The tests do not validate MetaTrader5's behavior against an actual Exness demo server.
+
+### Implemented demo-only safeguards
+
+- Both client and Python bridge require MT5-reported DEMO trade mode. The bridge also binds every action to the authenticated Exness login/server and requires a connected, trade-enabled terminal and USD account.
+- The bridge recalculates the plan from broker account data, symbol rules, fresh bid/ask, broker profit/margin calculators, current positions, and the current UTC day's realized broker history. Unknown/stale required data blocks the preview or send.
+- The preview is server-held, unguessable, and expires after 30 seconds. Confirmation rechecks size, SL/TP, quote, risk, account, margin, and positions. A changed order requires a new preview and confirmation.
+- Limits currently configured in code: one open MT5 position, 0.5% buffered estimated stop risk per order, a 2% daily realized-loss threshold, reward/risk of at least 1.2, and maximum 80% of free margin. These are software estimates/guards, not guaranteed maximum losses; floating P/L and slippage/gaps are not guaranteed to be contained by the realized-loss threshold or fixed buffer.
+- A unique intent is cached during the bridge process; order submission is attempted once. An uncertain, partial, or pending result blocks subsequent app sends until the user inspects MT5 positions/history and restarts the bridge after understanding the outcome. There is no automatic retry. Closing positions and Sniper/automated entries are explicitly unavailable in the app; manage demo positions directly in MT5.
+
+## Historical Phase 1 verification
 
 - `npm test`: passed (373 smoke assertions; 228 Node tests).
 - `python -m unittest discover -s tests -p 'test_mt5*.py' -v`: passed (12 tests).

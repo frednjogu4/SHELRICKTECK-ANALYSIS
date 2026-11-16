@@ -32,11 +32,13 @@ Security:      binds the LAN (AURUM_BRIDGE_HOST, default 0.0.0.0). Origin gate
 """
 
 import asyncio
+import datetime
 import json
 import logging
 import math
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -48,10 +50,20 @@ from localapiauth import api_proxy_authorized
 HOST = os.environ.get("AURUM_BRIDGE_HOST", "0.0.0.0")
 PORT = 8787
 MAGIC = 234000  # our orders' magic number
-# Phase 1 Exness migration is read-only. A separate explicit approval and
-# risk review is required before this flag can ever be changed.
-MT5_EXECUTION_ENABLED = False
+# Exness demo-only manual execution. Live accounts, closes, automation and
+# browser-provided risk assertions remain blocked. The local bridge rechecks
+# the account, quote, SL/TP, volume, equity, daily loss and open positions.
+DEMO_ORDER_EXECUTION_ENABLED = True
+DEMO_MAX_OPEN_POSITIONS = 1
+DEMO_MAX_RISK_PCT = 0.5
+DEMO_MAX_DAILY_LOSS_PCT = 2.0
+DEMO_MIN_REWARD_RISK = 1.2
+DEMO_MAX_TICK_AGE_SECONDS = 60
 _ORDER_LOCK = threading.Lock()  # serialize fresh position-check + order_send across WS/HTTP clients
+_DEMO_PREVIEW_LOCK = threading.Lock()
+_DEMO_PREVIEWS = {}  # short-lived server-side order preview, keyed by an unguessable id
+_DEMO_ORDER_REPLIES = {}  # same intent id never sends twice during this bridge process
+_DEMO_ORDER_UNCERTAIN = False  # ambiguous/partial MT5 outcome halts further app orders until bridge restart
 _LOGIN_LOCK = threading.RLock()  # one account/server identity shared by PC + phone clients
 _LOCKED_LOGIN = None  # in-memory numeric login; never logged or returned
 _LOCKED_SERVER = None
@@ -80,7 +92,7 @@ def _mask_account(value):
     return "••••" + text[-4:] if len(text) > 4 else "••••"
 
 
-_NEED_AUTH = ("order", "close", "positions", "account", "quote", "search", "symbols", "history")
+_NEED_AUTH = ("order", "preview_order", "close", "positions", "account", "quote", "search", "symbols", "history")
 _BRIDGE_TOKEN = os.environ.get("AURUM_BRIDGE_TOKEN", "").strip()
 _LOCAL_API_AUTH = os.environ.get("AURUM_LOCAL_API_AUTH", "").strip() == "1"
 _LOCAL_API_TOKEN = os.environ.get("AURUM_LOCAL_API_TOKEN", "").strip()
@@ -278,7 +290,7 @@ def handle_login(msg):
     password = msg.get("password") or ""
     server = (msg.get("server") or "").strip()
     if not password:
-        return {**err("MT5 password required; an investor/read-only password is sufficient for this verification build.")}
+        return {**err("MT5 password required; an investor/read-only password permits viewing only, while demo orders require MT5 trade permission.")}
     if not login:
         return {**err("account number required")}
     if not server:
@@ -340,6 +352,8 @@ def handle_login(msg):
         "account": _mask_account(ai.login),
         "server": ai.server,
         "leverage": ai.leverage,
+        "demo": (getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None) is not None and getattr(ai, "trade_mode", None) == getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None)),
+        "trade_mode": getattr(ai, "trade_mode", None),
         "terminal": term.name,
     }
 
@@ -511,126 +525,286 @@ def handle_account(_msg):
         "margin_free": ai.margin_free,
         "currency": ai.currency,
         "leverage": ai.leverage,
+        "demo": (getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None) is not None and getattr(ai, "trade_mode", None) == getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None)),
+        "trade_mode": getattr(ai, "trade_mode", None),
     }
 
 
-def handle_order(msg):
-    if not MT5_EXECUTION_ENABLED:
-        return {**err("Exness MT5 order execution is disabled in this local verification build; no order was sent. Separate approval is required before execution can be enabled.")}
-    with _ORDER_LOCK:
-        return _handle_order_serial(msg)
+def _demo_account_gate():
+    """Return the current account after fail-closed demo/exact-identity checks."""
+    if not DEMO_ORDER_EXECUTION_ENABLED:
+        return None, "Demo order execution is turned off in this bridge."
+    identity_error = _locked_identity_error()
+    if identity_error:
+        return None, identity_error
+    try:
+        account = mt5.account_info()
+        terminal = mt5.terminal_info()
+    except Exception:
+        return None, "MT5 account/terminal state could not be verified; no demo order was sent."
+    if account is None or terminal is None:
+        return None, "MT5 account/terminal state is unavailable; no demo order was sent."
+    demo_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None)
+    if demo_mode is None or getattr(account, "trade_mode", None) != demo_mode:
+        return None, "This order path is demo-only; MT5 did not verify a DEMO account. No order was sent."
+    if str(getattr(account, "currency", "")).upper() != "USD":
+        return None, "Demo order sizing currently requires a USD-denominated account; no order was sent."
+    if not bool(getattr(terminal, "connected", False)):
+        return None, "MT5 is not connected to Exness; no demo order was sent."
+    if not bool(getattr(terminal, "trade_allowed", False)):
+        return None, "MT5 trade permission is off; enable trading in MT5 and reconnect. No order was sent."
+    try:
+        equity = float(account.equity)
+        free_margin = float(account.margin_free)
+        if not math.isfinite(equity) or equity <= 0 or not math.isfinite(free_margin) or free_margin <= 0:
+            raise ValueError
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None, "MT5 equity/free margin could not be verified; no demo order was sent."
+    return account, None
 
 
-def _handle_order_serial(msg):
-    if not MT5_EXECUTION_ENABLED:
-        return {**err("Exness MT5 order execution is disabled in this local verification build; no order was sent.")}
-    sym = resolve_symbol(msg.get("symbol"))
-    if not sym:
-        return {**err(f"symbol not found on this MT5 account: {msg.get('symbol')}")}
-    info = mt5.symbol_info(sym)
+def _demo_daily_net():
+    """Broker-reported realized P/L since UTC midnight; None means unverifiable."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        deals = mt5.history_deals_get(start, now)
+    except Exception:
+        return None
+    if deals is None:
+        return None
+    try:
+        return sum(float(getattr(deal, "profit", 0) or 0)
+                   + float(getattr(deal, "commission", 0) or 0)
+                   + float(getattr(deal, "swap", 0) or 0)
+                   + float(getattr(deal, "fee", 0) or 0) for deal in deals)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _demo_order_plan(msg):
+    """Recompute all order facts from this PC's authenticated demo terminal."""
+    account, problem = _demo_account_gate()
+    if problem:
+        return None, problem
+    symbol = resolve_symbol(str(msg.get("symbol") or ""))
+    if not symbol:
+        return None, "Symbol is missing, ambiguous, or unavailable in the connected Exness demo terminal."
+    info = mt5.symbol_info(symbol)
     if info is None:
-        return {**err("Symbol details are unavailable in the connected Exness terminal; refusing the order.")}
+        return None, "Symbol specifications are unavailable; no demo order was sent."
     side = str(msg.get("side") or "").upper()
     if side not in ("BUY", "SELL"):
-        return {**err("side must be BUY or SELL")}
+        return None, "Side must be BUY or SELL."
     try:
         trade_mode = int(getattr(info, "trade_mode", 0))
     except (TypeError, ValueError, OverflowError):
         trade_mode = 0
-    side_allowed = trade_mode == 4 or (trade_mode == 1 and side == "BUY") or (trade_mode == 2 and side == "SELL")
-    if not side_allowed:
-        return {**err("Symbol or side is not verified as tradable in the connected Exness terminal; refusing the order.")}
-    usd = float(msg.get("volume") or 0)
-    if usd <= 0:
-        return {**err("volume (USD amount) must be > 0")}
-
-    tick = mt5.symbol_info_tick(sym)
-    if tick is None:
-        return {**err(f"no tick for {sym}")}
-
-    price = tick.ask if side == "BUY" else tick.bid
-    raw_lots = (usd / (info.trade_contract_size * price)) if price > 0 else 0.0
-    lots = usd_to_lots(info, price, usd)
-    clamped_min = raw_lots < (info.volume_min - 1e-12)  # broker minimum forced the size UP
-    if lots <= 0:
-        return {**err("computed lot size is 0 — amount too small for this symbol")}
-
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": sym,
-        "volume": lots,
-        "type": mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL,
-        "price": price,
-        "deviation": 20,
-        "magic": MAGIC,
-        "comment": "AURUM",
-        "type_time": mt5.ORDER_TIME_GTC,
-    }
-    sl = float(msg.get("sl") or 0)
-    tp = float(msg.get("tp") or 0)
-    if sl:
-        request["sl"] = norm_price(info, sl)
-    if tp:
-        request["tp"] = norm_price(info, tp)
-
-    last = None
-    for filling in fillings_for(info):
-        # Query immediately before every send. None is UNKNOWN and fails closed.
-        try:
-            positions = mt5.positions_get()
-        except Exception:
-            positions = None
-        open_gate = validate_open_positions(positions, msg.get("max_open_trades"))
-        if not open_gate["ok"]:
-            return {**err(open_gate["reason"])}
-        request["type_filling"] = filling
-        res = mt5.order_send(request)
-        last = res
-        if res is not None and res.retcode == mt5.TRADE_RETCODE_DONE:
-            log.info("filled: %s %s %.2f lots @ %s -> ticket %s", side, sym, lots, res.price, res.order)
-            return {"type": "filled", "ticket": res.order, "price": res.price, "lots": lots, "symbol": sym,
-                    "requested_usd": usd, "effective_notional": round(lots * info.trade_contract_size * price, 2),
-                    "volume_min": info.volume_min, "contract_size": info.trade_contract_size,
-                    "open_positions_before": open_gate["count"], "max_open_trades": open_gate["limit"],
-                    "clamped_min": clamped_min, "currency_profit": getattr(info, "currency_profit", "") or ""}
-        # MetaTrader5 Python names this result TRADE_RETCODE_INVALID_FILL
-        # (10030); some connector builds do not expose INVALID_FILLING_TYPE.
-        # Probe available names safely so a broker rejection cannot crash the
-        # bridge after order_send has returned.
-        invalid_fill_codes = {
-            getattr(mt5, name, None)
-            for name in ("TRADE_RETCODE_INVALID_FILL", "TRADE_RETCODE_INVALID_FILLING_TYPE")
-        }
-        invalid_fill_codes.discard(None)
-        if res is not None and res.retcode in invalid_fill_codes:
-            continue
-        break
-    detail = getattr(last, "comment", "") if last else "no response"
-    ret = getattr(last, "retcode", None) if last else None
-    return {**err(f"order rejected by broker (retcode={ret}): {detail}")}
-
-
-def handle_close(msg):
-    if not MT5_EXECUTION_ENABLED:
-        return {**err("Exness MT5 close execution is disabled in this local verification build; no close was sent. Separate approval is required before execution can be enabled.")}
+    if not (trade_mode == 4 or (trade_mode == 1 and side == "BUY") or (trade_mode == 2 and side == "SELL")):
+        return None, "This symbol/side is not verified as tradable by the demo broker."
     try:
-        ticket = int(msg.get("ticket") or 0)
-    except (TypeError, ValueError):
-        return {**err("ticket must be numeric")}
-    pos = mt5.positions_get(ticket=ticket)
-    if not pos:
-        return {**err(f"no open position with ticket {ticket}")}
-    deviation = 20
-    res = mt5.PositionClose(ticket, deviation)
-    if res.retcode != mt5.TRADE_RETCODE_DONE:
-        return {**err(f"close rejected (retcode={res.retcode}): {res.comment}")}
-    profit = 0.0
-    closed = mt5.positions_get(ticket=ticket)  # gone after close
-    hist = mt5.history_deals_get(position=ticket) or ()
-    if hist:
-        profit = sum(d.profit + d.commission + d.swap for d in hist)
-    log.info("closed ticket %s profit=%.2f", ticket, profit)
-    return {"type": "closed", "ticket": ticket, "profit": profit}
+        requested_usd = float(msg.get("volume"))
+        sl = float(msg.get("sl"))
+        tp = float(msg.get("tp"))
+        if not all(math.isfinite(x) for x in (requested_usd, sl, tp)) or requested_usd <= 0 or sl <= 0 or tp <= 0:
+            raise ValueError
+        equity = float(account.equity)
+        free_margin = float(account.margin_free)
+        contract_size = float(info.trade_contract_size)
+        price_point = float(info.point)
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise ValueError
+        bid, ask = float(tick.bid), float(tick.ask)
+        tick_time = int(tick.time)
+        price = ask if side == "BUY" else bid
+        if not all(math.isfinite(x) and x > 0 for x in (equity, free_margin, contract_size, price_point, bid, ask, price)):
+            raise ValueError
+        age = time.time() - tick_time
+        if age < -5 or age > DEMO_MAX_TICK_AGE_SECONDS:
+            return None, "No fresh Exness demo tick (maximum age 60 seconds); no order was sent."
+        if side == "BUY" and not (sl < price < tp):
+            return None, "For a demo BUY, stop-loss must be below the live ask and take-profit above it."
+        if side == "SELL" and not (tp < price < sl):
+            return None, "For a demo SELL, take-profit must be below the live bid and stop-loss above it."
+        stops_level = int(getattr(info, "trade_stops_level", 0) or 0) * price_point
+        if stops_level and (abs(price - sl) < stops_level or abs(tp - price) < stops_level):
+            return None, "Stop-loss/take-profit is closer than the broker's minimum stop distance."
+        raw_lots = requested_usd / (contract_size * price)
+        lots = usd_to_lots(info, price, requested_usd)
+        if lots <= 0:
+            raise ValueError
+        exposure = lots * contract_size * price
+        # Refuse broker-minimum rounding that silently enlarges the requested notional.
+        if exposure > max(requested_usd * 1.5, equity * 10):
+            return None, "The broker minimum lot would exceed the demo notional cap; reduce size or choose another symbol."
+        order_type = mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL
+        loss_result = mt5.order_calc_profit(order_type, symbol, lots, price, sl)
+        reward_result = mt5.order_calc_profit(order_type, symbol, lots, price, tp)
+        margin_result = mt5.order_calc_margin(order_type, symbol, lots, price)
+        if loss_result is None or reward_result is None or margin_result is None:
+            raise ValueError
+        loss = float(loss_result)
+        reward = float(reward_result)
+        margin = float(margin_result)
+        if not all(math.isfinite(x) for x in (loss, reward, margin)) or loss >= 0 or reward <= 0 or margin < 0:
+            raise ValueError
+        # Add a fixed 25% buffer for spread/slippage/fees; use conservative hard limits.
+        buffered_risk = abs(loss) * 1.25
+        risk_pct = buffered_risk / equity * 100
+        rr = reward / abs(loss)
+        if risk_pct > DEMO_MAX_RISK_PCT + 1e-9:
+            return None, f"Estimated buffered stop risk is {risk_pct:.3f}% of demo equity; this demo path caps it at {DEMO_MAX_RISK_PCT:.1f}%. No order was sent."
+        if rr < DEMO_MIN_REWARD_RISK:
+            return None, f"Reward-to-risk is {rr:.2f}; the demo path requires at least {DEMO_MIN_REWARD_RISK:.1f}. No order was sent."
+        if margin > free_margin * 0.8:
+            return None, "Required margin would use more than 80% of free margin; no demo order was sent."
+    except (TypeError, ValueError, OverflowError, AttributeError, ZeroDivisionError):
+        return None, "Live quote, account equity, broker sizing, or stop-risk estimate could not be verified; no demo order was sent."
+
+    positions = mt5.positions_get()
+    open_gate = validate_open_positions(positions, DEMO_MAX_OPEN_POSITIONS)
+    if not open_gate["ok"]:
+        return None, open_gate["reason"]
+    daily_net = _demo_daily_net()
+    if daily_net is None:
+        return None, "Today's broker-reported demo P/L could not be verified; no order was sent."
+    daily_limit = equity * DEMO_MAX_DAILY_LOSS_PCT / 100
+    if daily_net <= -daily_limit:
+        return None, f"Demo daily-loss limit reached ({DEMO_MAX_DAILY_LOSS_PCT:.1f}% of equity); no order was sent."
+    return {
+        "symbol": symbol, "side": side, "requested_usd": requested_usd,
+        "lots": lots, "raw_lots": raw_lots, "exposure": exposure,
+        "price": price, "sl": norm_price(info, sl), "tp": norm_price(info, tp),
+        "risk_amount": buffered_risk, "risk_pct": risk_pct, "reward_amount": reward,
+        "rr": rr, "margin": margin, "currency": str(account.currency),
+        "equity": equity, "daily_net": daily_net, "daily_limit": daily_limit,
+        "point": price_point, "trade_mode": trade_mode,
+    }, None
+
+
+def handle_demo_preview(msg):
+    plan, problem = _demo_order_plan(msg)
+    if problem:
+        return {**err(problem)}
+    preview_id = secrets.token_urlsafe(18)
+    now = time.time()
+    with _DEMO_PREVIEW_LOCK:
+        for key in list(_DEMO_PREVIEWS):
+            if now - _DEMO_PREVIEWS[key]["created"] > 30:
+                _DEMO_PREVIEWS.pop(key, None)
+        _DEMO_PREVIEWS[preview_id] = {"created": now, "plan": plan}
+    return {"type": "order_preview", "preview_id": preview_id,
+            **{key: plan[key] for key in ("symbol", "side", "requested_usd", "lots", "exposure", "price", "sl", "tp", "risk_amount", "risk_pct", "reward_amount", "rr", "margin", "currency", "equity")},
+            "max_open_positions": DEMO_MAX_OPEN_POSITIONS,
+            "max_risk_pct": DEMO_MAX_RISK_PCT,
+            "max_daily_loss_pct": DEMO_MAX_DAILY_LOSS_PCT,
+            "manual_only": True}
+
+
+def handle_order(msg):
+    """One manually confirmed Exness DEMO market order. Live/automatic paths fail closed."""
+    global _DEMO_ORDER_UNCERTAIN
+    if not DEMO_ORDER_EXECUTION_ENABLED:
+        return {**err("Exness demo order execution is disabled; no order was sent.")}
+    if msg.get("confirmed") is not True:
+        return {**err("Explicit confirmation is required; no demo order was sent.")}
+    preview_id = str(msg.get("preview_id") or "")
+    intent_id = str(msg.get("intent_id") or "")
+    if not preview_id or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", intent_id):
+        return {**err("A current demo preview and unique intent id are required; no order was sent.")}
+    with _ORDER_LOCK:
+        if intent_id in _DEMO_ORDER_REPLIES:
+            return _DEMO_ORDER_REPLIES[intent_id]
+        if _DEMO_ORDER_UNCERTAIN:
+            return {**err("A previous demo order outcome is uncertain. Inspect MT5 positions/history; no further app order will be sent until the bridge is restarted after the outcome is understood.")}
+        with _DEMO_PREVIEW_LOCK:
+            preview = _DEMO_PREVIEWS.pop(preview_id, None)
+        if not preview or time.time() - preview["created"] > 30:
+            return {**err("Demo preview expired; review a fresh quote and confirm again. No order was sent.")}
+        request_msg = {key: msg.get(key) for key in ("symbol", "side", "volume", "sl", "tp")}
+        plan, problem = _demo_order_plan(request_msg)
+        if problem:
+            return {**err(problem)}
+        old = preview["plan"]
+        if (plan["symbol"] != old["symbol"] or plan["side"] != old["side"]
+                or plan["lots"] != old["lots"] or plan["sl"] != old["sl"] or plan["tp"] != old["tp"]
+                or plan["requested_usd"] != old["requested_usd"]
+                or abs(plan["price"] - old["price"]) > max(plan["point"] * 20, old["point"] * 20)
+                or abs(plan["risk_amount"] - old["risk_amount"]) > max(old["risk_amount"] * 0.05, 0.01)):
+            return {**err("Demo order size, stop/target, quote, or risk changed since confirmation; preview and confirm again. No order was sent.")}
+        try:
+            account, account_problem = _demo_account_gate()
+            if account_problem:
+                return {**err(account_problem)}
+            info = mt5.symbol_info(plan["symbol"])
+            tick = mt5.symbol_info_tick(plan["symbol"])
+            positions = mt5.positions_get()
+            if info is None or tick is None or positions is None:
+                raise RuntimeError("fresh broker state unavailable")
+            open_gate = validate_open_positions(positions, DEMO_MAX_OPEN_POSITIONS)
+            if not open_gate["ok"]:
+                return {**err(open_gate["reason"])}
+            send_price = float(tick.ask if plan["side"] == "BUY" else tick.bid)
+            if not math.isfinite(send_price) or send_price <= 0 or abs(send_price - plan["price"]) > float(info.point) * 20:
+                return {**err("Demo quote moved beyond the confirmation tolerance; preview and confirm again. No order was sent.")}
+            order_type = mt5.ORDER_TYPE_BUY if plan["side"] == "BUY" else mt5.ORDER_TYPE_SELL
+            actual_loss = mt5.order_calc_profit(order_type, plan["symbol"], plan["lots"], send_price, plan["sl"])
+            actual_margin = mt5.order_calc_margin(order_type, plan["symbol"], plan["lots"], send_price)
+            if actual_loss is None or actual_margin is None:
+                raise RuntimeError("fresh demo risk calculation unavailable")
+            actual_risk = abs(float(actual_loss)) * 1.25
+            if (not math.isfinite(actual_risk) or actual_loss >= 0
+                    or actual_risk > float(account.equity) * DEMO_MAX_RISK_PCT / 100
+                    or not math.isfinite(float(actual_margin))
+                    or float(actual_margin) > float(account.margin_free) * 0.8):
+                return {**err("Fresh demo stop risk or margin exceeds the confirmed limit; no order was sent.")}
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": plan["symbol"],
+                "volume": plan["lots"],
+                "type": order_type,
+                "price": send_price,
+                "sl": plan["sl"], "tp": plan["tp"],
+                "deviation": 20, "magic": MAGIC,
+                "comment": "AURUM-DEMO-" + intent_id[:10],
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": fillings_for(info)[0],
+            }
+            # A single send only. Ambiguous transport outcomes are not retried by this bridge.
+            result = mt5.order_send(request)
+        except Exception:
+            log.exception("demo order send returned an ambiguous exception")
+            _DEMO_ORDER_UNCERTAIN = True
+            reply = {**err("Demo order outcome is uncertain. Inspect MT5 positions/history; no further app order will be sent until the bridge is restarted after the outcome is understood. No automatic retry was made.")}
+            _DEMO_ORDER_REPLIES[intent_id] = reply
+            return reply
+        if result is None:
+            _DEMO_ORDER_UNCERTAIN = True
+            reply = {**err("Demo order outcome is uncertain (MT5 returned no result). Inspect MT5 positions/history; no further app order will be sent until the bridge is restarted after the outcome is understood. No automatic retry was made.")}
+        elif result.retcode in tuple(code for code in (
+                getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", None),
+                getattr(mt5, "TRADE_RETCODE_PLACED", None)) if code is not None):
+            _DEMO_ORDER_UNCERTAIN = True
+            reply = {**err("MT5 reports a partial or pending demo order. Inspect positions/history; no further app order will be sent until the bridge is restarted after the outcome is understood. Do not retry.")}
+        elif result.retcode == getattr(mt5, "TRADE_RETCODE_DONE", -1):
+            log.info("demo fill: %s %s %.2f lots @ %s ticket=%s", plan["side"], plan["symbol"], plan["lots"], result.price, result.order)
+            reply = {"type": "filled", "ticket": result.order, "price": result.price,
+                     "lots": plan["lots"], "symbol": plan["symbol"], "demo": True,
+                     "currency": plan["currency"], "requested_usd": plan["requested_usd"],
+                     "effective_notional": round(plan["exposure"], 2),
+                     "estimated_buffered_risk": round(plan["risk_amount"], 2),
+                     "risk_pct": round(plan["risk_pct"], 4), "rr": round(plan["rr"], 3),
+                     "open_positions_before": open_gate["count"], "max_open_positions": DEMO_MAX_OPEN_POSITIONS}
+        else:
+            reply = {**err(f"Demo order rejected by MT5 (retcode={getattr(result, 'retcode', None)}): {getattr(result, 'comment', '')}. No retry was made.")}
+        _DEMO_ORDER_REPLIES[intent_id] = reply
+        if len(_DEMO_ORDER_REPLIES) > 256:
+            _DEMO_ORDER_REPLIES.pop(next(iter(_DEMO_ORDER_REPLIES)))
+        return reply
+
+def handle_close(_msg):
+    return {**err("The demo-only app path can open manually confirmed demo orders, but cannot close positions. Manage or close demo positions directly in MetaTrader 5.")}
 
 
 def handle_positions(_msg):
@@ -763,7 +937,7 @@ def handle_history(msg):
             "source": "local MT5 terminal", "ts": int(time.time())}
 
 
-HANDLERS = {"login": handle_login, "order": handle_order, "close": handle_close, "positions": handle_positions, "account": handle_account, "quote": handle_quote, "search": handle_search, "symbols": handle_symbols, "history": handle_history}
+HANDLERS = {"login": handle_login, "preview_order": handle_demo_preview, "order": handle_order, "close": handle_close, "positions": handle_positions, "account": handle_account, "quote": handle_quote, "search": handle_search, "symbols": handle_symbols, "history": handle_history}
 
 
 # ---------------------------------------------------------------- server

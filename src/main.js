@@ -14,7 +14,6 @@ import { marketStatus, typicalActiveWindow, MARKET_HOURS_NOTE } from '../server/
 import * as feed from './marketdata.js';
 import * as tv from './tradingview.js';
 import { planPosition } from './sizer.js';
-import { isOnlyOpenTradesGateFailure, verifyBrokerOpenTradeCount } from './mt5Risk.js';
 import { analyzeTimeframe, confirmMultiTimeframe, votesSummary, runDeterministicAnalysis, waitReason } from '../server/lib/analyzer.js';
 import { localDecision } from '../server/lib/localdecision.js';
 import { notify, initNotifications, enableNotifications, notifState, LEVEL_GUIDE } from './notify.js';
@@ -783,7 +782,7 @@ async function connectMt5(url,login,password,server,token){
       exposure, so P/L is identical at any leverage — leverage only changes
       how much margin is locked. Show the real numbers where you connect. */
     const lv=account&&account.leverage;
-    if(lv)toast('Exness connected read-only','MT5 reports leverage 1:'+lv+'; leverage never multiplies your P/L in this app. Informational only; order sending remains disabled in this verification build.','ok');
+    if(lv)toast(account?.demo===true?'Exness demo account verified':'Exness connected read-only','MT5 reports leverage 1:'+lv+'; leverage never multiplies your P/L in this app.'+(account?.demo===true?' Demo-only manual orders require a fresh preview and confirmation.':' Live accounts remain read-only.'),'ok');
   }
   state.balance=account.balance!=null?Number(account.balance):null;
   state.connections.mt5=true; save();
@@ -802,7 +801,8 @@ async function refreshMt5Snapshot(showToast=false){
     const a=state.broker.account||{};
     state.broker.account=Object.assign({},a,{
       balance:acct.balance,equity:acct.equity,margin_free:acct.margin_free,
-      currency:acct.currency||a.currency,leverage:acct.leverage||a.leverage||null
+      currency:acct.currency||a.currency,leverage:acct.leverage||a.leverage||null,
+      demo:acct.demo===true,tradeMode:acct.trade_mode??a.tradeMode??null
     });
     state.balance=acct.balance!=null&&Number.isFinite(Number(acct.balance))?Number(acct.balance):null;
     state.mt5LivePositions=Array.isArray(positions.list)?positions.list:null;
@@ -939,10 +939,10 @@ $('#exnessForm').onsubmit=async e=>{
   if(!login||!password||!server){ err.textContent='Enter your Exness account number, MT5 password, and exact Exness MT5 server.'; err.style.display='block'; return; }
   const btn=$('#exnessLoginBtn'); btn.disabled=true; btn.textContent='Connecting…';
   try{
-    await connectMt5(($('#mt5Url')||{}).value||bridge.localBridgeWs(),login,password,server,($('#mt5Token')||{}).value||'');
+    const connectedAccount=await connectMt5(($('#mt5Url')||{}).value||bridge.localBridgeWs(),login,password,server,($('#mt5Token')||{}).value||'');
     err.style.display='none';
     showApp('Exness','mt5');
-    notify('Exness connected read-only','Local MT5 data linked for verification; order sending is disabled in this build.','ok');
+    notify(connectedAccount?.demo===true?'Exness demo account verified':'Exness connected read-only',connectedAccount?.demo===true?'This account may use the demo-only manual order path with per-order confirmation and local risk checks.':'Live-account orders remain disabled.','ok');
   }catch(ex){
     const m=String(ex.message||ex);
     const onPc=/localhost|127\.0\.0\.1/.test(location.hostname);
@@ -950,9 +950,9 @@ $('#exnessForm').onsubmit=async e=>{
     const httpsLead=(location.protocol==='https:'&&!onPc)?'<b>This HTTPS app is blocked by the browser from opening the PC\'s local bridge socket — the bridge itself is fine.</b> Guaranteed path: on the PC open <span class=\'mono\'>http://127.0.0.1:8788/app</span> — or double-click the <b>“Fredrick TRADING (local app)”</b> desktop icon that SETUP_AND_RUN.bat creates — and connect there. ':'';
     err.innerHTML=httpsLead+(/unreachable|timeout|refused|closed|blocked/i.test(m)
       ? '<b>Bridge not reachable.</b> 1) On the trading PC run <b>SETUP_AND_RUN.bat</b> and keep Exness MT5 open — the bridge window prints its address; the local token is in bridge_token.txt. 2) '+(onPc?'Open this app on the PC (<span class=\'mono\'>http://127.0.0.1:8788/app</span>).':'You are on another device (phone/tablet): set <b>Bridge URL</b> to the address the bridge window prints (e.g. <span class=\'mono\'>ws://192.168.1.10:8787</span>) and copy the <b>bridge token</b> locally from <span class=\'mono\'>bridge_token.txt</span> — <span class=\'mono\'>127.0.0.1</span> from a phone is the phone itself, not your PC. Easiest: open <span class=\'mono\'>http://PC-IP:8788/app</span> exactly as printed by the bridge window (same wifi).')+' 3) If a padlock warning appears on the https app: padlock → Site settings → Insecure content → Allow, reload (the http://PC-IP:8788/app route has no such warning).'
-      : '<b>'+escHtml(m)+'</b>')+' <div class="tiny faint" style="margin-top:6px">The account number and MT5 server must MATCH: use the exact Exness server shown in the Exness Personal Area for this account — mixing them is rejected. An investor/read-only password is sufficient for this build. Keep passwords local.</div>';
+      : '<b>'+escHtml(m)+'</b>')+' <div class="tiny faint" style="margin-top:6px">The account number and MT5 server must MATCH: use the exact Exness server shown in the Exness Personal Area. A trading password is required for demo orders; an investor/read-only password can connect for viewing only. Keep passwords local.</div>';
     err.style.display='block';
-  }finally{ btn.disabled=false; btn.textContent='Connect Exness (read-only)'; }
+  }finally{ btn.disabled=false; btn.textContent='Connect Exness locally'; }
 };
 /* ---- 20h: connection doctor (step-by-step) ---- */
 { const bb=document.getElementById('bridgeTestBtn'); if(bb) bb.addEventListener('click', async ()=>{
@@ -1995,13 +1995,13 @@ function openSignalSymbol(sym){
   if(INSTRUMENT_MAP[sym]){
     setChartSymbol(sym); goto('trade');
     if(INSTRUMENT_MAP[sym].c==='indices'){
-      toast('Index CFD · analysis only',state.broker?.type==='mt5'?'Local Exness quotes/history can be inspected; order sending is disabled in this verification build.':'Connect Exness for verified local quotes/history. This build does not send index orders.',{kind:'warn'});
+      toast('Index CFD · Exness demo orders only',state.broker?.type==='mt5'?'Exness orders are available only on a verified DEMO account after manual risk preview and confirmation.':'Connect the local Exness MT5 bridge; only broker-verified DEMO orders can be sent manually. Live accounts stay read-only.',{kind:'warn'});
     }
     return;
   }
   const tv=INDEX_TV[sym];
   if(tv)window.open('https://www.tradingview.com/chart/?symbol='+encodeURIComponent(tv),'_blank','noopener');
-  toast('Index — analysis only','This index is not orderable through Deriv. The Exness MT5 bridge can provide verified local quotes/history; order execution is disabled in this build.',{kind:'warn'});
+  toast('Index — no Deriv order route','This index is not orderable through Deriv. Exness orders are possible only for instruments the local MT5 bridge resolves as tradable on a verified DEMO account, with manual confirmation; live and automated orders remain disabled.',{kind:'warn'});
 }
 function setChartSymbol(sym,keepLevels){
   if(!bySym[sym])return;
@@ -2148,7 +2148,7 @@ function updateTradeHeader(){
     const demo=/demo|virtual/i.test(state.broker.account?.account_type||'');
     mode.textContent='Deriv · '+(demo?'DEMO':'REAL'); mode.className='badge '+(demo?'demo':'buy');
   }
-  else if(state.broker?.type==='mt5'){ mode.textContent='Exness bridge · live'; mode.className='badge buy'; }
+  else if(state.broker?.type==='mt5'){ const demo=state.broker.account?.demo===true; mode.textContent=demo?'Exness · DEMO':'Exness · LIVE · read-only'; mode.className='badge '+(demo?'demo':'gray'); }
   else { mode.textContent='No broker'; mode.className='badge gray'; }
   renderResaleNote(I);
   const info=$('#instrInfo');
@@ -2167,7 +2167,7 @@ function renderResaleNote(I){
   if(!I){ el.textContent='Early exit (resale): pick a market to see its family guidance.'; return; }
   const r=I.resale||'unknown';
   if(I&&I.c==='indices'){
-    el.innerHTML='<span class="badge buy">CFD — stop anytime ✓</span> Index CFD via your Exness bridge: no expiry, close any moment the market is open, and your SL/TP execute on Exness\'s server even with this app closed. <span class="tiny faint">Quoted live from MT5; market breaks (21:00–22:00 UTC + short daily index breaks) pause closes.</span>';
+    el.innerHTML='<span class="badge buy">CFD — stop anytime ✓</span> Index CFD via your Exness bridge: no expiry; SL/TP execute on Exness\'s server even with this app closed. The app does not close positions — manage or close them directly in MT5. <span class="tiny faint">Quoted live from MT5; market breaks (21:00–22:00 UTC + short daily index breaks) pause closes.</span>';
     return;
   }
   const body=r==='usually'
@@ -2272,38 +2272,53 @@ function beWinRateText(stake,payout){
     lg.addEventListener('change',()=>{ let v=Number(lg.value); if(!Number.isFinite(v)||v<0)v=25; state.settings.lossGuard=v; save(); lg.value=v;
       toast('Daily loss guard',v>0?('Orders stand down at \u2212'+fmtMoney(v)+' closed losses in a day.'):'Guard disabled \u2014 server-side caps remain the only backstop.','ok'); }); } }
 
-async function releaseMt5RiskReservation(once){
-  if(!once)return;
-  try{ await api('/api/risk/fill',{method:'POST',body:{kind:'release',once},headers:{'x-aurum-user':state.user||'local'}}); }catch(_e){}
+async function placeMt5DemoOrder({I,amt,sl,tp}){
+  if(state.broker?.type!=='mt5'||state.broker?.account?.demo!==true){
+    toast('Demo account required','Exness app orders are allowed only after MT5 verifies a DEMO account. Live accounts remain read-only.','warn');
+    return;
+  }
+  if(!Number.isFinite(sl)||sl<=0||!Number.isFinite(tp)||tp<=0){
+    toast('Stop and target required','Demo orders require both a valid stop-loss and take-profit; no order was sent.','warn');
+    return;
+  }
+  const btn=$('#placeOrderBtn');
+  const old=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='Checking demo risk…';}
+  try{
+    const preview=await bridge.previewBridgeOrder({symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp});
+    const risk=fmtAcctMoney(preview.risk_amount,preview.currency);
+    const reward=fmtAcctMoney(preview.reward_amount,preview.currency);
+    const margin=fmtAcctMoney(preview.margin,preview.currency);
+    const details='DEMO ONLY — this sends a market order to the verified Exness DEMO account.\n\n'
+      +preview.side+' '+preview.symbol+' · notional request '+fmtMoney(preview.requested_usd)+' · estimated '+preview.lots+' lots\n'
+      +'Live entry '+fmtPx(preview.price,I.d)+' · stop '+fmtPx(preview.sl,I.d)+' · target '+fmtPx(preview.tp,I.d)+'\n'
+      +'Buffered estimated stop risk '+risk+' ('+Number(preview.risk_pct).toFixed(2)+'% of equity) · target estimate '+reward+' · R:R '+Number(preview.rr).toFixed(2)+' · margin '+margin+'\n\n'
+      +'Bridge caps: 0.5% risk per order, 2% daily loss, one open position. Every value is rechecked locally before send. Live accounts, app closes and automation remain disabled. Close/manage this demo position in MT5.';
+    if(btn)btn.textContent='Waiting for confirmation…';
+    const confirmed=await askConfirm('Confirm demo order',details,'Place demo order');
+    if(!confirmed){toast('Cancelled','No demo order was sent.');return;}
+    if(btn)btn.textContent='Sending demo order…';
+    const intentId=Date.now().toString(36)+Math.random().toString(36).slice(2,16);
+    const result=await bridge.placeBridgeOrder({symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp,
+      previewId:preview.preview_id,intentId,manualConfirmed:true});
+    if(result.type!=='filled'||result.demo!==true)throw new Error('Bridge did not verify a confirmed demo fill. Check MT5 positions before trying again.');
+    toast('Demo order filled',result.side?result.side+' ':state.side+' '+I.s+' · ticket '+result.ticket+' · '+result.lots+' lots · buffered risk '+fmtAcctMoney(result.estimated_buffered_risk,result.currency),'ok');
+    notify('Demo order filled',state.side+' '+I.s+' · MT5 demo ticket '+result.ticket+' · '+result.lots+' lots. Manage or close it directly in MT5.',{tag:'demo-trade',kind:'ok'});
+    await refreshMt5Snapshot(false);
+  }catch(e){
+    const message=String(e.message||e);
+    const uncertain=/uncertain|partial or pending/i.test(message);
+    const title=uncertain?'Demo order outcome uncertain':'Demo order not sent';
+    toast(title,message,'err');
+    notify(title,message,{tag:'demo-trade',kind:'err'});
+  }finally{if(btn){btn.disabled=false;btn.textContent=old;}}
 }
-function mt5ResultAmbiguous(message){ return /timeout|timed out|bridge closed|socket closed|connection lost/i.test(String(message||'')); }
-function mt5GateError(gate){
-  const base=String(gate?.detail||gate?.error||'Rejected by the risk gate');
-  const openCheck=Array.isArray(gate?.checks)&&gate.checks.find(c=>c.name==='open_trades'&&c.status==='FAILED');
-  return openCheck?base+' This is the app-side server counter, not a live MT5 position scan. This attempt was blocked before calling MT5; no order was sent. Do not raise or reset the cap blindly.':base;
-}
-async function verifyAndConfirmMt5OpenLimit(gate){
-  if(!isOnlyOpenTradesGateFailure(gate))throw new Error(mt5GateError(gate));
-  let snap;
-  try{ snap=await bridge.bridgePositions(); }
-  catch(_e){ throw new Error('MT5 open positions could not be verified through the local bridge. Risk gate remains blocked; no order was sent.'); }
-  const verified=verifyBrokerOpenTradeCount(gate,snap&&snap.list);
-  if(!verified.ok)throw new Error(verified.reason+' Do not reset or raise the cap to bypass this check.');
-  const check=gate.checks.find(c=>c.name==='open_trades');
-  const appCount=(String(check.evidence||'').match(/opens=(\d+)/)||[])[1];
-  const appState=appCount?appCount+'/'+verified.limit:'at the configured limit';
-  const ok=await askConfirm('Verify MT5 open-trade limit',
-    'The app server counter is '+appState+', but the connected MT5 terminal reports '+verified.count+'/'+verified.limit+' open positions. Only the app counter check is being replaced; all other required server risk checks passed. The local bridge will re-check the same limit immediately before sending. Continue with this Exness order?',
-    'Continue once');
-  if(!ok)throw new Error('Cancelled before the MT5 order call. No order was sent.');
-  return verified.limit;
-}
+
 async function placeOrder(){
   if(isCloudflareReadonlyMode()){
     toast('Read-only staging','Cloudflare staging is analysis-only. It cannot request trade quotes, buy, or close Deriv contracts. Use the PC-local app for Exness.','warn');
     return;
   }
-  let mt5RiskOnce=null, mt5OrderAttempted=false;
   if(guardStopIfTripped())return;
   const I=bySym[state.chart.sym];
   const amt=parseFloat($('#orderAmount').value);
@@ -2314,9 +2329,7 @@ async function placeOrder(){
   if(!isNaN(sl)&&state.side==='BUY'&&sl>=px){ toast('Invalid stop','Stop-loss must be below the entry for a BUY.','err'); return; }
   if(!isNaN(sl)&&state.side==='SELL'&&sl<=px){ toast('Invalid stop','Stop-loss must be above the entry for a SELL.','err'); return; }
 
-  /* broker gate — no demo fills, ever.
-     Precedence: env proxy (server-side token) -> Deriv PAT -> Exness bridge -> locked.
-     Deriv paths open the CONFIRM modal (spec: nothing is bought unconfirmed). */
+  /* Broker gate: Deriv confirmation or the verified Exness demo-only manual path. */
   const dh=state.derivHealth;
   const proxyReady=!!(dh&&dh.authorized&&dh.tradingEnabled);
   if(!proxyReady&&!state.broker){
@@ -2347,66 +2360,15 @@ async function placeOrder(){
     return;
   }
   if(state.broker?.type==='mt5'){
-    toast('Exness verification is read-only','This local Phase 1 build can refresh account data and positions, but cannot send an order. Separate approval is required before execution can be enabled.','warn');
+    if(state.broker.account?.demo!==true){
+      toast('Demo account required','This local app can place only manually confirmed orders on a broker-verified DEMO account. Live Exness accounts remain read-only.','warn');
+      return;
+    }
+    await placeMt5DemoOrder({I,amt,sl,tp});
     return;
   }
-  /* Exness via local MT5 bridge (direct — outside Deriv proxy scope) */
-  const btn=$('#placeOrderBtn'); btn.disabled=true; const btnTxt=btn.textContent; btn.textContent='Sending…';
-  try{
-    let mt5ServerReserved=true, mt5OpenLimit=10;
-    /* server is the single source of truth for risk limits — Exness included.
-       once = idempotency key for THIS order intent: a duplicated submit
-       (double-fire, retry) is rejected server-side instead of double-booked. */
-    /* honest exposure check FIRST: a live quote is also the evidence that the
-       market is open (the risk gate must not guess). broker min-lot can exceed
-       the requested stake — a $1 request on US30 (min 0.1 lots) is really a
-       ~$4-5k position; refuse silent oversizing. */
-    let minq=null; try{ minq=await bridge.quoteBridge([I.s.replace('/','')]); }catch(_e){}
-    const minqr=minq&&minq.quotes&&minq.quotes[0];
-    const onceId=Date.now().toString(36)+Math.random().toString(36).slice(2,8);
-    mt5RiskOnce=onceId;
-    const slN=isNaN(sl)?null:sl, tpN=isNaN(tp)?null:tp;
-    const g=await api('/api/risk/gate',{method:'POST',body:{
-      amount:amt,venue:'mt5',once:onceId,
-      entry:(minqr&&minqr.ask>0)?minqr.ask:(isNaN(px)?null:px),
-      sl:slN,tp:tpN,
-      marketHours:(minqr&&minqr.ask>0)?true:null,
-      newsBlocked:false /* no event-ban policy active; STALE stand-down is enforced at entry */
-    },headers:{'x-aurum-user':state.user||'local'}});
-    const gate=await g.json().catch(()=>({}));
-    if(!g.ok){
-      if(isOnlyOpenTradesGateFailure(gate)){
-        mt5RiskOnce=null; mt5ServerReserved=false;
-        mt5OpenLimit=await verifyAndConfirmMt5OpenLimit(gate);
-      }else{ mt5RiskOnce=null; throw new Error(mt5GateError(gate)); }
-    }else{
-      const serverLimit=Number(gate.limits?.maxOpenTrades);
-      mt5OpenLimit=Number.isSafeInteger(serverLimit)&&serverLimit>0?serverLimit:10;
-    }
-    if(gate.checks)console.log('risk checks',gate.checks);
-    if(minqr&&minqr.volume_min>0&&minqr.contract_size>0&&minqr.ask>0){
-      const minNotional=minqr.volume_min*minqr.contract_size*minqr.ask;
-      if(minNotional>amt*1.5){
-        throw new Error('Refused: broker minimum lot '+minqr.volume_min+' on '+I.s+' implies about $'+Math.round(minNotional)+' of notional exposure, above your requested $'+amt+'. No order was sent. Do not raise the stake or server-side cap; choose an instrument or broker account whose verified minimum exposure fits your existing risk limit.');
-      }
-    }
-    mt5OrderAttempted=true;
-    const o=await bridge.placeBridgeOrder({symbol:I.s.replace('/',''),side:state.side,volume:amt,sl:isNaN(sl)?0:sl,tp:isNaN(tp)?0:tp,maxOpenTrades:mt5OpenLimit});
-    if(mt5ServerReserved)api('/api/risk/fill',{method:'POST',body:{kind:'open',once:onceId},headers:{'x-aurum-user':state.user||'local'}}).catch(()=>{});
-    mt5RiskOnce=null; // local MT5 is authoritative for broker positions when the cloud count was stale
-    const pos={ id:Date.now()+'_h'+(o.ticket||''), sym:I.s, side:state.side, amt,
-      entry:o.price||px, sl:isNaN(sl)?null:sl, tp1:isNaN(tp)?null:tp, tp2:isNaN(tp2)?null:tp2,
-      t:Date.now(), broker:'mt5', ticket:o.ticket, riskOnce:mt5ServerReserved?onceId:null, flags:{} };
-    state.positions.push(pos); save();
-    renderNavCounts(); renderPortfolio();
-    toast('Order filled',state.side+' '+fmtMoney(amt)+' '+I.s+' @ '+fmtPx(o.price||px,I.d)+(o.lots?' — filled '+o.lots+' lots'+(o.effective_notional?' ≈ $'+Math.round(o.effective_notional)+' exposure':''):''),'ok');
-    notify('Trade opened','Exness '+state.side+' '+I.s+' '+fmtMoney(amt)+' @ '+fmtPx(o.price||px,I.d)+' · ticket '+(o.ticket||'—')+'.',{tag:'trade',kind:'ok'});
-  }catch(e){
-    const em=String(e.message||e);
-    if(mt5RiskOnce&&(!mt5OrderAttempted||!mt5ResultAmbiguous(em))) await releaseMt5RiskReservation(mt5RiskOnce);
-    toast('Order failed',em,'err');
-    notify('Order failed',em,{tag:'trade',kind:'err'});
-  }finally{ btn.disabled=false; btn.textContent=btnTxt; }
+  toast('Trading locked','No supported broker execution path is available. Exness orders are demo-only and require the verified manual confirmation flow.','warn');
+  return;
 }
 
 /* ---------- Deriv trade confirmation modal (trading is OFF until this) ---------- */
@@ -3318,8 +3280,9 @@ $$('.conn-btn').forEach(btn=>btn.onclick=async()=>{
       if(!server)throw new Error('Enter the exact Exness MT5 server shown in the Exness Personal Area.');
       const bridgeToken=($('#mt5Token')&&$('#mt5Token').value.trim())||'';
       await connectMt5(url,login,password,server,bridgeToken);
-      toast('Exness connected read-only','Local MT5 balance/positions linked · orders remain disabled in this verification build.','ok');
-      notify('Exness connected read-only','Local MT5 data linked; order sending is disabled in this build.',{tag:'connect',kind:'ok'});
+      const demoOnly=state.broker?.account?.demo===true;
+      toast(demoOnly?'Exness demo connected':'Exness connected read-only',demoOnly?'Local MT5 verified a demo account. Orders require manual confirmation and strict bridge risk checks.':'Local MT5 data linked. Live-account order sending remains disabled.','ok');
+      notify(demoOnly?'Exness demo connected':'Exness connected read-only',demoOnly?'Local MT5 verified a demo account; manual orders only.':'Local MT5 data linked; live-account order sending is disabled.',{tag:'connect',kind:'ok'});
     }
     connUI(); updateSessionInfo(); updateTradeHeader(); updateKpis();
   }catch(e){
@@ -4179,7 +4142,7 @@ function goldAnalysisNoticeText(){
     const raw=String(goldAnalysisError);
     const disconnected=goldDataSource()==='mt5'&&bridge.bridgeStatus().status!=='connected';
     if(disconnected||/bridge not connected|login required|auth_required|not logged in|bridge token rejected/i.test(raw))
-      return 'Exness MT5 is unavailable in this tab. A clearly labelled Deriv fallback was attempted but did not return fresh data. Connect Exness (read-only) and keep MT5 open for the primary source. '+cadence;
+      return 'Exness MT5 is unavailable in this tab. A clearly labelled Deriv fallback was attempted but did not return fresh data. Connect the local Exness MT5 bridge and keep MT5 open for the primary source. '+cadence;
     if(goldDataSource()==='mt5')return raw+' A labelled fallback was attempted but no fresh substitute is shown. '+cadence;
     return raw+' No old signal is shown as current. '+cadence;
   }
@@ -5402,91 +5365,10 @@ async function autoTradeCycle(){
     if(atFails>=3){atFails=0;atCooldownUntil=Date.now()+60000;notify('Sniper scan paused','Three consecutive scan failures. Analysis will retry in one minute; no entry was placed.',{tag:'auto-scan',kind:'warn'});}
   }finally{ atBusy=false; }
 }
-async function autoEntry(sig,path){
+async function autoEntry(_sig,_path){
   throw new Error('Sniper entries are disabled; the Sniper is analysis-only. No broker order was sent.');
-  const c=atCfg(), dh=state.derivHealth;
-  const I=bySym[sig.symbol];
-  const px=(I&&I.p!=null)?I.p:sig.entry;
-  if(px==null)throw new Error('no live price for '+sig.symbol);
-  const limMax=Number(dh?.limits?.maxStakeUsd)||Number(state.broker?.limits?.maxStakeUsd)||c.stake;
-  const stake=Math.min(c.stake, limMax);
-  const du=(c.durMode==='target')?targetDurFor(sig.symbol):derivDurationFor(sig.symbol);
-  const atTarget=stake*((c.targetPct??50)/100); /* sniper auto-closes (or alerts) at this live profit */
-  const side=sig.signal==='SELL'?'SELL':'BUY';
-  const sl=sig.stop_loss!=null?Number(sig.stop_loss):null;
-  const tp1=sig.tp1!=null?Number(sig.tp1):null;
-  const tp2=sig.tp2!=null?Number(sig.tp2):null;
-  let pos=null;
-  if(path==='proxy'){
-    const q=await derivProposal({symbol:sig.symbol,side,amount:stake,duration:du.duration,duration_unit:du.duration_unit});
-    const r=await derivConfirm(q.ticket);
-    const o=r.order;
-    pos={id:Date.now()+'_p'+o.contract_id,sym:sig.symbol,side,amt:stake,entry:px,sl,tp1,tp2,t:Date.now(),
-      broker:'deriv',contract_id:o.contract_id,payout:o.payout,target:atTarget,
-      dur:{duration:du.duration,duration_unit:du.duration_unit},flags:{at:true,proxy:true,env:r.environment,demo:!!r.demo}};
-  }else if(path==='pat_server'){
-    const q=await patCall(()=>patProposal(state.broker,{symbol:sig.symbol,side,amount:stake,duration:du.duration,duration_unit:du.duration_unit}));
-    const r=await patConfirm(q.ticket);
-    const o=r.order;
-    if(o.balance_after!=null){ state.balance=Number(o.balance_after); updateKpis(); updateSessionInfo(); }
-    pos={id:Date.now()+'_s'+o.contract_id,sym:sig.symbol,side,amt:stake,entry:px,sl,tp1,tp2,t:Date.now(),
-      broker:'deriv',contract_id:o.contract_id,payout:o.payout,
-      buy_price:o.buy_price||stake, settleAt:Date.now()+du.duration*(du.duration_unit==='m'?60000:du.duration_unit==='h'?3600000:du.duration_unit==='d'?86400000:1000),
-      dur:{duration:du.duration,duration_unit:du.duration_unit},
-      target:atTarget,flags:{at:true,pat_server:true}};
-  }else if(path==='pat'){
-    const g=await api('/api/deriv/order',{method:'POST',body:{symbol:sig.symbol,amount:stake,side,duration:du.duration,duration_unit:du.duration_unit,once:Date.now().toString(36)+Math.random().toString(36).slice(2,8)},headers:{'x-deriv-pat':state.broker.pat,'x-deriv-appid':state.broker.appId||'','x-aurum-user':state.user||'local'}});
-    const gate=await g.json().catch(()=>({}));
-    if(!g.ok)throw new Error(gate.detail||gate.error||'Rejected by server-side risk limits');
-    const dsym=(INSTRUMENT_MAP[sig.symbol]||{}).deriv; if(!dsym)throw new Error('No Deriv symbol mapped for '+sig.symbol);
-    const pr=await derivWsProposal(state.broker.appId,state.broker.pat,{derivSymbol:dsym,side,amount:stake,duration:du.duration,duration_unit:du.duration_unit});
-    const o=await derivWsBuy(state.broker.appId,state.broker.pat,pr.id,pr.ask_price);
-    pos={id:Date.now()+'_d'+o.contract_id,sym:sig.symbol,side,amt:stake,entry:px,sl,tp1,tp2,t:Date.now(),target:atTarget,
-      broker:'deriv',contract_id:o.contract_id,payout:o.payout,dur:{duration:du.duration,duration_unit:du.duration_unit},flags:{at:true,pat:true}};
-    api('/api/deriv/fill',{method:'POST',body:{kind:'open',contract_id:o.contract_id,stake:o.buy_price},headers:{'x-aurum-user':state.user||'local'}}).catch(()=>{});
-  }else{
-    const once=Date.now().toString(36)+Math.random().toString(36).slice(2,8);
-    let orderAttempted=false, gateApproved=false, serverReserved=false, mt5OpenLimit=10;
-    try{
-      const g=await api('/api/risk/gate',{method:'POST',body:{
-        amount:stake,venue:'mt5',once,
-        entry:isNaN(px)?null:px, sl:isNaN(sl)?null:sl, tp:isNaN(tp1)?null:tp1,
-        marketHours:true /* entry only fires from a live scan of open markets */,
-        newsBlocked:false /* no event-ban policy active; the 25m STALE stand-down runs before this */
-      },headers:{'x-aurum-user':state.user||'local'}});
-      const gate2=await g.json().catch(()=>({}));
-      if(!g.ok){
-        if(isOnlyOpenTradesGateFailure(gate2))mt5OpenLimit=await verifyAndConfirmMt5OpenLimit(gate2);
-        else throw new Error(mt5GateError(gate2));
-      }else{
-        gateApproved=true; serverReserved=true;
-        const serverLimit=Number(gate2.limits?.maxOpenTrades);
-        mt5OpenLimit=Number.isSafeInteger(serverLimit)&&serverLimit>0?serverLimit:10;
-      }
-      orderAttempted=true;
-      const o=await bridge.placeBridgeOrder({symbol:sig.symbol.replace('/',''),side,volume:stake,sl:sl||0,tp:tp1||0,maxOpenTrades:mt5OpenLimit});
-      gateApproved=false; // the local MT5 bridge is authoritative for open-position count
-      if(serverReserved)api('/api/risk/fill',{method:'POST',body:{kind:'open',once},headers:{'x-aurum-user':state.user||'local'}}).catch(()=>{});
-      pos={id:Date.now()+'_h'+(o.ticket||''),sym:sig.symbol,side,amt:stake,entry:o.price||px,sl,tp1,tp2,t:Date.now(),
-        broker:'mt5',ticket:o.ticket,riskOnce:serverReserved?once:null,flags:{at:true}};
-    }catch(e){
-      const em=String(e.message||e);
-      /* On gate/network failure, release is safe: order_send has not started.
-         After order_send starts, retain on timeout/closed because fill is ambiguous. */
-      if(gateApproved&&(!orderAttempted||!mt5ResultAmbiguous(em))) await releaseMt5RiskReservation(once);
-      else if(!gateApproved&&!orderAttempted) await releaseMt5RiskReservation(once); // harmless 409 if gate never reserved
-      throw e;
-    }
-  }
-  state.positions.push(pos);
-  atSession.entries++; atFails=0; save();
-  renderNavCounts(); renderPortfolio();
-  const envTag=pos.flags.demo?'DEMO · ':'';
-  notify('Auto-trade entry',envTag+side+' '+sig.symbol+' @ '+fmtPx(pos.entry,(I&&I.d)||4)+' · stake '+fmtMoney(stake)+' · confidence '+(sig.confidence||0)+'% · entry '+atSession.entries+'/'+atCfg().maxTrades+'.',{tag:'auto',kind:'ok'});
-  pushWA('🚨 SNIPER '+side+' '+sig.symbol+' @ '+fmtPx(pos.entry,(I&&I.d)||4)+' · stake '+fmtMoney(stake)+' · conf '+(sig.confidence||0)+'%'+(envTag?' · '+envTag.trim():''));
-  toast('Auto-trade entry',side+' '+sig.symbol+' '+(sig.confidence||0)+'% · SL/TP armed','ok');
-  atStatusUI('pos','entered '+sig.symbol+' '+(sig.confidence||0)+'% · trade #'+atSession.entries,'exit managed by SL/TP watcher');
 }
+
 
 /* ---------- Cloud sync (Supabase) settings + online history ---------- */
 {
