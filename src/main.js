@@ -777,7 +777,9 @@ async function connectMt5(url,login,password,server,token){
   /* Session-only vault: reconnect after refresh, never persist to localStorage. */
   saveMt5Session({login,password,server,token,url:health.url||url});
   state.broker={type:'mt5',account};
+  state.cfdSpec=null;
   state.mt5LivePositions=null; state.mt5LastSnapshotAt=null; state.mt5SnapshotFailed=false;
+  refreshMt5SizePlan();
   { /* leverage transparency: our CFD sizing treats the stake as NOTIONAL
       exposure, so P/L is identical at any leverage — leverage only changes
       how much margin is locked. Show the real numbers where you connect. */
@@ -808,6 +810,7 @@ async function refreshMt5Snapshot(showToast=false){
     state.mt5LivePositions=Array.isArray(positions.list)?positions.list:null;
     state.mt5LastSnapshotAt=Date.now(); state.mt5SnapshotFailed=false;
     updateSessionInfo(); updateKpis(); updatePortfolioLive();
+    refreshMt5SizePlan();
     if(state.view==='overview')renderOverview();
     if(showToast)toast('MT5 refreshed',(state.mt5LivePositions||[]).length+' live position(s) · balance/equity from the connected terminal.','ok');
     return true;
@@ -2021,6 +2024,7 @@ function setChartSymbol(sym,keepLevels){
     levelsForSym=null; /* refresh the same symbol without discarding user edits */
   }
   autofillLevels(sym);
+  if(previousSym!==sym&&state.broker?.type==='mt5'){renderSizePlan();refreshMt5SizePlan();}
   if(state.view==='trade'&&DERIV_CODE_MAP[sym])msInit({followChart:true});
   else if(state.view==='trade')updateChartMarketState();
 }
@@ -3244,8 +3248,9 @@ $$('.conn-btn').forEach(btn=>btn.onclick=async()=>{
   const k=btn.dataset.conn;
   if(k==='live')return;
   if(state.broker&&((k==='deriv'&&state.broker.type==='deriv')||(k==='mt5'&&state.broker.type==='mt5'))){
-    if(k==='mt5')bridge.disconnectBridge('user');
+    if(k==='mt5'){bridge.disconnectBridge('user');state.cfdSpec=null;}
     state.broker=null; state.balance=null; state.mode='live';
+    if(k==='mt5')renderSizePlan();
     state.connections[k==='deriv'?'deriv':'mt5']=false; save();
     store.set('session',{name:state.user||'Live',mode:'live'});
     if(k==='deriv'){patStore.forget();}
@@ -5833,30 +5838,52 @@ applyTheme();
 
 /* ---------- position sizer + trade planner (master §11) ---------- */
 async function sizePlanSpecs(){
-  /* contract specs come from the broker quote (volume_min/contract_size, 20a)
-     — cached 30s; WITHOUT them the plan stays INCOMPLETE (never assumed) */
+  /* All CFD specs and the sizing entry quote must come from this MT5 terminal.
+     Do not derive broker volume steps or substitute the app's Deriv price. */
   const I=bySym[state.chart&&state.chart.sym];
-  if(!I)return null;
-  if(state.cfdSpec&&state.cfdSpec.sym===I.s&&Date.now()-state.cfdSpec.at<30000)return state.cfdSpec;
-  if(state.broker&&state.broker.type==='mt5'){
-    try{
-      const q=await bridge.quoteBridge([I.s.replace('/','')]);
-      const r=q&&q.quotes&&q.quotes[0];
-      if(r&&r.volume_min>0&&r.contract_size>0){
-        state.cfdSpec={sym:I.s,at:Date.now(),volumeMin:r.volume_min,contractSize:r.contract_size,ask:r.ask||null,bid:r.bid||null};
-        return state.cfdSpec;
-      }
-    }catch(_e){}
-  }
-  return state.cfdSpec&&state.cfdSpec.sym===I.s?state.cfdSpec:null;
+  if(!I||state.broker?.type!=='mt5')return null;
+  const now=Date.now(),cached=state.cfdSpec;
+  const freshQuote=(spec)=>spec&&spec.sym===I.s&&Number.isFinite(spec.quoteAt)
+    &&now-spec.quoteAt>=-5000&&now-spec.quoteAt<=60000;
+  if(cached&&cached.sym===I.s&&now-cached.at<30000&&freshQuote(cached)
+     &&cached.volumeMin>0&&cached.volumeStep>0&&cached.volumeMax>=cached.volumeMin&&cached.contractSize>0)return cached;
+  try{
+    const q=await bridge.quoteBridge([I.s.replace('/','')]);
+    const r=q&&q.quotes&&q.quotes[0];
+    const quoteAt=Number(r?.time)*1000;
+    if(state.broker?.type!=='mt5'||state.chart.sym!==I.s)return null;
+    if(r&&Number.isFinite(quoteAt)&&now-quoteAt>=-5000&&now-quoteAt<=60000
+       &&Number.isFinite(Number(r.bid))&&Number(r.bid)>0
+       &&Number.isFinite(Number(r.ask))&&Number(r.ask)>0
+       &&Number.isFinite(Number(r.volume_min))&&Number(r.volume_min)>0
+       &&Number.isFinite(Number(r.volume_max))&&Number(r.volume_max)>=Number(r.volume_min)
+       &&Number.isFinite(Number(r.volume_step))&&Number(r.volume_step)>0
+       &&Number.isFinite(Number(r.contract_size))&&Number(r.contract_size)>0){
+      state.cfdSpec={sym:I.s,at:now,quoteAt,volumeMin:Number(r.volume_min),
+        volumeStep:Number(r.volume_step),volumeMax:Number(r.volume_max),
+        contractSize:Number(r.contract_size),currencyBase:r.currency_base||null,
+        currencyProfit:r.currency_profit||null,ask:Number(r.ask),bid:Number(r.bid),brokerSymbol:r.symbol||null};
+      return state.cfdSpec;
+    }
+  }catch(_e){}
+  return freshQuote(cached)&&cached.sym===I.s?cached:null;
+}
+function refreshMt5SizePlan(){
+  if(state.broker?.type!=='mt5')return;
+  void sizePlanSpecs().then(()=>renderSizePlan()).catch(()=>renderSizePlan());
 }
 function renderSizePlan(){
   const el=document.getElementById('sizePlanBody'); if(!el)return;
   const I=bySym[state.chart&&state.chart.sym];
   const amt=parseFloat(($('#orderAmount')||{}).value), sl=parseFloat(($('#orderSL')||{}).value), tp=parseFloat(($('#orderTP')||{}).value);
-  const riskPct=Number(($('#riskRange')||{}).value)||2;
+  const requestedRiskPct=Number(($('#riskRange')||{}).value)||2;
   const acct=state.broker&&state.broker.account||{};
   const isMt5=state.broker?.type==='mt5';
+  const riskPct=isMt5?Math.min(requestedRiskPct,0.5):requestedRiskPct;
+  const spec=state.cfdSpec&&state.cfdSpec.sym===(I&&I.s)?state.cfdSpec:null;
+  const quoteAge=spec&&Number.isFinite(spec.quoteAt)?Date.now()-spec.quoteAt:Infinity;
+  const freshBrokerEntry=spec&&quoteAge>=-5000&&quoteAge<=60000
+    ?(state.side==='SELL'?spec.bid:spec.ask):null;
   // Exness CFD risk sizing must use the terminal-reported equity; never substitute balance.
   const reportedEquity=isMt5&&acct.equity!=null&&Number.isFinite(Number(acct.equity))?Number(acct.equity):null;
   const equity=isMt5?reportedEquity:state.balance, equityCurrency=acct.currency||'USD';
@@ -5866,11 +5893,12 @@ function renderSizePlan(){
     : {
         venue:'cfd',equity,equityCurrency,orderCurrency:'USD',
         conversionRate:(equityCurrency==='USD')?1:Number(($('#convRate')||{}).value)||null,
-        riskPct,entry:(I&&I.p!=null)?I.p:null,
+        riskPct,entry:freshBrokerEntry,
         sl:isNaN(sl)?null:sl,tp1:isNaN(tp)?null:tp,side:state.side||'BUY',
-        contractSize:(state.cfdSpec&&state.cfdSpec.sym===(I&&I.s))?state.cfdSpec.contractSize:null,
-        volumeMin:(state.cfdSpec&&state.cfdSpec.sym===(I&&I.s))?state.cfdSpec.volumeMin:null,
-        volumeStep:(state.cfdSpec&&state.cfdSpec.sym===(I&&I.s))?Math.min(0.01,state.cfdSpec.volumeMin/10)||0.01:null,
+        contractSize:spec&&spec.contractSize>0?spec.contractSize:null,
+        volumeMin:spec&&spec.volumeMin>0?spec.volumeMin:null,
+        volumeStep:spec&&spec.volumeStep>0?spec.volumeStep:null,
+        volumeMax:spec&&spec.volumeMax>=spec.volumeMin?spec.volumeMax:null,
         leverage:acct.leverage?Number(acct.leverage):null
       });
   const cur=plan.currency||'USD';
@@ -5882,6 +5910,7 @@ function renderSizePlan(){
     const leverageText=acct.leverage!=null&&Number.isFinite(lev)&&lev>0?'1:'+lev.toLocaleString('en-US',{maximumFractionDigits:2}):'unknown — margin not estimated';
     h+=row('MT5 equity (latest broker snapshot)',equityText);
     h+=row('MT5 leverage',leverageText);
+    h+=row('Broker contract / volume specs',spec?escHtml(String(spec.contractSize))+' contract · '+escHtml(String(spec.volumeMin))+'–'+escHtml(String(spec.volumeMax))+' lots · step '+escHtml(String(spec.volumeStep)):'waiting for fresh MT5 quote/specs');
   }
   if(plan.status==='INCOMPLETE'){
     h+='<div style="color:var(--amber)">INCOMPLETE — '+escHtml(plan.reason)+'</div>';
@@ -5912,7 +5941,7 @@ function renderSizePlan(){
     }
     $$('#sizePlan .size-tier').forEach(b=>b.onclick=()=>{
       const v=plan.tiers[b.dataset.tier]; if(v==null)return;
-      const spec=state.cfdSpec; const px=(I&&I.p)||0;
+      const spec=state.cfdSpec; const px=isMt5?freshBrokerEntry:((I&&I.p)||0);
       if(spec&&px>0){ const usd=v*spec.contractSize*px; const amtEl=$('#orderAmount'); if(amtEl){ amtEl.value=Math.round(usd); toast('Sizer','Amount set to ≈'+fmtMoney(usd)+' ('+v+' lots at '+fmtPx(px,I&&I.d||2)+')','ok'); } }
     });
   }

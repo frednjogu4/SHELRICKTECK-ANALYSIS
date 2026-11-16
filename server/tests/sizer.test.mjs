@@ -5,7 +5,7 @@ import { planPosition } from '../../src/sizer.js';
 const cfd = {
   venue: 'cfd', equity: 10000, equityCurrency: 'USD', orderCurrency: 'USD',
   riskPct: 2, entry: 46000, sl: 45900, tp1: 46200, side: 'BUY',
-  contractSize: 1, volumeMin: 0.1, volumeStep: 0.01, leverage: 100,
+  contractSize: 1, volumeMin: 0.1, volumeStep: 0.01, volumeMax: 100, leverage: 100,
 };
 
 test('sizer: full CFD plan computes lots (rounded DOWN to step), loss <= budget, formula shown', () => {
@@ -19,6 +19,15 @@ test('sizer: full CFD plan computes lots (rounded DOWN to step), loss <= budget,
   assert.ok(p.warnings.some(w => /slippage/i.test(w)));
   assert.equal(p.tiers.FULL, p.lots);
   assert.ok(p.tiers.MEDIUM < p.tiers.FULL);
+});
+
+test('sizer: broker maximum volume caps the rounded size and rejects missing maximum specs', () => {
+  const capped = planPosition({ ...cfd, volumeMax: 0.5 });
+  assert.equal(capped.status, 'OK');
+  assert.equal(capped.lots, 0.5);
+  assert.ok(capped.expectedLoss <= capped.riskBudget);
+  assert.equal(planPosition({ ...cfd, volumeMax: undefined }).status, 'INCOMPLETE');
+  assert.equal(planPosition({ ...cfd, volumeMax: 0.05 }).status, 'BLOCKED');
 });
 
 test('sizer: cross-currency WITHOUT a conversion rate is INCOMPLETE — never assumed', () => {

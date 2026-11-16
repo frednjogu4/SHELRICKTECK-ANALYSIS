@@ -552,7 +552,7 @@ def _demo_account_gate():
     if not bool(getattr(terminal, "connected", False)):
         return None, "MT5 is not connected to Exness; no demo order was sent."
     if not bool(getattr(terminal, "trade_allowed", False)):
-        return None, "MT5 trade permission is off; enable trading in MT5 and reconnect. No order was sent."
+        return None, "MT5 terminal trade permission (Algo Trading) is off. If you intend to continue with this manually confirmed DEMO order, enable terminal trading in MT5 and retry; this does not enable app automation. No order was sent."
     try:
         equity = float(account.equity)
         free_margin = float(account.margin_free)
@@ -636,8 +636,12 @@ def _demo_order_plan(msg):
             raise ValueError
         exposure = lots * contract_size * price
         # Refuse broker-minimum rounding that silently enlarges the requested notional.
-        if exposure > max(requested_usd * 1.5, equity * 10):
-            return None, "The broker minimum lot would exceed the demo notional cap; reduce size or choose another symbol."
+        notional_cap = max(requested_usd * 1.5, equity * 10)
+        if exposure > notional_cap:
+            return None, (
+                f"Broker minimum size is about ${exposure:,.2f} notional, above this demo request's cap of ${notional_cap:,.2f}. "
+                "No order was sent. Reducing the requested size cannot get below the broker minimum; choose a symbol with a smaller minimum exposure or stop here."
+            )
         order_type = mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL
         loss_result = mt5.order_calc_profit(order_type, symbol, lots, price, sl)
         reward_result = mt5.order_calc_profit(order_type, symbol, lots, price, tp)
@@ -847,7 +851,12 @@ def handle_quote(msg):
             continue
         _inf = mt5.symbol_info(sym)
         out.append({"symbol": sym, "bid": float(t.bid or 0), "ask": float(t.ask or 0), "time": int(t.time or 0),
-                    "volume_min": getattr(_inf, "volume_min", None), "contract_size": getattr(_inf, "trade_contract_size", None),
+                    "volume_min": getattr(_inf, "volume_min", None),
+                    "volume_max": getattr(_inf, "volume_max", None),
+                    "volume_step": getattr(_inf, "volume_step", None),
+                    "contract_size": getattr(_inf, "trade_contract_size", None),
+                    "currency_base": getattr(_inf, "currency_base", None),
+                    "currency_profit": getattr(_inf, "currency_profit", None),
                     "trade_mode": getattr(_inf, "trade_mode", None), "digits": getattr(_inf, "digits", None)})
     return {"type": "quotes", "quotes": out}
 

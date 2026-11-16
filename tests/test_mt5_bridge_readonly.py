@@ -101,6 +101,25 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.assertIn("demo-only", preview["message"])
         self.fake_mt5.order_send.assert_not_called()
 
+    def test_broker_minimum_above_demo_notional_cap_refuses_with_actionable_values(self):
+        self.fake_mt5.symbol_info.return_value.volume_min = 2000.0
+        self.fake_mt5.symbol_info.return_value.volume_step = 1.0
+        reply = self.bridge.handle_demo_preview(self.demo_request(volume=100.0))
+        self.assertEqual(reply["type"], "error")
+        self.assertIn("$200,000.00", reply["message"])
+        self.assertIn("$10,000.00", reply["message"])
+        self.assertIn("Reducing the requested size cannot get below the broker minimum", reply["message"])
+        self.assertIn("No order was sent", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_trade_permission_off_blocks_demo_preview_without_ordering(self):
+        self.fake_mt5.terminal_info.return_value.trade_allowed = False
+        reply = self.bridge.handle_demo_preview(self.demo_request())
+        self.assertEqual(reply["type"], "error")
+        self.assertIn("Algo Trading", reply["message"])
+        self.assertIn("manually confirmed DEMO order", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
     def test_missing_mt5_demo_mode_constant_fails_closed(self):
         del self.fake_mt5.ACCOUNT_TRADE_MODE_DEMO
         preview = self.bridge.handle_demo_preview(self.demo_request())
@@ -220,10 +239,18 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
 
         self.bridge.resolve_symbol = Mock(return_value="US30Cash")
         self.fake_mt5.symbol_info_tick.return_value = types.SimpleNamespace(bid=40000.0, ask=40001.0, time=int(time.time()))
-        self.fake_mt5.symbol_info.return_value = types.SimpleNamespace(volume_min=0.1, trade_contract_size=1.0, trade_mode=4, digits=2)
+        self.fake_mt5.symbol_info.return_value = types.SimpleNamespace(
+            volume_min=0.1, volume_max=50.0, volume_step=0.1, trade_contract_size=1.0,
+            currency_base="USD", currency_profit="USD", trade_mode=4, digits=2
+        )
         reply = self.bridge.handle_quote({"symbols": ["US30"]})
         self.assertEqual(reply["type"], "quotes")
-        self.assertEqual(reply["quotes"][0]["trade_mode"], 4)
+        quote = reply["quotes"][0]
+        self.assertEqual(quote["trade_mode"], 4)
+        self.assertEqual(quote["volume_min"], 0.1)
+        self.assertEqual(quote["volume_step"], 0.1)
+        self.assertEqual(quote["contract_size"], 1.0)
+        self.assertEqual(quote["currency_profit"], "USD")
 
 
 if __name__ == "__main__":
