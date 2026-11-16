@@ -114,6 +114,21 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.assertIn("No order was sent", reply["message"])
         self.fake_mt5.order_send.assert_not_called()
 
+    def test_m15_history_is_read_only_and_uses_mt5_tick_volume(self):
+        self.fake_mt5.TIMEFRAME_M1 = 1
+        self.fake_mt5.TIMEFRAME_M5 = 5
+        self.fake_mt5.TIMEFRAME_M15 = 15
+        self.fake_mt5.TIMEFRAME_H1 = 60
+        self.bridge.resolve_symbol = lambda _requested: "US30Cash"
+        rows = [{"time": 1_800_000_000 + i * 900, "open": 100.0, "high": 101.0,
+                 "low": 99.0, "close": 100.5, "tick_volume": 123} for i in range(60)]
+        self.fake_mt5.copy_rates_from_pos = Mock(return_value=rows)
+        reply = self.bridge.handle_history({"symbol": "US30", "timeframe": "M15", "count": 250})
+        self.assertEqual(reply["type"], "history")
+        self.fake_mt5.copy_rates_from_pos.assert_called_once_with("US30Cash", 15, 0, 250)
+        self.assertEqual(reply["candles"][0]["volume"], 123)
+        self.fake_mt5.order_send.assert_not_called()
+
     def test_mt5_symbol_mapping_resolves_unique_suffix_prefix_and_visible_aliases(self):
         info = types.SimpleNamespace(name="XAUUSDm", visible=True, volume_min=0.01)
         self.fake_mt5.symbols_get.return_value = [types.SimpleNamespace(name="XAUUSDm")]

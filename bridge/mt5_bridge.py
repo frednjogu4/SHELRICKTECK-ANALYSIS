@@ -17,7 +17,7 @@ this PC + LAN (remote devices need the bridge token), and speaks the JSON protoc
   <- {id, type:'account', balance, equity, margin_free, currency, leverage}
   -> {id, type:'symbols'} (authenticated local terminal catalogue)
   <- {id, type:'symbols', symbols:[{symbol,name,path,category,digits,visible,trade_mode}]}
-  -> {id, type:'history', symbol, timeframe:'M1'|'M5'|'H1', count}
+  -> {id, type:'history', symbol, timeframe:'M1'|'M5'|'M15'|'H1', count}
   <- {id, type:'history', candles:[{time,open,high,low,close,volume}]}
   <- {id, type:'error',    message}
 
@@ -971,9 +971,9 @@ def handle_history(msg):
     if not sym:
         return {**err(_symbol_match_error(requested_symbol))}
     frame = str(msg.get("timeframe") or "").upper()
-    frames = {"M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5, "H1": mt5.TIMEFRAME_H1}
+    frames = {"M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5, "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1}
     if frame not in frames:
-        return {**err("Timeframe must be M1, M5, or H1.")}
+        return {**err("Timeframe must be M1, M5, M15, or H1.")}
     try:
         count = max(50, min(300, int(msg.get("count") or 120)))
     except (TypeError, ValueError, OverflowError):

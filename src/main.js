@@ -12,6 +12,8 @@ import * as bridgeMod from './bridge.js';
 import { readMt5Identity, saveMt5Identity, forgetMt5Identity } from './mt5identity.js';
 import { marketStatus, typicalActiveWindow, MARKET_HOURS_NOTE } from '../server/lib/markethours.js';
 import * as feed from './marketdata.js';
+import { fetchPublicCandles } from './marketdata.js';
+import { analyzeProScalper, deriveProScalperTimeframe, backtestProScalper } from '../server/lib/proscalper.js';
 import * as tv from './tradingview.js';
 import { planPosition } from './sizer.js';
 import { analyzeTimeframe, confirmMultiTimeframe, votesSummary, runDeterministicAnalysis, waitReason } from '../server/lib/analyzer.js';
@@ -400,6 +402,7 @@ const VIEW_META={
   signals:['Signal Analyzer','MTF confluence → validated decision'],
   sniper:['Sniper alerts','Choose markets · entry/exit notifications'],
   gold:['Gold / USD','Dedicated XAU/USD analysis · no orders'],
+  proscalper:['Pro Scalper','Deterministic technical analysis · execution disabled'],
   news:['News','Live headlines & economic calendar'],
   portfolio:['Portfolio','Positions, balance & history'],
   automation:['Automation','Broker bridges & XML bots'],
@@ -5079,6 +5082,7 @@ function render(view){
     case 'signals': if(state.scanStatus==='idle')scanSignals(); else renderSignals(); break;
     case 'sniper': renderSniperView(); break;
     case 'gold': renderGold(); break;
+    case 'proscalper': renderProScalper(); break;
     case 'portfolio': renderPortfolio(); break;
     case 'automation': connUI(); renderBots(); break;
     case 'learn': learnInit(); break;
@@ -5086,6 +5090,112 @@ function render(view){
     case 'settings': loadKeysUI(); refreshNotifBtn(); azFetchBudget(); bindBrand(); applyBrand(); break;
   }
 }
+function psFrames(tf){ return tf==='1m'?['5m','1h']:['15m','1h']; }
+function psSeconds(tf){ return ({'1m':60,'5m':300,'15m':900,'1h':3600,'4h':14400})[tf]; }
+function psClosed(candles,tf){ const step=psSeconds(tf)*1000, now=Date.now(); return candles.filter(c=>Number(c.time)*1000+step<=now); }
+function psRecord(event){
+  try{ const key='aurum-proscalper-audit-v1'; const rows=JSON.parse(localStorage.getItem(key)||'[]'); rows.unshift({...event,recordedAt:new Date().toISOString(),execution:'disabled'}); localStorage.setItem(key,JSON.stringify(rows.slice(0,100))); }catch(_e){}
+}
+function psPaperAdvance(sym,tf,candles){
+  try{
+    const key='aurum-proscalper-paper-v1', rows=JSON.parse(localStorage.getItem(key)||'[]'); let changed=false;
+    for(const p of rows){
+      if(p.status!=='open'||p.symbol!==sym||p.timeframe!==tf)continue;
+      const bar=candles.find(c=>Number(c.time)>Number(p.openedCandleTime)); if(!bar)continue;
+      const stopped=p.side==='BUY'?Number(bar.low)<=p.invalidation:Number(bar.high)>=p.invalidation;
+      const delta=(Number(bar.close)-p.entry)*(p.side==='BUY'?1:-1);
+      p.status='settled';p.settledCandleTime=bar.time;p.outcome=stopped?'invalidation reached':delta>0?'next close favorable':delta<0?'next close adverse':'next close unchanged';changed=true;
+    }
+    if(changed){localStorage.setItem(key,JSON.stringify(rows.slice(0,100)));return rows;}
+    return rows;
+  }catch(_e){return [];}
+}
+function psChart(candles){
+  const pts=candles.slice(-70), lo=Math.min(...pts.map(c=>Number(c.low))), hi=Math.max(...pts.map(c=>Number(c.high))), span=hi-lo||1;
+  const points=pts.map((c,i)=>`${(i/(pts.length-1||1))*600},${140-((Number(c.close)-lo)/span)*125}`).join(' ');
+  return '<svg viewBox="0 0 600 150" role="img" aria-label="Close-price history for the latest verified candles" style="width:100%;height:auto;margin-top:12px"><path d="M0 140H600M0 75H600M0 10H600" stroke="currentColor" opacity=".12"/><polyline fill="none" stroke="var(--accent)" stroke-width="2.5" points="'+points+'"/></svg>';
+}
+function renderProScalper(){
+  const select=$('#psSymbol');
+  if(!select.options.length){
+    const list=INSTR;
+    select.innerHTML=list.map(x=>'<option value="'+escHtml(x.s)+'">'+escHtml(x.n||x.s)+' · '+escHtml(x.s)+'</option>').join('');
+    if(DERIV_CODE_MAP['XAU/USD'])select.value='XAU/USD';
+  }
+  const audit=(()=>{try{return JSON.parse(localStorage.getItem('aurum-proscalper-audit-v1')||'[]')}catch(_e){return []}})();
+  $('#psAudit').textContent=audit.length?`${audit.length} local analysis audit event${audit.length===1?'':'s'}; latest ${new Date(audit[0].recordedAt).toLocaleString()}. Stored in this browser only.`:'No analysis event recorded.';
+  const btn=$('#psAnalyze'), bt=$('#psBacktest'), paper=$('#psPaper');
+  let latestResult=null;
+  if(btn.dataset.bound)return; btn.dataset.bound='1';
+  const getData=async(sym,tf)=>{
+    if(state.broker?.type==='mt5'){
+      const code=({'1m':'M1','5m':'M5','15m':'M15','1h':'H1'})[tf];
+      if(!code)throw new Error('No approved MT5 timeframe mapping.');
+      const result=await bridge.bridgeHistory(sym,code,300);
+      if(!result||result.type==='error'||!Array.isArray(result.candles))throw new Error(result?.message||`MT5 ${code} candle history unavailable.`);
+      return psClosed(result.candles,tf);
+    }
+    if(!DERIV_CODE_MAP[sym])throw new Error('No public Deriv candle mapping for this market; connect the read-only MT5 candle source.');
+    const raw=await fetchPublicCandles(sym,psSeconds(tf),500);
+    return psClosed(raw,tf);
+  };
+  const paintResult=(r,candles)=>{
+    latestResult=r; paper.disabled=!(r.signal==='BUY'||r.signal==='SELL')||!Number.isFinite(r.entryReference)||!Number.isFinite(r.invalidation);
+    $('#psSignal').textContent=r.signal; $('#psSignal').className=r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'';
+    $('#psFresh').textContent=typeof r.dataFreshness==='object'?`${r.dataFreshness.status} · ${Math.round(r.dataFreshness.ageMs/1000)}s`:'UNVERIFIED';
+    $('#psFresh').className='badge '+(r.dataFreshness?.status==='fresh'?'buy':'gray');
+    const mtf=r.evidence?.timeframeSignals?Object.entries(r.evidence.timeframeSignals).map(([k,v])=>`${k} ${v}`).join(' / '):'MTF unavailable';
+    $('#psSummary').textContent=`${r.symbol} · ${r.timeframe} · entry reference ${r.entryReference==null?'—':fmtPx(r.entryReference,5)} · invalidation ${r.invalidation==null?'—':fmtPx(r.invalidation,5)} · confidence ${r.confidence}% · ${mtf} · execution disabled`;
+    $('#psRejects').textContent=r.rejectionReasons?.length?'Withheld: '+r.rejectionReasons.join(' '):'No validation rejection. Technical signal only; not authorization to trade.';
+    $('#psForecast').innerHTML=r.forecast?['up','sideways','down'].map(k=>`<div class="row between" style="padding:7px 0;border-bottom:1px solid var(--border-soft)"><span>${k==='up'?'Up':k==='down'?'Down':'Sideways'}</span><b>${(r.forecast[k]*100).toFixed(1)}%</b></div>`).join(''):'Unavailable until validation passes.';
+    const i=r.indicators;
+    $('#psIndicators').innerHTML=i?`<div class="grid c2"><div>EMA 200 <b>${fmtPx(i.ema200,5)}</b></div><div>Parabolic SAR <b>${fmtPx(i.parabolicSar,5)}</b></div><div>MACD histogram <b>${fmtPx(i.macd.histogram,5)}</b></div><div>RSI 14 <b>${fmtPx(i.rsi,1)}</b></div><div>ADX 14 <b>${fmtPx(i.adx.adx,1)} · +DI ${fmtPx(i.adx.plusDI,1)} / −DI ${fmtPx(i.adx.minusDI,1)}</b></div><div>ATR 14 <b>${fmtPx(i.atr,5)}</b></div><div>Bollinger bands <b>${fmtPx(i.bollinger.lower,5)} / ${fmtPx(i.bollinger.mid,5)} / ${fmtPx(i.bollinger.upper,5)}</b></div><div>Volume ratio <b>${fmtPx(i.volume.ratio,2)}×</b></div></div>`:'Indicator values withheld: input validation failed.';
+    $('#psLevels').innerHTML=r.support?.length?`Support: ${r.support.map(v=>fmtPx(v,5)).join(' · ')}<br>Resistance: ${r.resistance.map(v=>fmtPx(v,5)).join(' · ')}${psChart(candles)}`:'Levels withheld pending valid data.';
+    const old=(()=>{try{return JSON.parse(localStorage.getItem('aurum-proscalper-audit-v1')||'[]')}catch(_e){return []}})();
+    const paperLog=(()=>{try{return JSON.parse(localStorage.getItem('aurum-proscalper-paper-v1')||'[]')}catch(_e){return []}})();
+    $('#psAudit').textContent=`Analysis audit · ${old.length} browser-local events · paper setups ${paperLog.filter(x=>x.status==='open').length} open / ${paperLog.filter(x=>x.status==='settled').length} settled. No orders submitted.`;
+  };
+  btn.onclick=async()=>{
+    btn.disabled=true; btn.textContent='Validating candle history…';
+    const sym=select.value,tf=$('#psTimeframe').value;
+    try{
+      const frames=psFrames(tf), [primary,...other]=await Promise.all([tf,...frames].map(f=>getData(sym,f)));
+      const confirmations=Object.fromEntries(frames.map((f,i)=>[f,deriveProScalperTimeframe(other[i],f,Date.now())]));
+      const paperRows=psPaperAdvance(sym,tf,primary);
+      $('#psAudit').textContent=paperRows.length?`Paper log: ${paperRows.filter(x=>x.status==='open').length} open · ${paperRows.filter(x=>x.status==='settled').length} settled. Hypothetical only; no money or orders.`:'No paper setups recorded.';
+      const result=analyzeProScalper({symbol:sym,timeframe:tf,candles:primary,confirmations});
+      psRecord({symbol:sym,timeframe:tf,signal:result.signal,confidence:result.confidence,rejectionReasons:result.rejectionReasons,forecast:result.forecast});
+      paintResult(result,primary);
+    }catch(err){
+      const result={symbol:sym,timeframe:tf,signal:'WAIT',confidence:0,rejectionReasons:[String(err.message||err)],dataFreshness:'unavailable',forecast:null};
+      psRecord({symbol:sym,timeframe:tf,signal:'WAIT',rejectionReasons:result.rejectionReasons}); paintResult(result,[]);
+    }finally{btn.disabled=false;btn.textContent='Read live candles';}
+  };
+  paper.onclick=()=>{
+    if(paper.disabled||!latestResult)return;
+    const key='aurum-proscalper-paper-v1';
+    try{
+      const rows=JSON.parse(localStorage.getItem(key)||'[]');
+      const item={id:globalThis.crypto?.randomUUID?.()||String(Date.now()),symbol:latestResult.symbol,timeframe:latestResult.timeframe,side:latestResult.signal,entry:latestResult.entryReference,invalidation:latestResult.invalidation,openedCandleTime:latestResult.dataFreshness.lastCandleTime,status:'open',openedAt:new Date().toISOString(),note:'Hypothetical analytical paper record; no funds, order or broker call.'};
+      rows.unshift(item);localStorage.setItem(key,JSON.stringify(rows.slice(0,100)));
+      psRecord({event:'paper-setup-opened',symbol:item.symbol,timeframe:item.timeframe,side:item.side,entry:item.entry,invalidation:item.invalidation});
+      $('#psAudit').textContent='Paper setup recorded locally. It will be checked against the next closed candle; no funds or orders are involved.';
+    }catch(_e){$('#psAudit').textContent='Browser-local paper log unavailable; no setup was recorded.';}
+  };
+  bt.onclick=async()=>{
+    bt.disabled=true;bt.textContent='Replaying historical bars…';
+    const sym=select.value,tf=$('#psTimeframe').value,frames=psFrames(tf);
+    try{
+      const [primary,...higher]=await Promise.all([tf,...frames].map(f=>getData(sym,f)));
+      const result=backtestProScalper({symbol:sym,timeframe:tf,candles:primary,higherCandles:Object.fromEntries(frames.map((f,i)=>[f,higher[i]]))});
+      $('#psRejects').textContent=`Walk-forward replay: ${result.signals} qualifying analytical signals · ${result.wins} next-close advances · ${result.losses} declines · ${result.winRate==null?'no measured sample':(result.winRate*100).toFixed(1)+'% advances'}. ${result.disclaimer} No orders.`;
+      psRecord({symbol:sym,timeframe:tf,event:'backtest',signals:result.signals,wins:result.wins,losses:result.losses});
+      $('#psAudit').textContent='Replay audit recorded locally; analysis only. No orders submitted.';
+    }catch(err){$('#psRejects').textContent='Replay unavailable: '+String(err.message||err)+'. No estimates substituted.';}
+    finally{bt.disabled=false;bt.textContent='Run walk-forward replay';}
+  };
+}
+
 let booted=false;
 function boot(){
   enteredWorkspace=true; /* cloud viewer: from here on this browser may read Deriv candles (see hostedSignalBatch) */
