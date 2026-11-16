@@ -778,6 +778,7 @@ async function connectMt5(url,login,password,server,token){
   saveMt5Session({login,password,server,token,url:health.url||url});
   state.broker={type:'mt5',account};
   state.cfdSpec=null;
+  goldMt5SymbolCache={name:'',at:0};
   state.mt5LivePositions=null; state.mt5LastSnapshotAt=null; state.mt5SnapshotFailed=false;
   refreshMt5SizePlan();
   { /* leverage transparency: our CFD sizing treats the stake as NOTIONAL
@@ -4046,6 +4047,28 @@ function goldQuotePrice(q){
   if(bid>0)return bid;if(ask>0)return ask;
   return null;
 }
+let goldMt5SymbolCache={name:'',at:0};
+function mt5SymbolNorm(name){return String(name||'').toLowerCase().replace(/[^a-z0-9]/g,'');}
+async function resolveGoldMt5Symbol(){
+  if(state.broker?.type!=='mt5')throw new Error('Exness MT5 bridge is not connected in this tab.');
+  if(goldMt5SymbolCache.name&&Date.now()-goldMt5SymbolCache.at<60000)return goldMt5SymbolCache.name;
+  const catalogue=await bridge.bridgeSymbols();
+  if(!catalogue||!Array.isArray(catalogue.symbols))throw new Error('Exness MT5 symbol catalogue is unavailable. Refresh or reconnect the local bridge.');
+  const candidates=catalogue.symbols.filter(row=>{
+    const n=mt5SymbolNorm(row.symbol),base='xauusd',extra=n.length-base.length;
+    return n===base||(extra>0&&extra<=4&&(n.startsWith(base)||n.endsWith(base)));
+  });
+  const exact=candidates.filter(row=>mt5SymbolNorm(row.symbol)==='xauusd');
+  const visible=(exact.length?exact:candidates).filter(row=>row.visible===true);
+  const pool=exact.length?exact:candidates;
+  const picked=pool.length===1?pool[0]:(visible.length===1?visible[0]:null);
+  if(!picked){
+    const names=candidates.map(row=>String(row.symbol)).slice(0,8);
+    throw new Error(names.length?'Gold symbol mapping is ambiguous in MT5: '+names.join(', ')+'. Show only the intended XAU/USD variant in Market Watch.':'No XAU/USD symbol (such as XAUUSDm) appears in the connected MT5 catalogue.');
+  }
+  goldMt5SymbolCache={name:String(picked.symbol),at:Date.now()};
+  return goldMt5SymbolCache.name;
+}
 function goldEpochMs(value){const n=Number(value);return !Number.isFinite(n)||n<=0?0:(n>1e12?n:n*1000);}
 function goldFreshTimestamp(value,maxAgeMs=120000){const t=goldEpochMs(value),age=Date.now()-t;return t>0&&age>=0&&age<maxAgeMs;}
 function goldDataSource(){
@@ -4081,7 +4104,8 @@ function updateGoldQuoteDisplay(){
 async function refreshGoldQuote(){
   if(goldDataSource()==='mt5'){
     try{
-      const r=await bridge.quoteBridge(['XAUUSD']);const q=r&&r.quotes&&r.quotes[0],price=goldQuotePrice(q);
+      const symbol=await resolveGoldMt5Symbol();
+      const r=await bridge.quoteBridge([symbol]);const q=r&&r.quotes&&r.quotes[0],price=goldQuotePrice(q);
       if(!q||!Number(q.time)||!(price>0))throw new Error('No current Exness MT5 tick');
       goldMt5Quote={symbol:String(q.symbol||''),price,time:Number(q.time),digits:q.digits,trade_mode:q.trade_mode};
     }catch(_e){goldMt5Quote=null;}
@@ -4205,8 +4229,9 @@ async function runGoldAnalysis(){
     if(goldDataSource()==='mt5'){
       try{
       /* Exness MT5 is primary; on a verified failure the approved, labelled fallback is attempted. */
+      const mt5GoldSymbol=await resolveGoldMt5Symbol();
       const [m1,m5,h1,qReply]=await Promise.all([
-        bridge.bridgeHistory('XAUUSD','M1',120),bridge.bridgeHistory('XAUUSD','M5',120),bridge.bridgeHistory('XAUUSD','H1',120),bridge.quoteBridge(['XAUUSD'])
+        bridge.bridgeHistory(mt5GoldSymbol,'M1',120),bridge.bridgeHistory(mt5GoldSymbol,'M5',120),bridge.bridgeHistory(mt5GoldSymbol,'H1',120),bridge.quoteBridge([mt5GoldSymbol])
       ]);
       const sets={m1:m1&&m1.candles,m5:m5&&m5.candles,h1:h1&&h1.candles};
       if(!sets.m1||!sets.m5||!sets.h1)throw new Error('Exness MT5 did not return all required Gold timeframes.');

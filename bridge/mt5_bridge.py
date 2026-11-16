@@ -160,33 +160,81 @@ def _origin_allowed(origin):
         return False
 
 
+def _symbol_norm(name):
+    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
+def _symbol_match_candidates(requested):
+    """Return exact-normalized matches first, else short broker prefix/suffix variants."""
+    norm = _symbol_norm(requested)
+    if not norm:
+        return []
+    try:
+        rows = mt5.symbols_get() or []
+    except Exception:
+        return []
+    names = list(dict.fromkeys(str(getattr(row, "name", "") or "") for row in rows))
+    names = [name for name in names if name]
+    exact = [name for name in names if _symbol_norm(name) == norm]
+    if exact:
+        return exact
+    # Common MT5 decorations include suffixes (XAUUSDm, EURUSD.pro, US30_x10m)
+    # and prefixes. Bound decoration length so a short code cannot match an unrelated symbol.
+    decorated = []
+    for name in names:
+        sn = _symbol_norm(name)
+        extra = len(sn) - len(norm)
+        if 0 < extra <= 4 and (sn.startswith(norm) or sn.endswith(norm)):
+            decorated.append(name)
+    return decorated
+
+
+def _symbol_match_error(requested, candidates=None):
+    candidates = _symbol_match_candidates(requested) if candidates is None else candidates
+    if len(candidates) > 1:
+        return "MT5 symbol '" + str(requested) + "' matches multiple broker symbols: " + ", ".join(candidates[:8]) + ". Show only the intended match in Market Watch or use its exact name; no order was sent."
+    if len(candidates) == 1:
+        return "MT5 found '" + candidates[0] + "' for '" + str(requested) + "' but could not select it in the connected terminal. Check that this exact symbol is enabled in Market Watch; no order was sent."
+    return "MT5 symbol '" + str(requested or "") + "' is not available in the connected terminal's symbol catalogue. Check the exact broker symbol and connected MT5 terminal; no order was sent."
+
+
 def resolve_symbol(name):
-    """Exact match first, then tolerant match for broker suffixes/prefixes
-    commonly used by MT5 brokers."""
-    if not name:
+    """Resolve a canonical or exact MT5 name without guessing between broker variants.
+
+    Exact names win. A unique decorated match is accepted. If several variants exist,
+    select the sole visible Market Watch candidate; if still ambiguous, fail closed.
+    """
+    requested = str(name or "").strip()
+    if not requested:
         return None
-    info = mt5.symbol_info(name)
-    if info is None:
-        norm = re.sub(r"[^a-z0-9]", "", name.lower())
-        exact, suffix = [], []
-        for s in mt5.symbols_get() or []:
-            candidate = str(getattr(s, "name", "") or "")
-            sn = re.sub(r"[^a-z0-9]", "", candidate.lower())
-            if sn == norm:
-                exact.append(candidate)
-            # A short broker suffix is allowed only when it resolves uniquely.
-            elif sn.startswith(norm) and len(sn) <= len(norm) + 4:
-                suffix.append(candidate)
-        matches = exact if exact else suffix
-        if len(matches) != 1:
-            return None  # ambiguous or unavailable: fail closed, never guess a symbol
-        name = matches[0]
-        info = mt5.symbol_info(name)
+    info = mt5.symbol_info(requested)
+    if info is not None:
+        resolved = str(getattr(info, "name", "") or requested)
+    else:
+        matches = _symbol_match_candidates(requested)
+        if len(matches) == 1:
+            resolved = matches[0]
+        elif len(matches) > 1:
+            visible = []
+            for candidate in matches:
+                candidate_info = mt5.symbol_info(candidate)
+                if candidate_info is not None and bool(getattr(candidate_info, "visible", False)):
+                    visible.append(candidate)
+            if len(visible) != 1:
+                return None
+            resolved = visible[0]
+        else:
+            return None
+        info = mt5.symbol_info(resolved)
     if info is None:
         return None
-    if not info.visible:
-        mt5.symbol_select(name, True)
-    return name
+    if not bool(getattr(info, "visible", False)):
+        try:
+            if not mt5.symbol_select(resolved, True):
+                return None
+        except Exception:
+            return None
+    return resolved
 
 
 def usd_to_lots(info, price, usd):
@@ -587,9 +635,10 @@ def _demo_order_plan(msg):
     account, problem = _demo_account_gate()
     if problem:
         return None, problem
-    symbol = resolve_symbol(str(msg.get("symbol") or ""))
+    requested_symbol = str(msg.get("symbol") or "").strip()
+    symbol = resolve_symbol(requested_symbol)
     if not symbol:
-        return None, "Symbol is missing, ambiguous, or unavailable in the connected Exness demo terminal."
+        return None, _symbol_match_error(requested_symbol)
     info = mt5.symbol_info(symbol)
     if info is None:
         return None, "Symbol specifications are unavailable; no demo order was sent."
@@ -842,12 +891,16 @@ def handle_quote(msg):
     if not isinstance(syms, list) or not syms:
         return {**err("symbols must be a non-empty list")}
     out = []
+    unresolved = []
     for raw in syms[:20]:
-        sym = resolve_symbol(str(raw))
+        requested = str(raw or "").strip()
+        sym = resolve_symbol(requested)
         if not sym:
+            unresolved.append({"requested": requested, "message": _symbol_match_error(requested)})
             continue
         t = mt5.symbol_info_tick(sym)
         if t is None:
+            unresolved.append({"requested": requested, "resolved": sym, "message": "No current tick for MT5 symbol '" + sym + "'."})
             continue
         _inf = mt5.symbol_info(sym)
         out.append({"symbol": sym, "bid": float(t.bid or 0), "ask": float(t.ask or 0), "time": int(t.time or 0),
@@ -858,7 +911,7 @@ def handle_quote(msg):
                     "currency_base": getattr(_inf, "currency_base", None),
                     "currency_profit": getattr(_inf, "currency_profit", None),
                     "trade_mode": getattr(_inf, "trade_mode", None), "digits": getattr(_inf, "digits", None)})
-    return {"type": "quotes", "quotes": out}
+    return {"type": "quotes", "quotes": out, "unresolved": unresolved}
 
 
 def handle_search(msg):
@@ -913,9 +966,10 @@ def handle_history(msg):
     identity_error = _locked_identity_error()
     if identity_error:
         return {**err(identity_error)}
-    sym = resolve_symbol(str(msg.get("symbol") or ""))
+    requested_symbol = str(msg.get("symbol") or "").strip()
+    sym = resolve_symbol(requested_symbol)
     if not sym:
-        return {**err("Symbol is not available in the connected MT5 terminal.")}
+        return {**err(_symbol_match_error(requested_symbol))}
     frame = str(msg.get("timeframe") or "").upper()
     frames = {"M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5, "H1": mt5.TIMEFRAME_H1}
     if frame not in frames:

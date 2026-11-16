@@ -28,7 +28,8 @@ test('failed Exness analysis clears quote and uses only an explicitly-labelled f
   const start = main.indexOf('async function runGoldAnalysis');
   const end = main.indexOf('function startGoldMonitor', start);
   const section = main.slice(start, end);
-  assert.match(section, /bridge\.bridgeHistory\('XAUUSD','M1',120\)/);
+  assert.match(section, /bridge\.bridgeHistory\(mt5GoldSymbol,'M1',120\)/);
+  assert.match(section, /resolveGoldMt5Symbol\(\)/);
   assert.match(section, /goldDerivFallback\('Exness MT5 unavailable:/);
   assert.match(main, /Deriv public candles · labelled fallback \(reason:/);
   assert.match(section, /if\(goldDataSource\(\)==='mt5'\)goldMt5Quote=null/);
