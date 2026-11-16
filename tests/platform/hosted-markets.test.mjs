@@ -1690,11 +1690,12 @@ function bridgeMarket(symbol, { name, level, digits }) {
 /* `markets` is keyed by the name the application asks the bridge for. */
 const exnessBridge = (markets) => (frame) => {
   const account = { balance: 1000, equity: 1000, margin_free: 1000, currency: 'USD', leverage: 100 };
-  const market = (asked) => (markets[asked] && markets[asked].known ? markets[asked] : null);
+  const market = (asked) => Object.values(markets).find((entry) => entry && entry.known && (markets[asked] === entry || entry.name === asked)) || null;
   if (frame.type === 'ping') return { type: 'pong' };
   if (frame.type === 'login') return { type: 'logged', account: '10000001', server: frame.server, ...account };
   if (frame.type === 'account') return { type: 'account', ...account };
   if (frame.type === 'positions') return { type: 'positions', list: [] };
+  if (frame.type === 'symbols') return { type: 'symbols', symbols: Object.values(markets).filter((entry) => entry && entry.known).map((entry) => ({ symbol: entry.name, visible: true })) };
   if (frame.type === 'history') {
     const m = market(frame.symbol);
     if (!m) return { type: 'error', message: 'Symbol is not available in the connected MT5 terminal.' };
@@ -1809,7 +1810,7 @@ test('live confidence, Exness connected: a card read on the stream\'s venue does
 test('live confidence, Gold monitor on Exness: the score follows the Exness gold price, not the Deriv tick', async () => {
   const gold = bridgeMarket('XAU/USD', { name: 'XAUUSDm', level: 4000, digits: 2 });
   const { signal: direction, confidence: base } = gold.decision;
-  /* The Gold monitor asks the bridge for "XAUUSD". */
+  /* The Gold monitor discovers the exact broker symbol (XAUUSDm) from the local terminal catalogue. */
   const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, bridgeApi: exnessBridge({ XAUUSD: gold }), world: { ticks: true } });
   try {
     await app.enter();

@@ -12,6 +12,8 @@ import * as bridgeMod from './bridge.js';
 import { readMt5Identity, saveMt5Identity, forgetMt5Identity } from './mt5identity.js';
 import { marketStatus, typicalActiveWindow, MARKET_HOURS_NOTE } from '../server/lib/markethours.js';
 import * as feed from './marketdata.js';
+import { fetchPublicCandles } from './marketdata.js';
+import { analyzeProScalper, deriveProScalperTimeframe, backtestProScalper } from '../server/lib/proscalper.js';
 import * as tv from './tradingview.js';
 import { planPosition } from './sizer.js';
 import { analyzeTimeframe, confirmMultiTimeframe, votesSummary, runDeterministicAnalysis, waitReason } from '../server/lib/analyzer.js';
@@ -400,6 +402,7 @@ const VIEW_META={
   signals:['Signal Analyzer','MTF confluence → validated decision'],
   sniper:['Sniper alerts','Choose markets · entry/exit notifications'],
   gold:['Gold / USD','Dedicated XAU/USD analysis · no orders'],
+  proscalper:['Pro Scalper','Deterministic technical analysis · execution disabled'],
   news:['News','Live headlines & economic calendar'],
   portfolio:['Portfolio','Positions, balance & history'],
   automation:['Automation','Broker bridges & XML bots'],
@@ -777,7 +780,10 @@ async function connectMt5(url,login,password,server,token){
   /* Session-only vault: reconnect after refresh, never persist to localStorage. */
   saveMt5Session({login,password,server,token,url:health.url||url});
   state.broker={type:'mt5',account};
+  state.cfdSpec=null;
+  goldMt5SymbolCache={name:'',at:0};
   state.mt5LivePositions=null; state.mt5LastSnapshotAt=null; state.mt5SnapshotFailed=false;
+  refreshMt5SizePlan();
   { /* leverage transparency: our CFD sizing treats the stake as NOTIONAL
       exposure, so P/L is identical at any leverage — leverage only changes
       how much margin is locked. Show the real numbers where you connect. */
@@ -808,6 +814,7 @@ async function refreshMt5Snapshot(showToast=false){
     state.mt5LivePositions=Array.isArray(positions.list)?positions.list:null;
     state.mt5LastSnapshotAt=Date.now(); state.mt5SnapshotFailed=false;
     updateSessionInfo(); updateKpis(); updatePortfolioLive();
+    refreshMt5SizePlan();
     if(state.view==='overview')renderOverview();
     if(showToast)toast('MT5 refreshed',(state.mt5LivePositions||[]).length+' live position(s) · balance/equity from the connected terminal.','ok');
     return true;
@@ -2021,6 +2028,7 @@ function setChartSymbol(sym,keepLevels){
     levelsForSym=null; /* refresh the same symbol without discarding user edits */
   }
   autofillLevels(sym);
+  if(previousSym!==sym&&state.broker?.type==='mt5'){renderSizePlan();refreshMt5SizePlan();}
   if(state.view==='trade'&&DERIV_CODE_MAP[sym])msInit({followChart:true});
   else if(state.view==='trade')updateChartMarketState();
 }
@@ -3244,8 +3252,9 @@ $$('.conn-btn').forEach(btn=>btn.onclick=async()=>{
   const k=btn.dataset.conn;
   if(k==='live')return;
   if(state.broker&&((k==='deriv'&&state.broker.type==='deriv')||(k==='mt5'&&state.broker.type==='mt5'))){
-    if(k==='mt5')bridge.disconnectBridge('user');
+    if(k==='mt5'){bridge.disconnectBridge('user');state.cfdSpec=null;}
     state.broker=null; state.balance=null; state.mode='live';
+    if(k==='mt5')renderSizePlan();
     state.connections[k==='deriv'?'deriv':'mt5']=false; save();
     store.set('session',{name:state.user||'Live',mode:'live'});
     if(k==='deriv'){patStore.forget();}
@@ -4041,6 +4050,28 @@ function goldQuotePrice(q){
   if(bid>0)return bid;if(ask>0)return ask;
   return null;
 }
+let goldMt5SymbolCache={name:'',at:0};
+function mt5SymbolNorm(name){return String(name||'').toLowerCase().replace(/[^a-z0-9]/g,'');}
+async function resolveGoldMt5Symbol(){
+  if(state.broker?.type!=='mt5')throw new Error('Exness MT5 bridge is not connected in this tab.');
+  if(goldMt5SymbolCache.name&&Date.now()-goldMt5SymbolCache.at<60000)return goldMt5SymbolCache.name;
+  const catalogue=await bridge.bridgeSymbols();
+  if(!catalogue||!Array.isArray(catalogue.symbols))throw new Error('Exness MT5 symbol catalogue is unavailable. Refresh or reconnect the local bridge.');
+  const candidates=catalogue.symbols.filter(row=>{
+    const n=mt5SymbolNorm(row.symbol),base='xauusd',extra=n.length-base.length;
+    return n===base||(extra>0&&extra<=4&&(n.startsWith(base)||n.endsWith(base)));
+  });
+  const exact=candidates.filter(row=>mt5SymbolNorm(row.symbol)==='xauusd');
+  const visible=(exact.length?exact:candidates).filter(row=>row.visible===true);
+  const pool=exact.length?exact:candidates;
+  const picked=pool.length===1?pool[0]:(visible.length===1?visible[0]:null);
+  if(!picked){
+    const names=candidates.map(row=>String(row.symbol)).slice(0,8);
+    throw new Error(names.length?'Gold symbol mapping is ambiguous in MT5: '+names.join(', ')+'. Show only the intended XAU/USD variant in Market Watch.':'No XAU/USD symbol (such as XAUUSDm) appears in the connected MT5 catalogue.');
+  }
+  goldMt5SymbolCache={name:String(picked.symbol),at:Date.now()};
+  return goldMt5SymbolCache.name;
+}
 function goldEpochMs(value){const n=Number(value);return !Number.isFinite(n)||n<=0?0:(n>1e12?n:n*1000);}
 function goldFreshTimestamp(value,maxAgeMs=120000){const t=goldEpochMs(value),age=Date.now()-t;return t>0&&age>=0&&age<maxAgeMs;}
 function goldDataSource(){
@@ -4076,7 +4107,8 @@ function updateGoldQuoteDisplay(){
 async function refreshGoldQuote(){
   if(goldDataSource()==='mt5'){
     try{
-      const r=await bridge.quoteBridge(['XAUUSD']);const q=r&&r.quotes&&r.quotes[0],price=goldQuotePrice(q);
+      const symbol=await resolveGoldMt5Symbol();
+      const r=await bridge.quoteBridge([symbol]);const q=r&&r.quotes&&r.quotes[0],price=goldQuotePrice(q);
       if(!q||!Number(q.time)||!(price>0))throw new Error('No current Exness MT5 tick');
       goldMt5Quote={symbol:String(q.symbol||''),price,time:Number(q.time),digits:q.digits,trade_mode:q.trade_mode};
     }catch(_e){goldMt5Quote=null;}
@@ -4200,8 +4232,9 @@ async function runGoldAnalysis(){
     if(goldDataSource()==='mt5'){
       try{
       /* Exness MT5 is primary; on a verified failure the approved, labelled fallback is attempted. */
+      const mt5GoldSymbol=await resolveGoldMt5Symbol();
       const [m1,m5,h1,qReply]=await Promise.all([
-        bridge.bridgeHistory('XAUUSD','M1',120),bridge.bridgeHistory('XAUUSD','M5',120),bridge.bridgeHistory('XAUUSD','H1',120),bridge.quoteBridge(['XAUUSD'])
+        bridge.bridgeHistory(mt5GoldSymbol,'M1',120),bridge.bridgeHistory(mt5GoldSymbol,'M5',120),bridge.bridgeHistory(mt5GoldSymbol,'H1',120),bridge.quoteBridge([mt5GoldSymbol])
       ]);
       const sets={m1:m1&&m1.candles,m5:m5&&m5.candles,h1:h1&&h1.candles};
       if(!sets.m1||!sets.m5||!sets.h1)throw new Error('Exness MT5 did not return all required Gold timeframes.');
@@ -5049,6 +5082,7 @@ function render(view){
     case 'signals': if(state.scanStatus==='idle')scanSignals(); else renderSignals(); break;
     case 'sniper': renderSniperView(); break;
     case 'gold': renderGold(); break;
+    case 'proscalper': renderProScalper(); break;
     case 'portfolio': renderPortfolio(); break;
     case 'automation': connUI(); renderBots(); break;
     case 'learn': learnInit(); break;
@@ -5056,6 +5090,112 @@ function render(view){
     case 'settings': loadKeysUI(); refreshNotifBtn(); azFetchBudget(); bindBrand(); applyBrand(); break;
   }
 }
+function psFrames(tf){ return tf==='1m'?['5m','1h']:['15m','1h']; }
+function psSeconds(tf){ return ({'1m':60,'5m':300,'15m':900,'1h':3600,'4h':14400})[tf]; }
+function psClosed(candles,tf){ const step=psSeconds(tf)*1000, now=Date.now(); return candles.filter(c=>Number(c.time)*1000+step<=now); }
+function psRecord(event){
+  try{ const key='aurum-proscalper-audit-v1'; const rows=JSON.parse(localStorage.getItem(key)||'[]'); rows.unshift({...event,recordedAt:new Date().toISOString(),execution:'disabled'}); localStorage.setItem(key,JSON.stringify(rows.slice(0,100))); }catch(_e){}
+}
+function psPaperAdvance(sym,tf,candles){
+  try{
+    const key='aurum-proscalper-paper-v1', rows=JSON.parse(localStorage.getItem(key)||'[]'); let changed=false;
+    for(const p of rows){
+      if(p.status!=='open'||p.symbol!==sym||p.timeframe!==tf)continue;
+      const bar=candles.find(c=>Number(c.time)>Number(p.openedCandleTime)); if(!bar)continue;
+      const stopped=p.side==='BUY'?Number(bar.low)<=p.invalidation:Number(bar.high)>=p.invalidation;
+      const delta=(Number(bar.close)-p.entry)*(p.side==='BUY'?1:-1);
+      p.status='settled';p.settledCandleTime=bar.time;p.outcome=stopped?'invalidation reached':delta>0?'next close favorable':delta<0?'next close adverse':'next close unchanged';changed=true;
+    }
+    if(changed){localStorage.setItem(key,JSON.stringify(rows.slice(0,100)));return rows;}
+    return rows;
+  }catch(_e){return [];}
+}
+function psChart(candles){
+  const pts=candles.slice(-70), lo=Math.min(...pts.map(c=>Number(c.low))), hi=Math.max(...pts.map(c=>Number(c.high))), span=hi-lo||1;
+  const points=pts.map((c,i)=>`${(i/(pts.length-1||1))*600},${140-((Number(c.close)-lo)/span)*125}`).join(' ');
+  return '<svg viewBox="0 0 600 150" role="img" aria-label="Close-price history for the latest verified candles" style="width:100%;height:auto;margin-top:12px"><path d="M0 140H600M0 75H600M0 10H600" stroke="currentColor" opacity=".12"/><polyline fill="none" stroke="var(--accent)" stroke-width="2.5" points="'+points+'"/></svg>';
+}
+function renderProScalper(){
+  const select=$('#psSymbol');
+  if(!select.options.length){
+    const list=INSTR;
+    select.innerHTML=list.map(x=>'<option value="'+escHtml(x.s)+'">'+escHtml(x.n||x.s)+' · '+escHtml(x.s)+'</option>').join('');
+    if(DERIV_CODE_MAP['XAU/USD'])select.value='XAU/USD';
+  }
+  const audit=(()=>{try{return JSON.parse(localStorage.getItem('aurum-proscalper-audit-v1')||'[]')}catch(_e){return []}})();
+  $('#psAudit').textContent=audit.length?`${audit.length} local analysis audit event${audit.length===1?'':'s'}; latest ${new Date(audit[0].recordedAt).toLocaleString()}. Stored in this browser only.`:'No analysis event recorded.';
+  const btn=$('#psAnalyze'), bt=$('#psBacktest'), paper=$('#psPaper');
+  let latestResult=null;
+  if(btn.dataset.bound)return; btn.dataset.bound='1';
+  const getData=async(sym,tf)=>{
+    if(state.broker?.type==='mt5'){
+      const code=({'1m':'M1','5m':'M5','15m':'M15','1h':'H1'})[tf];
+      if(!code)throw new Error('No approved MT5 timeframe mapping.');
+      const result=await bridge.bridgeHistory(sym,code,300);
+      if(!result||result.type==='error'||!Array.isArray(result.candles))throw new Error(result?.message||`MT5 ${code} candle history unavailable.`);
+      return psClosed(result.candles,tf);
+    }
+    if(!DERIV_CODE_MAP[sym])throw new Error('No public Deriv candle mapping for this market; connect the read-only MT5 candle source.');
+    const raw=await fetchPublicCandles(sym,psSeconds(tf),500);
+    return psClosed(raw,tf);
+  };
+  const paintResult=(r,candles)=>{
+    latestResult=r; paper.disabled=!(r.signal==='BUY'||r.signal==='SELL')||!Number.isFinite(r.entryReference)||!Number.isFinite(r.invalidation);
+    $('#psSignal').textContent=r.signal; $('#psSignal').className=r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'';
+    $('#psFresh').textContent=typeof r.dataFreshness==='object'?`${r.dataFreshness.status} · ${Math.round(r.dataFreshness.ageMs/1000)}s`:'UNVERIFIED';
+    $('#psFresh').className='badge '+(r.dataFreshness?.status==='fresh'?'buy':'gray');
+    const mtf=r.evidence?.timeframeSignals?Object.entries(r.evidence.timeframeSignals).map(([k,v])=>`${k} ${v}`).join(' / '):'MTF unavailable';
+    $('#psSummary').textContent=`${r.symbol} · ${r.timeframe} · entry reference ${r.entryReference==null?'—':fmtPx(r.entryReference,5)} · invalidation ${r.invalidation==null?'—':fmtPx(r.invalidation,5)} · confidence ${r.confidence}% · ${mtf} · execution disabled`;
+    $('#psRejects').textContent=r.rejectionReasons?.length?'Withheld: '+r.rejectionReasons.join(' '):'No validation rejection. Technical signal only; not authorization to trade.';
+    $('#psForecast').innerHTML=r.forecast?['up','sideways','down'].map(k=>`<div class="row between" style="padding:7px 0;border-bottom:1px solid var(--border-soft)"><span>${k==='up'?'Up':k==='down'?'Down':'Sideways'}</span><b>${(r.forecast[k]*100).toFixed(1)}%</b></div>`).join(''):'Unavailable until validation passes.';
+    const i=r.indicators;
+    $('#psIndicators').innerHTML=i?`<div class="grid c2"><div>EMA 200 <b>${fmtPx(i.ema200,5)}</b></div><div>Parabolic SAR <b>${fmtPx(i.parabolicSar,5)}</b></div><div>MACD histogram <b>${fmtPx(i.macd.histogram,5)}</b></div><div>RSI 14 <b>${fmtPx(i.rsi,1)}</b></div><div>ADX 14 <b>${fmtPx(i.adx.adx,1)} · +DI ${fmtPx(i.adx.plusDI,1)} / −DI ${fmtPx(i.adx.minusDI,1)}</b></div><div>ATR 14 <b>${fmtPx(i.atr,5)}</b></div><div>Bollinger bands <b>${fmtPx(i.bollinger.lower,5)} / ${fmtPx(i.bollinger.mid,5)} / ${fmtPx(i.bollinger.upper,5)}</b></div><div>Volume ratio <b>${fmtPx(i.volume.ratio,2)}×</b></div></div>`:'Indicator values withheld: input validation failed.';
+    $('#psLevels').innerHTML=r.support?.length?`Support: ${r.support.map(v=>fmtPx(v,5)).join(' · ')}<br>Resistance: ${r.resistance.map(v=>fmtPx(v,5)).join(' · ')}${psChart(candles)}`:'Levels withheld pending valid data.';
+    const old=(()=>{try{return JSON.parse(localStorage.getItem('aurum-proscalper-audit-v1')||'[]')}catch(_e){return []}})();
+    const paperLog=(()=>{try{return JSON.parse(localStorage.getItem('aurum-proscalper-paper-v1')||'[]')}catch(_e){return []}})();
+    $('#psAudit').textContent=`Analysis audit · ${old.length} browser-local events · paper setups ${paperLog.filter(x=>x.status==='open').length} open / ${paperLog.filter(x=>x.status==='settled').length} settled. No orders submitted.`;
+  };
+  btn.onclick=async()=>{
+    btn.disabled=true; btn.textContent='Validating candle history…';
+    const sym=select.value,tf=$('#psTimeframe').value;
+    try{
+      const frames=psFrames(tf), [primary,...other]=await Promise.all([tf,...frames].map(f=>getData(sym,f)));
+      const confirmations=Object.fromEntries(frames.map((f,i)=>[f,deriveProScalperTimeframe(other[i],f,Date.now())]));
+      const paperRows=psPaperAdvance(sym,tf,primary);
+      $('#psAudit').textContent=paperRows.length?`Paper log: ${paperRows.filter(x=>x.status==='open').length} open · ${paperRows.filter(x=>x.status==='settled').length} settled. Hypothetical only; no money or orders.`:'No paper setups recorded.';
+      const result=analyzeProScalper({symbol:sym,timeframe:tf,candles:primary,confirmations});
+      psRecord({symbol:sym,timeframe:tf,signal:result.signal,confidence:result.confidence,rejectionReasons:result.rejectionReasons,forecast:result.forecast});
+      paintResult(result,primary);
+    }catch(err){
+      const result={symbol:sym,timeframe:tf,signal:'WAIT',confidence:0,rejectionReasons:[String(err.message||err)],dataFreshness:'unavailable',forecast:null};
+      psRecord({symbol:sym,timeframe:tf,signal:'WAIT',rejectionReasons:result.rejectionReasons}); paintResult(result,[]);
+    }finally{btn.disabled=false;btn.textContent='Read live candles';}
+  };
+  paper.onclick=()=>{
+    if(paper.disabled||!latestResult)return;
+    const key='aurum-proscalper-paper-v1';
+    try{
+      const rows=JSON.parse(localStorage.getItem(key)||'[]');
+      const item={id:globalThis.crypto?.randomUUID?.()||String(Date.now()),symbol:latestResult.symbol,timeframe:latestResult.timeframe,side:latestResult.signal,entry:latestResult.entryReference,invalidation:latestResult.invalidation,openedCandleTime:latestResult.dataFreshness.lastCandleTime,status:'open',openedAt:new Date().toISOString(),note:'Hypothetical analytical paper record; no funds, order or broker call.'};
+      rows.unshift(item);localStorage.setItem(key,JSON.stringify(rows.slice(0,100)));
+      psRecord({event:'paper-setup-opened',symbol:item.symbol,timeframe:item.timeframe,side:item.side,entry:item.entry,invalidation:item.invalidation});
+      $('#psAudit').textContent='Paper setup recorded locally. It will be checked against the next closed candle; no funds or orders are involved.';
+    }catch(_e){$('#psAudit').textContent='Browser-local paper log unavailable; no setup was recorded.';}
+  };
+  bt.onclick=async()=>{
+    bt.disabled=true;bt.textContent='Replaying historical bars…';
+    const sym=select.value,tf=$('#psTimeframe').value,frames=psFrames(tf);
+    try{
+      const [primary,...higher]=await Promise.all([tf,...frames].map(f=>getData(sym,f)));
+      const result=backtestProScalper({symbol:sym,timeframe:tf,candles:primary,higherCandles:Object.fromEntries(frames.map((f,i)=>[f,higher[i]]))});
+      $('#psRejects').textContent=`Walk-forward replay: ${result.signals} qualifying analytical signals · ${result.wins} next-close advances · ${result.losses} declines · ${result.winRate==null?'no measured sample':(result.winRate*100).toFixed(1)+'% advances'}. ${result.disclaimer} No orders.`;
+      psRecord({symbol:sym,timeframe:tf,event:'backtest',signals:result.signals,wins:result.wins,losses:result.losses});
+      $('#psAudit').textContent='Replay audit recorded locally; analysis only. No orders submitted.';
+    }catch(err){$('#psRejects').textContent='Replay unavailable: '+String(err.message||err)+'. No estimates substituted.';}
+    finally{bt.disabled=false;bt.textContent='Run walk-forward replay';}
+  };
+}
+
 let booted=false;
 function boot(){
   enteredWorkspace=true; /* cloud viewer: from here on this browser may read Deriv candles (see hostedSignalBatch) */
@@ -5833,30 +5973,52 @@ applyTheme();
 
 /* ---------- position sizer + trade planner (master §11) ---------- */
 async function sizePlanSpecs(){
-  /* contract specs come from the broker quote (volume_min/contract_size, 20a)
-     — cached 30s; WITHOUT them the plan stays INCOMPLETE (never assumed) */
+  /* All CFD specs and the sizing entry quote must come from this MT5 terminal.
+     Do not derive broker volume steps or substitute the app's Deriv price. */
   const I=bySym[state.chart&&state.chart.sym];
-  if(!I)return null;
-  if(state.cfdSpec&&state.cfdSpec.sym===I.s&&Date.now()-state.cfdSpec.at<30000)return state.cfdSpec;
-  if(state.broker&&state.broker.type==='mt5'){
-    try{
-      const q=await bridge.quoteBridge([I.s.replace('/','')]);
-      const r=q&&q.quotes&&q.quotes[0];
-      if(r&&r.volume_min>0&&r.contract_size>0){
-        state.cfdSpec={sym:I.s,at:Date.now(),volumeMin:r.volume_min,contractSize:r.contract_size,ask:r.ask||null,bid:r.bid||null};
-        return state.cfdSpec;
-      }
-    }catch(_e){}
-  }
-  return state.cfdSpec&&state.cfdSpec.sym===I.s?state.cfdSpec:null;
+  if(!I||state.broker?.type!=='mt5')return null;
+  const now=Date.now(),cached=state.cfdSpec;
+  const freshQuote=(spec)=>spec&&spec.sym===I.s&&Number.isFinite(spec.quoteAt)
+    &&now-spec.quoteAt>=-5000&&now-spec.quoteAt<=60000;
+  if(cached&&cached.sym===I.s&&now-cached.at<30000&&freshQuote(cached)
+     &&cached.volumeMin>0&&cached.volumeStep>0&&cached.volumeMax>=cached.volumeMin&&cached.contractSize>0)return cached;
+  try{
+    const q=await bridge.quoteBridge([I.s.replace('/','')]);
+    const r=q&&q.quotes&&q.quotes[0];
+    const quoteAt=Number(r?.time)*1000;
+    if(state.broker?.type!=='mt5'||state.chart.sym!==I.s)return null;
+    if(r&&Number.isFinite(quoteAt)&&now-quoteAt>=-5000&&now-quoteAt<=60000
+       &&Number.isFinite(Number(r.bid))&&Number(r.bid)>0
+       &&Number.isFinite(Number(r.ask))&&Number(r.ask)>0
+       &&Number.isFinite(Number(r.volume_min))&&Number(r.volume_min)>0
+       &&Number.isFinite(Number(r.volume_max))&&Number(r.volume_max)>=Number(r.volume_min)
+       &&Number.isFinite(Number(r.volume_step))&&Number(r.volume_step)>0
+       &&Number.isFinite(Number(r.contract_size))&&Number(r.contract_size)>0){
+      state.cfdSpec={sym:I.s,at:now,quoteAt,volumeMin:Number(r.volume_min),
+        volumeStep:Number(r.volume_step),volumeMax:Number(r.volume_max),
+        contractSize:Number(r.contract_size),currencyBase:r.currency_base||null,
+        currencyProfit:r.currency_profit||null,ask:Number(r.ask),bid:Number(r.bid),brokerSymbol:r.symbol||null};
+      return state.cfdSpec;
+    }
+  }catch(_e){}
+  return freshQuote(cached)&&cached.sym===I.s?cached:null;
+}
+function refreshMt5SizePlan(){
+  if(state.broker?.type!=='mt5')return;
+  void sizePlanSpecs().then(()=>renderSizePlan()).catch(()=>renderSizePlan());
 }
 function renderSizePlan(){
   const el=document.getElementById('sizePlanBody'); if(!el)return;
   const I=bySym[state.chart&&state.chart.sym];
   const amt=parseFloat(($('#orderAmount')||{}).value), sl=parseFloat(($('#orderSL')||{}).value), tp=parseFloat(($('#orderTP')||{}).value);
-  const riskPct=Number(($('#riskRange')||{}).value)||2;
+  const requestedRiskPct=Number(($('#riskRange')||{}).value)||2;
   const acct=state.broker&&state.broker.account||{};
   const isMt5=state.broker?.type==='mt5';
+  const riskPct=isMt5?Math.min(requestedRiskPct,0.5):requestedRiskPct;
+  const spec=state.cfdSpec&&state.cfdSpec.sym===(I&&I.s)?state.cfdSpec:null;
+  const quoteAge=spec&&Number.isFinite(spec.quoteAt)?Date.now()-spec.quoteAt:Infinity;
+  const freshBrokerEntry=spec&&quoteAge>=-5000&&quoteAge<=60000
+    ?(state.side==='SELL'?spec.bid:spec.ask):null;
   // Exness CFD risk sizing must use the terminal-reported equity; never substitute balance.
   const reportedEquity=isMt5&&acct.equity!=null&&Number.isFinite(Number(acct.equity))?Number(acct.equity):null;
   const equity=isMt5?reportedEquity:state.balance, equityCurrency=acct.currency||'USD';
@@ -5866,11 +6028,12 @@ function renderSizePlan(){
     : {
         venue:'cfd',equity,equityCurrency,orderCurrency:'USD',
         conversionRate:(equityCurrency==='USD')?1:Number(($('#convRate')||{}).value)||null,
-        riskPct,entry:(I&&I.p!=null)?I.p:null,
+        riskPct,entry:freshBrokerEntry,
         sl:isNaN(sl)?null:sl,tp1:isNaN(tp)?null:tp,side:state.side||'BUY',
-        contractSize:(state.cfdSpec&&state.cfdSpec.sym===(I&&I.s))?state.cfdSpec.contractSize:null,
-        volumeMin:(state.cfdSpec&&state.cfdSpec.sym===(I&&I.s))?state.cfdSpec.volumeMin:null,
-        volumeStep:(state.cfdSpec&&state.cfdSpec.sym===(I&&I.s))?Math.min(0.01,state.cfdSpec.volumeMin/10)||0.01:null,
+        contractSize:spec&&spec.contractSize>0?spec.contractSize:null,
+        volumeMin:spec&&spec.volumeMin>0?spec.volumeMin:null,
+        volumeStep:spec&&spec.volumeStep>0?spec.volumeStep:null,
+        volumeMax:spec&&spec.volumeMax>=spec.volumeMin?spec.volumeMax:null,
         leverage:acct.leverage?Number(acct.leverage):null
       });
   const cur=plan.currency||'USD';
@@ -5882,6 +6045,7 @@ function renderSizePlan(){
     const leverageText=acct.leverage!=null&&Number.isFinite(lev)&&lev>0?'1:'+lev.toLocaleString('en-US',{maximumFractionDigits:2}):'unknown — margin not estimated';
     h+=row('MT5 equity (latest broker snapshot)',equityText);
     h+=row('MT5 leverage',leverageText);
+    h+=row('Broker contract / volume specs',spec?escHtml(String(spec.contractSize))+' contract · '+escHtml(String(spec.volumeMin))+'–'+escHtml(String(spec.volumeMax))+' lots · step '+escHtml(String(spec.volumeStep)):'waiting for fresh MT5 quote/specs');
   }
   if(plan.status==='INCOMPLETE'){
     h+='<div style="color:var(--amber)">INCOMPLETE — '+escHtml(plan.reason)+'</div>';
@@ -5912,7 +6076,7 @@ function renderSizePlan(){
     }
     $$('#sizePlan .size-tier').forEach(b=>b.onclick=()=>{
       const v=plan.tiers[b.dataset.tier]; if(v==null)return;
-      const spec=state.cfdSpec; const px=(I&&I.p)||0;
+      const spec=state.cfdSpec; const px=isMt5?freshBrokerEntry:((I&&I.p)||0);
       if(spec&&px>0){ const usd=v*spec.contractSize*px; const amtEl=$('#orderAmount'); if(amtEl){ amtEl.value=Math.round(usd); toast('Sizer','Amount set to ≈'+fmtMoney(usd)+' ('+v+' lots at '+fmtPx(px,I&&I.d||2)+')','ok'); } }
     });
   }

@@ -6,13 +6,15 @@ The user-approved scope is **manual DEMO-account order entry only**. The local b
 
 **This is not yet verified for use with a real Exness terminal, even on demo.** The latest tests use mocked MT5 responses; no live terminal end-to-end order test was performed. Do not treat this as a validated or production-safe trading path, and do not test against a live account.
 
-Current local checks: `npm run build` passed; `npm test` passed (388 smoke assertions; 836 Node tests passed, 1 skipped); `python3 -m unittest discover -s tests` passed (62 tests). The tests do not validate MetaTrader5's behavior against an actual Exness demo server.
+Current local checks: `npm run build` passed; `npm test` passed (390 smoke assertions; 837 Node tests passed, 1 skipped); `python3 -m unittest discover -s tests` passed (66 tests). The tests do not validate MetaTrader5's behavior against an actual Exness demo server.
 
 ### Implemented demo-only safeguards
 
 - Both client and Python bridge require MT5-reported DEMO trade mode. The bridge also binds every action to the authenticated Exness login/server and requires a connected, trade-enabled terminal and USD account.
 - The bridge recalculates the plan from broker account data, symbol rules, fresh bid/ask, broker profit/margin calculators, current positions, and the current UTC day's realized broker history. Unknown/stale required data blocks the preview or send.
 - The preview is server-held, unguessable, and expires after 30 seconds. Confirmation rechecks size, SL/TP, quote, risk, account, margin, and positions. A changed order requires a new preview and confirmation.
+- The ticket sizer now refreshes contract size, minimum/maximum lot, exact volume step, and broker bid/ask on MT5 connect, symbol change, and account refresh. It does not synthesize the step or substitute the Deriv price for the Exness quote. A missing/stale quote or any required volume spec leaves the plan incomplete; the computed size is capped at the broker maximum and rounded down to its step.
+- Symbol lookup now prefers exact names, then a unique decorated prefix/suffix (including Exness names such as `XAUUSDm`), or a sole visible match; multiple visible variants fail closed with a diagnostic. The Gold monitor discovers its exact XAU/USD symbol from the connected terminal catalogue before requesting candles and quotes.
 - Limits currently configured in code: one open MT5 position, 0.5% buffered estimated stop risk per order, a 2% daily realized-loss threshold, reward/risk of at least 1.2, and maximum 80% of free margin. These are software estimates/guards, not guaranteed maximum losses; floating P/L and slippage/gaps are not guaranteed to be contained by the realized-loss threshold or fixed buffer.
 - A unique intent is cached during the bridge process; order submission is attempted once. An uncertain, partial, or pending result blocks subsequent app sends until the user inspects MT5 positions/history and restarts the bridge after understanding the outcome. There is no automatic retry. Closing positions and Sniper/automated entries are explicitly unavailable in the app; manage demo positions directly in MT5.
 

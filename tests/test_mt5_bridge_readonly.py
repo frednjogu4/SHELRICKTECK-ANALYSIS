@@ -27,6 +27,7 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         cls.bridge = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.bridge)
         cls.fake_mt5 = fake_mt5
+        cls.original_resolve_symbol = cls.bridge.resolve_symbol
 
     @classmethod
     def tearDownClass(cls):
@@ -40,6 +41,7 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
 
     def setUp(self):
         b, m = self.bridge, self.fake_mt5
+        b.resolve_symbol = type(self).original_resolve_symbol
         b._LOCKED_LOGIN, b._LOCKED_SERVER = 43210, "ExnessDemoServer"
         b._DEMO_PREVIEWS.clear()
         b._DEMO_ORDER_REPLIES.clear()
@@ -62,7 +64,7 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         ))
         m.terminal_info = Mock(return_value=types.SimpleNamespace(connected=True, trade_allowed=True))
         m.symbol_info = Mock(return_value=types.SimpleNamespace(
-            visible=True, trade_mode=4, volume_min=0.01, volume_max=100.0,
+            name="US30Cash", visible=True, trade_mode=4, volume_min=0.01, volume_max=100.0,
             volume_step=0.01, trade_contract_size=1.0, point=0.01,
             digits=2, trade_stops_level=0, trade_filling_mode=0
         ))
@@ -99,6 +101,73 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         preview = self.bridge.handle_demo_preview(self.demo_request())
         self.assertEqual(preview["type"], "error")
         self.assertIn("demo-only", preview["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_broker_minimum_above_demo_notional_cap_refuses_with_actionable_values(self):
+        self.fake_mt5.symbol_info.return_value.volume_min = 2000.0
+        self.fake_mt5.symbol_info.return_value.volume_step = 1.0
+        reply = self.bridge.handle_demo_preview(self.demo_request(volume=100.0))
+        self.assertEqual(reply["type"], "error")
+        self.assertIn("$200,000.00", reply["message"])
+        self.assertIn("$10,000.00", reply["message"])
+        self.assertIn("Reducing the requested size cannot get below the broker minimum", reply["message"])
+        self.assertIn("No order was sent", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_m15_history_is_read_only_and_uses_mt5_tick_volume(self):
+        self.fake_mt5.TIMEFRAME_M1 = 1
+        self.fake_mt5.TIMEFRAME_M5 = 5
+        self.fake_mt5.TIMEFRAME_M15 = 15
+        self.fake_mt5.TIMEFRAME_H1 = 60
+        self.bridge.resolve_symbol = lambda _requested: "US30Cash"
+        rows = [{"time": 1_800_000_000 + i * 900, "open": 100.0, "high": 101.0,
+                 "low": 99.0, "close": 100.5, "tick_volume": 123} for i in range(60)]
+        self.fake_mt5.copy_rates_from_pos = Mock(return_value=rows)
+        reply = self.bridge.handle_history({"symbol": "US30", "timeframe": "M15", "count": 250})
+        self.assertEqual(reply["type"], "history")
+        self.fake_mt5.copy_rates_from_pos.assert_called_once_with("US30Cash", 15, 0, 250)
+        self.assertEqual(reply["candles"][0]["volume"], 123)
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_mt5_symbol_mapping_resolves_unique_suffix_prefix_and_visible_aliases(self):
+        info = types.SimpleNamespace(name="XAUUSDm", visible=True, volume_min=0.01)
+        self.fake_mt5.symbols_get.return_value = [types.SimpleNamespace(name="XAUUSDm")]
+        self.fake_mt5.symbol_info.side_effect = lambda name: info if name == "XAUUSDm" else None
+        self.fake_mt5.symbol_select.return_value = True
+        self.assertEqual(self.bridge.resolve_symbol("XAU/USD"), "XAUUSDm")
+        self.assertEqual(self.bridge.resolve_symbol("XAUUSDm"), "XAUUSDm")
+
+        prefixed = types.SimpleNamespace(name="mEURUSD", visible=False)
+        self.fake_mt5.symbols_get.return_value = [types.SimpleNamespace(name="mEURUSD")]
+        self.fake_mt5.symbol_info.side_effect = lambda name: prefixed if name == "mEURUSD" else None
+        self.assertEqual(self.bridge.resolve_symbol("EURUSD"), "mEURUSD")
+
+        primary = types.SimpleNamespace(name="XAUUSDm", visible=True)
+        alternate = types.SimpleNamespace(name="XAUUSD.pro", visible=False)
+        self.fake_mt5.symbols_get.return_value = [types.SimpleNamespace(name="XAUUSDm"), types.SimpleNamespace(name="XAUUSD.pro")]
+        self.fake_mt5.symbol_info.side_effect = lambda name: {"XAUUSDm": primary, "XAUUSD.pro": alternate}.get(name)
+        self.assertEqual(self.bridge.resolve_symbol("XAUUSD"), "XAUUSDm")
+
+    def test_mt5_symbol_mapping_fails_closed_when_multiple_visible_variants(self):
+        infos = {
+            "XAUUSDm": types.SimpleNamespace(name="XAUUSDm", visible=True),
+            "XAUUSD.pro": types.SimpleNamespace(name="XAUUSD.pro", visible=True),
+        }
+        self.fake_mt5.symbols_get.return_value = [types.SimpleNamespace(name=name) for name in infos]
+        self.fake_mt5.symbol_info.side_effect = lambda name: infos.get(name)
+        reply = self.bridge.handle_history({"symbol": "XAUUSD", "timeframe": "M1"})
+        self.assertEqual(reply["type"], "error")
+        self.assertIn("matches multiple broker symbols", reply["message"])
+        self.assertIn("XAUUSDm", reply["message"])
+        self.assertIn("XAUUSD.pro", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_trade_permission_off_blocks_demo_preview_without_ordering(self):
+        self.fake_mt5.terminal_info.return_value.trade_allowed = False
+        reply = self.bridge.handle_demo_preview(self.demo_request())
+        self.assertEqual(reply["type"], "error")
+        self.assertIn("Algo Trading", reply["message"])
+        self.assertIn("manually confirmed DEMO order", reply["message"])
         self.fake_mt5.order_send.assert_not_called()
 
     def test_missing_mt5_demo_mode_constant_fails_closed(self):
@@ -220,10 +289,18 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
 
         self.bridge.resolve_symbol = Mock(return_value="US30Cash")
         self.fake_mt5.symbol_info_tick.return_value = types.SimpleNamespace(bid=40000.0, ask=40001.0, time=int(time.time()))
-        self.fake_mt5.symbol_info.return_value = types.SimpleNamespace(volume_min=0.1, trade_contract_size=1.0, trade_mode=4, digits=2)
+        self.fake_mt5.symbol_info.return_value = types.SimpleNamespace(
+            volume_min=0.1, volume_max=50.0, volume_step=0.1, trade_contract_size=1.0,
+            currency_base="USD", currency_profit="USD", trade_mode=4, digits=2
+        )
         reply = self.bridge.handle_quote({"symbols": ["US30"]})
         self.assertEqual(reply["type"], "quotes")
-        self.assertEqual(reply["quotes"][0]["trade_mode"], 4)
+        quote = reply["quotes"][0]
+        self.assertEqual(quote["trade_mode"], 4)
+        self.assertEqual(quote["volume_min"], 0.1)
+        self.assertEqual(quote["volume_step"], 0.1)
+        self.assertEqual(quote["contract_size"], 1.0)
+        self.assertEqual(quote["currency_profit"], "USD")
 
 
 if __name__ == "__main__":

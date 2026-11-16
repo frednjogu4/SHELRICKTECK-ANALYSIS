@@ -21,7 +21,7 @@ function roundToStep(x, step) {
  *   venue        'cfd' | 'fixed'
  *   CFD: equity, equityCurrency, orderCurrency='USD', conversionRate (equity->order ccy, user-supplied),
  *        riskPct, entry, sl, tp1?, tp2?, side 'BUY'|'SELL',
- *        contractSize, volumeMin, volumeStep, leverage?, feeNote?, maxNotional?
+ *        contractSize, volumeMin, volumeStep, volumeMax, leverage?, feeNote?, maxNotional?
  *   fixed: stake, currency, payout?
  */
 export function planPosition(i) {
@@ -45,7 +45,7 @@ export function planPosition(i) {
 
   const equity = Number(i?.equity), riskPct = Number(i?.riskPct);
   const entry = Number(i?.entry), sl = Number(i?.sl);
-  const cs = Number(i?.contractSize), vmin = Number(i?.volumeMin), vstep = Number(i?.volumeStep);
+  const cs = Number(i?.contractSize), vmin = Number(i?.volumeMin), vstep = Number(i?.volumeStep), vmax = Number(i?.volumeMax);
   const side = String(i?.side || 'BUY').toUpperCase();
   const orderCcy = String(i?.orderCurrency || 'USD');
   const equityCcy = String(i?.equityCurrency || orderCcy);
@@ -60,6 +60,7 @@ export function planPosition(i) {
   if (!Number.isFinite(cs) || cs <= 0) missing.push('contract size');
   if (!Number.isFinite(vmin) || vmin <= 0) missing.push('broker minimum volume');
   if (!Number.isFinite(vstep) || vstep <= 0) missing.push('broker volume step');
+  if (!Number.isFinite(vmax) || vmax <= 0) missing.push('broker maximum volume');
   if (equityCcy !== orderCcy) {
     if (!Number.isFinite(conv) || conv <= 0) missing.push('conversion rate ' + equityCcy + '→' + orderCcy + ' (user-supplied — never assumed)');
     } else { conv = 1; }
@@ -82,7 +83,10 @@ export function planPosition(i) {
   const riskBudgetAcct = equityCcy === orderCcy ? riskBudget : equity * riskPct / 100;
   const lossPerLot = stopDist * cs * conv;                         // order ccy
   const lotsRaw = riskBudget / lossPerLot;
-  const lots = roundToStep(lotsRaw, vstep);
+  if (vmax < vmin) return { status: 'BLOCKED', reason: 'Broker maximum volume is below its minimum volume.', formula: FORMULA_CFD, inputs, warnings, currency: orderCcy };
+  const brokerMaxLots = roundToStep(vmax, vstep);
+  if (brokerMaxLots < vmin) return { status: 'BLOCKED', reason: 'Broker maximum volume cannot reach the broker minimum after applying its volume step.', formula: FORMULA_CFD, inputs, warnings, currency: orderCcy };
+  const lots = Math.min(roundToStep(lotsRaw, vstep), brokerMaxLots);
 
   const minNotional = vmin * cs * entry * conv;
   const minRiskAtMinLot = vmin * lossPerLot;
