@@ -243,6 +243,10 @@ export function buildProScalperSnapshot(candles, options = {}) {
     candleCount: candles.length,
     latestCandleTime: candles.at(-1).time ?? null,
     indicators: {
+      ema200: emaSeries(closes, 200)?.at(-1) ?? null,
+      parabolicSar: parabolicSar(candles)?.at(-1) ?? null,
+      macd: macdSeries(closes)?.at(-1) ?? null,
+      nextCandleContext: nextCandleContext(candles),
       stochasticRsi: stochasticRsi(closes),
       cci: cci(candles),
       williamsR: williamsR(candles),
@@ -259,6 +263,112 @@ export function buildProScalperSnapshot(candles, options = {}) {
       volumeDerivedIndicatorsStatus: volumeReady ? 'AVAILABLE' : 'UNAVAILABLE_REAL_VOLUME_REQUIRED',
       volumeProfileMethod: 'bar-close approximation; not tick-level volume-at-price'
     },
+    executionAuthorized: false
+  };
+}
+
+
+/** Exponential moving average series. Nulls are retained during warm-up. */
+export function emaSeries(closes, period = 200) {
+  if (!validCloses(closes, period) || !Number.isInteger(period) || period < 2) return null;
+  const out = new Array(closes.length).fill(null);
+  let value = mean(closes.slice(0, period).map(Number));
+  out[period - 1] = value;
+  const alpha = 2 / (period + 1);
+  for (let i = period; i < closes.length; i++) {
+    value = Number(closes[i]) * alpha + value * (1 - alpha);
+    out[i] = value;
+  }
+  return out;
+}
+
+/** MACD(12,26,9), calculated from close-only data with explicit warm-up. */
+export function macdSeries(closes, fast = 12, slow = 26, signal = 9) {
+  if (!validCloses(closes, slow + signal) ||
+      ![fast, slow, signal].every(Number.isInteger) || fast < 2 || slow <= fast || signal < 2) return null;
+  const fastEma = emaSeries(closes, fast);
+  const slowEma = emaSeries(closes, slow);
+  const line = closes.map((_, i) => fastEma[i] == null || slowEma[i] == null ? null : fastEma[i] - slowEma[i]);
+  const first = line.findIndex(Number.isFinite);
+  const signalValues = new Array(closes.length).fill(null);
+  if (first < 0 || closes.length - first < signal) return null;
+  const seeded = emaSeries(line.slice(first), signal);
+  if (!seeded) return null;
+  for (let i = 0; i < seeded.length; i++) signalValues[first + i] = seeded[i];
+  return line.map((v, i) => ({
+    macd: v,
+    signal: signalValues[i],
+    histogram: v == null || signalValues[i] == null ? null : v - signalValues[i]
+  }));
+}
+
+/** Wilder-style Parabolic SAR series. Input candles must be chronological and closed. */
+export function parabolicSar(candles, step = 0.02, maximum = 0.2) {
+  if (!validCandles(candles, 3) || !Number.isFinite(step) || !Number.isFinite(maximum) ||
+      step <= 0 || maximum < step || maximum > 1) return null;
+  const out = new Array(candles.length).fill(null);
+  let rising = Number(candles[1].close) >= Number(candles[0].close);
+  let sar = rising ? Math.min(Number(candles[0].low), Number(candles[1].low))
+                   : Math.max(Number(candles[0].high), Number(candles[1].high));
+  let extreme = rising ? Math.max(Number(candles[0].high), Number(candles[1].high))
+                       : Math.min(Number(candles[0].low), Number(candles[1].low));
+  let acceleration = step;
+  out[1] = { value: sar, direction: rising ? 'UP' : 'DOWN' };
+  for (let i = 2; i < candles.length; i++) {
+    const current = candles[i], previous = candles[i - 1], prior = candles[i - 2];
+    let next = sar + acceleration * (extreme - sar);
+    if (rising) next = Math.min(next, Number(previous.low), Number(prior.low));
+    else next = Math.max(next, Number(previous.high), Number(prior.high));
+    const reversal = rising ? Number(current.low) < next : Number(current.high) > next;
+    if (reversal) {
+      rising = !rising;
+      next = extreme;
+      extreme = rising ? Number(current.high) : Number(current.low);
+      acceleration = step;
+    } else if ((rising && Number(current.high) > extreme) || (!rising && Number(current.low) < extreme)) {
+      extreme = rising ? Number(current.high) : Number(current.low);
+      acceleration = Math.min(maximum, acceleration + step);
+    }
+    sar = next;
+    out[i] = { value: sar, direction: rising ? 'UP' : 'DOWN' };
+  }
+  return out;
+}
+
+/**
+ * Educational next-candle context. This is a transparent indicator confluence
+ * summary, NOT a calibrated forecast, probability, trade signal, or order instruction.
+ */
+export function nextCandleContext(candles) {
+  if (!validCandles(candles, 220)) {
+    return { available: false, status: 'INSUFFICIENT_OR_INVALID_CLOSED_CANDLES', required: 220 };
+  }
+  const closes = candles.map((c) => Number(c.close));
+  const ema200 = emaSeries(closes, 200)?.at(-1);
+  const sar = parabolicSar(candles)?.at(-1);
+  const macd = macdSeries(closes)?.at(-1);
+  const price = closes.at(-1);
+  if (![ema200, sar?.value, macd?.macd, macd?.signal, macd?.histogram].every(Number.isFinite)) {
+    return { available: false, status: 'INDICATOR_WARMUP_OR_INVALID', required: 220 };
+  }
+  const evidence = {
+    ema200: price > ema200 ? 'ABOVE' : price < ema200 ? 'BELOW' : 'AT',
+    parabolicSar: sar.direction,
+    macd: macd.macd > macd.signal ? 'ABOVE_SIGNAL' : macd.macd < macd.signal ? 'BELOW_SIGNAL' : 'AT_SIGNAL',
+    macdHistogram: macd.histogram > 0 ? 'POSITIVE' : macd.histogram < 0 ? 'NEGATIVE' : 'NEUTRAL'
+  };
+  const bullish = Number(evidence.ema200 === 'ABOVE') + Number(evidence.parabolicSar === 'UP') +
+    Number(evidence.macd === 'ABOVE_SIGNAL') + Number(evidence.macdHistogram === 'POSITIVE');
+  const bearish = Number(evidence.ema200 === 'BELOW') + Number(evidence.parabolicSar === 'DOWN') +
+    Number(evidence.macd === 'BELOW_SIGNAL') + Number(evidence.macdHistogram === 'NEGATIVE');
+  const bias = bullish > bearish ? 'BULLISH_CONTEXT' : bearish > bullish ? 'BEARISH_CONTEXT' : 'MIXED_CONTEXT';
+  return {
+    available: true,
+    status: 'EDUCATIONAL_INDICATOR_CONTEXT_ONLY',
+    bias,
+    evidence,
+    agreement: { bullish, bearish, total: 4 },
+    note: 'Not a next-candle prediction, probability, BUY/SELL signal, or recommendation. A future candle cannot be known in advance.',
     executionAuthorized: false
   };
 }

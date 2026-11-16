@@ -89,3 +89,39 @@ test('snapshot fails closed on invalid candles and never authorizes execution', 
   assert.equal(noVolume.indicators.obv, null);
   assert.equal(noVolume.dataQuality.volumeAvailable, false);
 });
+
+
+test('EMA 200 returns null during warm-up and a finite value afterwards', async () => {
+  const { emaSeries } = await import('../lib/indicators.pro.js');
+  const closes = makeCandles(220).map((c) => c.close);
+  assert.equal(emaSeries(closes.slice(0, 199), 200), null);
+  assert.ok(Number.isFinite(emaSeries(closes, 200).at(-1)));
+});
+
+test('MACD returns line, signal and histogram after warm-up', async () => {
+  const { macdSeries } = await import('../lib/indicators.pro.js');
+  const closes = makeCandles(100).map((c) => c.close);
+  const last = macdSeries(closes).at(-1);
+  assert.ok(Number.isFinite(last.macd));
+  assert.ok(Number.isFinite(last.signal));
+  assert.ok(Number.isFinite(last.histogram));
+});
+
+test('Parabolic SAR produces finite directional points and validates parameters', async () => {
+  const { parabolicSar } = await import('../lib/indicators.pro.js');
+  const candles = makeCandles(80);
+  const last = parabolicSar(candles).at(-1);
+  assert.ok(Number.isFinite(last.value));
+  assert.ok(['UP', 'DOWN'].includes(last.direction));
+  assert.equal(parabolicSar(candles, 0.2, 0.02), null);
+});
+
+test('next-candle context is educational only and fails closed on insufficient history', async () => {
+  const { nextCandleContext } = await import('../lib/indicators.pro.js');
+  assert.equal(nextCandleContext(makeCandles(100)).available, false);
+  const result = nextCandleContext(makeCandles(240));
+  assert.equal(result.available, true);
+  assert.match(result.note, /Not a next-candle prediction/);
+  assert.equal(result.executionAuthorized, false);
+  assert.ok(!('probability' in result));
+});
