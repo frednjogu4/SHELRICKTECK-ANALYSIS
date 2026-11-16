@@ -12,7 +12,6 @@ import * as bridgeMod from './bridge.js';
 import { readMt5Identity, saveMt5Identity, forgetMt5Identity } from './mt5identity.js';
 import { marketStatus, typicalActiveWindow, MARKET_HOURS_NOTE } from '../server/lib/markethours.js';
 import * as feed from './marketdata.js';
-import { fetchPublicCandles } from './marketdata.js';
 import { analyzeProScalper, deriveProScalperTimeframe, backtestProScalper } from '../server/lib/proscalper.js';
 import * as tv from './tradingview.js';
 import { planPosition } from './sizer.js';
@@ -5136,7 +5135,9 @@ function renderProScalper(){
       return psClosed(result.candles,tf);
     }
     if(!DERIV_CODE_MAP[sym])throw new Error('No public Deriv candle mapping for this market; connect the read-only MT5 candle source.');
-    const raw=await fetchPublicCandles(sym,psSeconds(tf),500);
+    /* Request a full 600-candle lookback across market closures. The one-shot history helper
+       can return fewer than 220 bars over weekends/session gaps, even when the API call succeeds. */
+    const raw=await candleHistory.fetchCandles(sym,psSeconds(tf),600,{acrossClosures:true});
     return psClosed(raw,tf);
   };
   const paintResult=(r,candles)=>{
