@@ -30,7 +30,7 @@ export function parabolicSar(candles, step = 0.02, maxStep = 0.2) {
 
 function validateCandles(candles, timeframe, now) {
   const issues = [];
-  if (!Array.isArray(candles) || candles.length < MIN_BARS) return [`Need at least ${MIN_BARS} candles for EMA 200.`];
+  if (!Array.isArray(candles) || candles.length < MIN_BARS) return [`Need at least ${MIN_BARS} closed candles for EMA 200; received ${Array.isArray(candles) ? candles.length : 0}.`];
   let prior = -Infinity;
   for (let i = 0; i < candles.length; i++) {
     const c = candles[i];

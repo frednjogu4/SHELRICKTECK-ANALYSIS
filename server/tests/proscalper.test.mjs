@@ -23,6 +23,13 @@ test('Pro Scalper emits evidence and strictly analytical output on validated inp
   assert.ok(result.support.length && result.resistance.length);
 });
 
+test('short histories report the received closed-bar count instead of implying a reading',()=>{
+  const now=Date.now(),result=analyzeProScalper({symbol:'T',timeframe:'1m',candles:bars({count:219,now}),now});
+  assert.equal(result.signal,'WAIT');
+  assert.match(result.rejectionReasons[0],/Need at least 220 closed candles for EMA 200; received 219/);
+  assert.equal(result.forecast,null);
+});
+
 test('missing volume, malformed OHLC, stale and forming candles fail closed',()=>{
   const now=Date.now();
   let c=bars({now}); c[10]={...c[10],volume:null};
