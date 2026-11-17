@@ -23,6 +23,18 @@ test('enabling Auto-refresh triggers an immediate check; later retries are 60 se
   assert.match(main, /Date\.now\(\)>=goldNextAttemptAt\)runGoldAnalysis\(\)/);
 });
 
+test('Gold monitor includes a read-only five-minute candlestick chart from its verified source', () => {
+  const html = read('../index.html');
+  const main = read('../src/main.js');
+  assert.match(html, /id="goldChart"/);
+  assert.match(html, /Gold \/ USD price chart/);
+  assert.match(html, /chart only, not an order or signal/);
+  assert.match(main, /bridge\.bridgeHistory\(symbol,'M5',120\)/);
+  assert.match(main, /historyCandles\(GOLD_SYMBOL,300,120,\{acrossClosures:true\}\)/);
+  assert.match(main, /renderGoldCandlestickChart\(goldChartRows/);
+  assert.match(main, /Date\.now\(\)-goldChartAt>GOLD_REFRESH_MS/);
+});
+
 test('failed Exness analysis clears quote and uses only an explicitly-labelled fallback', () => {
   const main = read('../src/main.js');
   const start = main.indexOf('async function runGoldAnalysis');

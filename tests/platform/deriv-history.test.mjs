@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createCandleClient, normalizeCandles, isFeedFailure, ttlFor, sameCandle, CandleError, GRANULARITIES } from '../../src/derivhistory.js';
+import { createCandleClient, normalizeCandles, normalizeTicks, isFeedFailure, ttlFor, sameCandle, CandleError, GRANULARITIES } from '../../src/derivhistory.js';
 import { DERIV_PUBLIC_URL } from '../../src/marketdata.js';
 import { createReadOnlyWorker } from '../../cloudflare/worker.js';
 import { createCandleFetcher } from '../../server/lib/derivfeed.js';
@@ -83,6 +83,25 @@ for (const instrument of DERIV_INSTRUMENTS) {
     } finally { client.close(); }
   });
 }
+
+test('public quote-tick history is normalized and requested read-only for volume proxies', async () => {
+  const { FakeSocket, sockets } = fakeSocketClass({
+    onRequest: (socket, message) => setTimeout(() => socket.reply({
+      msg_type: 'history', req_id: message.req_id,
+      history: { times: [1800000000, 1800000001, 1800000001], prices: ['4000.1', 4000.2, 4000.15] }
+    }), 0)
+  });
+  const client = createCandleClient({ WebSocketImpl: FakeSocket, lingerMs: 5 });
+  try {
+    const ticks = await client.fetchTicks('XAU/USD', 5000);
+    assert.equal(sockets.length, 1);
+    assert.deepEqual(sockets[0].sent[0], {ticks_history:'frxXAUUSD',count:5000,end:'latest',style:'ticks',req_id:sockets[0].sent[0].req_id});
+    assert.deepEqual(ticks, [{time:1800000000,price:4000.1},{time:1800000001,price:4000.2},{time:1800000001,price:4000.15}]);
+  } finally { client.close(); }
+  assert.deepEqual(normalizeTicks({times:[1,2],prices:['3','4']}),[{time:1,price:3},{time:2,price:4}]);
+  assert.deepEqual(normalizeTicks({times:[2,1],prices:[3,4]}),[]);
+  assert.deepEqual(normalizeTicks({times:[1],prices:[-1]}),[]);
+});
 
 test('index CFDs have no Deriv candle feed: refused without opening a connection', async () => {
   const { FakeSocket, sockets } = answeringFeed();

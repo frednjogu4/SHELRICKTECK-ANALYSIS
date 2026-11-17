@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeProScalper, backtestProScalper, deriveProScalperTimeframe, parabolicSar } from '../lib/proscalper.js';
+import { analyzeProScalper, attachDerivTickVolume, backtestProScalper, deriveProScalperTimeframe, parabolicSar } from '../lib/proscalper.js';
 
 function bars({count=260, tf=60, now=Date.now(), slope=0.12, volume=100}={}) {
   const end=Math.floor(now/1000/tf)*tf-tf;
@@ -50,12 +50,36 @@ test('contradictory higher timeframe evidence withholds signal and forecast',()=
   assert.ok(result.rejectionReasons.some(x=>/contradict/.test(x)));
 });
 
-test('unverified higher-timeframe claims cannot confirm a directional reading',()=>{
+test('heuristic scenario forecast is labelled while missing confirmations keep the signal at WAIT',()=>{
   const now=Date.now(),candles=bars({now,slope:-0.08});
   const result=analyzeProScalper({symbol:'T',candles,confirmations:{'5m':{signal:'SELL'},'15m':{signal:'SELL'}},now});
   assert.equal(result.signal,'WAIT');
   assert.ok(result.rejectionReasons.some(x=>/Two valid higher-timeframe confirmations/.test(x)));
-  assert.equal(result.forecast,null);
+  assert.equal(result.forecast.scope,'primary-timeframe scenarios; directional signal still requires multi-timeframe confirmation');
+  assert.match(result.forecast.method,/not statistically calibrated/);
+});
+
+test('Deriv tick counts are labelled proxies and require complete coverage of the last 21 closed bars',()=>{
+  const now=Date.now(),candles=bars({now}), recent=candles.slice(-21);
+  const ticks=[{time:recent[0].time,price:recent[0].close},...recent.map(c=>({time:c.time+5,price:c.close}))];
+  const full=attachDerivTickVolume(candles,ticks,'1m');
+  assert.equal(full.valid,true);
+  assert.equal(full.source,'Deriv tick-count proxy');
+  assert.equal(full.candles.at(-1).volume,1);
+  assert.equal(full.candles.at(-1).volumeSource,'Deriv tick-count proxy');
+  const reading=analyzeProScalper({symbol:'T',timeframe:'1m',candles:full.candles,confirmations:confirms,now});
+  assert.equal(reading.indicators.volume.source,'Deriv tick-count proxy');
+  assert.ok(!reading.rejectionReasons.some(x=>/volume/i.test(x)));
+  const partial=attachDerivTickVolume(candles,ticks.slice(1),'1m');
+  assert.equal(partial.valid,false);
+  assert.match(partial.reason,/does not cover the latest 21/);
+  const withheld=analyzeProScalper({symbol:'T',timeframe:'1m',candles:partial.candles,confirmations:confirms,now});
+  assert.equal(withheld.signal,'WAIT');
+  assert.equal(withheld.indicators.volume.source,'unavailable');
+  assert.ok(withheld.rejectionReasons.some(x=>/does not cover the latest 21/.test(x)));
+  const invalid=attachDerivTickVolume(candles,[],'1m','tick-history request failed');
+  assert.equal(invalid.valid,false);
+  assert.match(invalid.reason,/request failed/);
 });
 
 test('timeframe derivation and PSAR are deterministic and reject invalid input',()=>{
