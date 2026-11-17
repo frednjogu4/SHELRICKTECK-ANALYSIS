@@ -57,11 +57,12 @@ jobs:
       - name: Build, test and dry-run the deployment
         run: npm run verify
 
-      - name: Committed dist/ matches a fresh build
+      - name: Committed deployment and PC bridge assets match a fresh build
         run: |
-          if ! git diff --quiet -- dist; then
-            echo "::warning title=dist/ is out of date::dist/index.html or dist/AURUM_Workspace.html in Git differs from a fresh build. Run 'npm run build' and commit the result."
-            git diff --stat -- dist
+          if ! git diff --quiet -- dist bridge/app.html bridge/pwa; then
+            echo "::error title=Committed build artifacts are stale::Run 'npm run build' and commit the refreshed dist/ and bridge/ assets."
+            git diff --stat -- dist bridge/app.html bridge/pwa
+            exit 1
           fi
 
   bridge:
