@@ -37,7 +37,7 @@ function validateCandles(candles, timeframe, now) {
     if (!c || ![c.time,c.open,c.high,c.low,c.close].every(v => finite(Number(v))) || Number(c.time) <= prior || Number(c.low) <= 0 || Number(c.high) < Number(c.low) || Number(c.open) < Number(c.low) || Number(c.open) > Number(c.high) || Number(c.close) < Number(c.low) || Number(c.close) > Number(c.high)) {
       issues.push(`Invalid or contradictory OHLC data at candle ${i + 1}.`); return issues;
     }
-    if (c.volume == null || !finite(Number(c.volume)) || Number(c.volume) < 0) { issues.push(`Volume data missing or invalid at candle ${i + 1}.`); return issues; }
+    // Volume quality is evaluated separately from price-only context. Missing volume must not erase valid OHLC analysis.
     prior = Number(c.time);
   }
   const frameMs = FRAME_MS[timeframe];
@@ -74,17 +74,21 @@ function candleForecast(features) {
 export function analyzeProScalper({ symbol, timeframe = '1m', candles, confirmations = {}, now = Date.now() }) {
   const rejects = validateCandles(candles, timeframe, now);
   if (rejects.length) return { version: PROSCALPER_VERSION, symbol, timeframe, signal: 'WAIT', confidence: 0, rejectionReasons: rejects, forecast: null, dataFreshness: 'unverified', execution: 'disabled' };
-  const rows = candles.map(c => ({...c, time: Number(c.time), open:Number(c.open), high:Number(c.high), low:Number(c.low), close:Number(c.close), volume:Number(c.volume)}));
+  const rows = candles.map(c => ({...c, time: Number(c.time), open:Number(c.open), high:Number(c.high), low:Number(c.low), close:Number(c.close), volume:c.volume == null ? null : Number(c.volume)}));
   const closes = rows.map(c => c.close), last = rows.at(-1), e200 = ema(closes, 200), m = macd(closes), r = rsi(closes), a = adx(rows), volatility = atr(rows), bb = bollingerBands(closes), sar = parabolicSar(rows), levels = findLevels(rows, 50);
   const rejects2 = [];
   if (![e200,m?.histogram,r,a?.adx,a?.plusDI,a?.minusDI,volatility,bb?.upper,sar].every(finite)) rejects2.push('Required indicator could not be calculated.');
   const volSlice = rows.slice(-21,-1).map(c => c.volume);
-  if (!volSlice.length || !finite(last.volume)) rejects2.push('Volume evidence is unavailable.');
-  const avgVol = volSlice.reduce((s,v)=>s+v,0) / Math.max(1,volSlice.length);
-  if (!(avgVol > 0)) rejects2.push('Volume baseline is zero or unavailable.');
-  const volumeRatio = avgVol > 0 ? last.volume / avgVol : null;
+  const avgVol = volSlice.reduce((s,v)=>s+(finite(v)?v:0),0) / Math.max(1,volSlice.length);
+  const volumeAvailable = volSlice.length === 20 && volSlice.every(v => finite(v) && v >= 0) &&
+    finite(last.volume) && last.volume >= 0 && avgVol > 0;
+  if (!volumeAvailable) rejects2.push('Volume baseline is zero or unavailable; directional validation remains WAIT.');
+  const volumeRatio = volumeAvailable ? last.volume / avgVol : null;
   const up = last.close > e200, psarUp = last.close > sar, macdUp = m.histogram > 0, dmiUp = a.plusDI > a.minusDI;
-  let score = (up?1:-1) + (psarUp?1:-1) + (macdUp?1:-1) + (dmiUp?1:-1) + (r >= 52 && r <= 70?1:r <= 48 && r >= 30?-1:0) + (volumeRatio >= 1.05 ? (last.close >= last.open?1:-1) : 0);
+  const rsiVote = r >= 52 && r <= 70 ? 1 : r <= 48 && r >= 30 ? -1 : 0;
+  const priceScore = (up?1:-1) + (psarUp?1:-1) + (macdUp?1:-1) + (dmiUp?1:-1) + rsiVote;
+  const volumeVote = volumeAvailable && volumeRatio >= 1.05 ? (last.close >= last.open?1:-1) : 0;
+  const score = priceScore + volumeVote;
   const validConf = Object.entries(confirmations).filter(([tf,x]) => FRAME_MS[tf] && x?.valid === true && ['BUY','SELL','WAIT'].includes(x.signal) && x.signal !== 'WAIT');
   const directions = new Set(validConf.map(([,x])=>x.signal));
   if (directions.size > 1) rejects2.push('Higher-timeframe confirmations contradict one another.');
@@ -98,10 +102,24 @@ export function analyzeProScalper({ symbol, timeframe = '1m', candles, confirmat
   const agreement = [up === (dir > 0), psarUp === (dir > 0), macdUp === (dir > 0), dmiUp === (dir > 0)].filter(Boolean).length;
   const confidence = signal === 'WAIT' ? 0 : Math.round(Math.min(85, 45 + agreement * 7 + (a.adx >= 25 ? 5 : 0) + (volumeRatio >= 1.2 ? 4 : 0)));
   const age = Math.max(0, now - (last.time < 1e12 ? last.time * 1000 : last.time));
+  const priceIndicatorsValid = [e200,m?.histogram,r,a?.adx,a?.plusDI,a?.minusDI,volatility,bb?.upper,sar].every(finite);
+  const bullishVotes = [up,psarUp,macdUp,dmiUp,rsiVote > 0].filter(Boolean).length;
+  const bearishVotes = [!up,!psarUp,!macdUp,!dmiUp,rsiVote < 0].filter(Boolean).length;
+  const forecastContext = {
+    contextOnly: true,
+    basis: 'price-only indicator confluence; excludes volume and higher-timeframe confirmation',
+    bias: priceScore >= 2 ? 'BULLISH_CONTEXT' : priceScore <= -2 ? 'BEARISH_CONTEXT' : 'MIXED_CONTEXT',
+    bullishVotes, bearishVotes, totalVotes: 5,
+    volumeIncluded: false,
+    higherTimeframesIncluded: false,
+    note: 'Scenario estimates are heuristic context, not calibrated probabilities or a prediction of the next candle.'
+  };
   return { version:PROSCALPER_VERSION, symbol, timeframe, signal, confidence, execution:'disabled', entryReference: signal === 'WAIT' ? null : last.close, invalidation, support:levels.support, resistance:levels.resistance,
-    indicators:{ema200:e200, parabolicSar:sar, macd:m, rsi:r, adx:a, atr:volatility, bollinger:bb, volume:{last:last.volume, average:avgVol, ratio:volumeRatio}},
-    evidence:{trend:up?'above EMA 200':'below EMA 200', score, timeframeSignals:Object.fromEntries(Object.entries(confirmations).map(([k,v])=>[k,v?.signal||'unavailable']))},
-    forecast:rejects2.length ? null : candleForecast({score}), dataFreshness:{status:'fresh', ageMs:age, lastCandleTime:last.time}, rejectionReasons:rejects2 };
+    indicators:{ema200:e200, parabolicSar:sar, macd:m, rsi:r, adx:a, atr:volatility, bollinger:bb, volume:{last:last.volume, average:avgVol, ratio:volumeRatio, available:volumeAvailable, reason:volumeAvailable ? null : 'Feed volume is zero, missing, or invalid.'}},
+    evidence:{trend:up?'above EMA 200':'below EMA 200', score, priceScore, timeframeSignals:Object.fromEntries(Object.entries(confirmations).map(([k,v])=>[k,v?.signal||'unavailable']))},
+    forecast:priceIndicatorsValid ? candleForecast({score:priceScore}) : null,
+    forecastContext:priceIndicatorsValid ? forecastContext : null,
+    dataFreshness:{status:'fresh', ageMs:age, lastCandleTime:last.time}, rejectionReasons:rejects2 };
 }
 
 /** Analysis-only walk-forward replay, no broker/data access. */
