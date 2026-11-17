@@ -32,7 +32,7 @@ test('short histories report the received closed-bar count instead of implying a
 
 test('missing volume, malformed OHLC, stale and forming candles fail closed',()=>{
   const now=Date.now();
-  let c=bars({now}); c[10]={...c[10],volume:null};
+  let c=bars({now}); c[c.length-5]={...c[c.length-5],volume:null};
   const missingVolume=analyzeProScalper({symbol:'T',candles:c,confirmations:confirms,now});
   assert.equal(missingVolume.signal,'WAIT');
   assert.ok(missingVolume.forecast, 'price-only scenarios remain available without volume');
