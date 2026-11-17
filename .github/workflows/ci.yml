@@ -57,12 +57,27 @@ jobs:
       - name: Build, test and dry-run the deployment
         run: npm run verify
 
-      - name: Committed dist/ matches a fresh build
+      - name: Committed deployment and PC bridge assets match a fresh build
         run: |
-          if ! git diff --quiet -- dist; then
-            echo "::warning title=dist/ is out of date::dist/index.html or dist/AURUM_Workspace.html in Git differs from a fresh build. Run 'npm run build' and commit the result."
-            git diff --stat -- dist
+          if ! git diff --quiet -- dist bridge/app.html bridge/pwa; then
+            echo "::error title=Committed build artifacts are stale::Run 'npm run build' and commit the refreshed dist/ and bridge/ assets."
+            git diff --stat -- dist bridge/app.html bridge/pwa
+            exit 1
           fi
+
+      # Preserve the exact fresh build output for inspection when the strict
+      # comparison fails. This is diagnostic only; it never changes the repo.
+      - name: Upload freshly generated deployment and PC bridge assets
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pro-scalper-build-node-${{ matrix.node }}
+          path: |
+            dist/
+            bridge/app.html
+            bridge/pwa/
+          if-no-files-found: error
+          retention-days: 3
 
   bridge:
         # The PC bridge tests use only the Python standard library: MetaTrader5 and

@@ -1399,7 +1399,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
 
       <!-- ======= PRO SCALPER (analysis only) ======= -->
       <section class="view" id="view-proscalper">
-        <div class="view-head"><div><h1>Pro Scalper</h1><p class="sub">Deterministic indicator confluence and next-candle scenario estimates. Analysis only; this module cannot place orders.</p></div></div>
+        <div class="view-head"><div><h1>Pro Scalper</h1><p class="sub">Deterministic indicator confluence and next-candle scenario context. Price-only scenarios remain visible when volume or higher-timeframe confirmation is unavailable. Analysis only; this module cannot place orders.</p></div></div>
         <div class="card">
           <div class="toolbar" style="align-items:end">
             <label class="tiny">Market<select class="input" id="psSymbol" style="display:block;margin-top:5px"></select></label>
@@ -1408,7 +1408,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
             <button class="btn" id="psBacktest">Run walk-forward replay</button>
             <button class="btn" id="psPaper" disabled>Record paper setup</button>
           </div>
-          <div class="tiny faint" style="margin-top:8px">A directional reading requires at least 220 valid bars, volume, fresh data and two confirming higher timeframes. If a source does not provide those inputs, the result remains WAIT. Forecast percentages are heuristic scenarios, not calibrated probabilities or guarantees.</div>
+          <div class="tiny faint" style="margin-top:8px">A directional trade reading requires at least 220 valid closed bars, verified volume, fresh data and two confirming higher timeframes. If any are missing, the trade read remains WAIT. Price-only next-candle scenarios are shown separately when the OHLC indicators are valid; they are uncalibrated context, not probabilities or guarantees.</div>
         </div>
         <div class="grid c2" style="margin-top:14px">
           <div class="card"><div class="row between"><div><div class="tiny faint">DETERMINISTIC TECHNICAL READ</div><h2 id="psSignal" style="margin:8px 0">WAIT</h2></div><span class="badge gray" id="psFresh">NOT RUN</span></div><div id="psSummary" class="tiny faint">Choose a supported market and request current candle history.</div><div id="psRejects" class="tiny" style="margin-top:10px"></div></div>
