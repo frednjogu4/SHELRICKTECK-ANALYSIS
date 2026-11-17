@@ -33,7 +33,10 @@ test('short histories report the received closed-bar count instead of implying a
 test('missing volume, malformed OHLC, stale and forming candles fail closed',()=>{
   const now=Date.now();
   let c=bars({now}); c[10]={...c[10],volume:null};
-  assert.equal(analyzeProScalper({symbol:'T',candles:c,confirmations:confirms,now}).signal,'WAIT');
+  const missingVolume=analyzeProScalper({symbol:'T',candles:c,confirmations:confirms,now});
+  assert.equal(missingVolume.signal,'WAIT');
+  assert.ok(missingVolume.forecast, 'price-only scenarios remain available without volume');
+  assert.equal(missingVolume.indicators.volume.available,false);
   c=bars({now});c[42]={...c[42],low:c[42].high+1};
   assert.match(analyzeProScalper({symbol:'T',candles:c,confirmations:confirms,now}).rejectionReasons[0],/Invalid or contradictory/);
   c=bars({now:now-1_000_000});
@@ -42,11 +45,12 @@ test('missing volume, malformed OHLC, stale and forming candles fail closed',()=
   assert.match(analyzeProScalper({symbol:'T',candles:c,confirmations:confirms,now}).rejectionReasons.join(' '),/still forming/);
 });
 
-test('contradictory higher timeframe evidence withholds signal and forecast',()=>{
+test('contradictory higher timeframe evidence withholds signal but preserves price-only context',()=>{
   const now=Date.now(),c=bars({now});
   const result=analyzeProScalper({symbol:'T',candles:c,confirmations:{'5m':{signal:'BUY',valid:true},'15m':{signal:'SELL',valid:true}},now});
   assert.equal(result.signal,'WAIT');
-  assert.equal(result.forecast,null);
+  assert.ok(result.forecast);
+  assert.equal(result.forecastContext.contextOnly,true);
   assert.ok(result.rejectionReasons.some(x=>/contradict/.test(x)));
 });
 
@@ -55,7 +59,17 @@ test('unverified higher-timeframe claims cannot confirm a directional reading',(
   const result=analyzeProScalper({symbol:'T',candles,confirmations:{'5m':{signal:'SELL'},'15m':{signal:'SELL'}},now});
   assert.equal(result.signal,'WAIT');
   assert.ok(result.rejectionReasons.some(x=>/Two valid higher-timeframe confirmations/.test(x)));
-  assert.equal(result.forecast,null);
+  assert.ok(result.forecast, 'unverified higher-timeframe claims must not suppress price-only context');
+  assert.equal(result.forecastContext.higherTimeframesIncluded,false);
+});
+
+test('zero-volume public feed returns scenario context but never a directional signal',()=>{
+  const now=Date.now(), candles=bars({now}).map(c=>({...c,volume:0}));
+  const result=analyzeProScalper({symbol:'T',candles,confirmations:confirms,now});
+  assert.equal(result.signal,'WAIT');
+  assert.ok(result.forecast);
+  assert.equal(result.indicators.volume.available,false);
+  assert.match(result.rejectionReasons.join(' '),/Volume baseline is zero/);
 });
 
 test('timeframe derivation and PSAR are deterministic and reject invalid input',()=>{
