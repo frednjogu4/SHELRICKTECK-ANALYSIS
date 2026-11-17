@@ -65,6 +65,20 @@ jobs:
             exit 1
           fi
 
+      # Preserve the exact fresh build output for inspection when the strict
+      # comparison fails. This is diagnostic only; it never changes the repo.
+      - name: Upload freshly generated deployment and PC bridge assets
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pro-scalper-build-node-${{ matrix.node }}
+          path: |
+            dist/
+            bridge/app.html
+            bridge/pwa/
+          if-no-files-found: error
+          retention-days: 3
+
   bridge:
         # The PC bridge tests use only the Python standard library: MetaTrader5 and
     # websockets are replaced by in-test fakes, so nothing is installed and
