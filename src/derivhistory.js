@@ -85,6 +85,20 @@ export function normalizeCandles(raw) {
     c.high >= Math.max(c.open, c.close, c.low) && c.low <= Math.min(c.open, c.close, c.high));
 }
 
+/** Deriv tick-history payload -> chronological [{time, price}] quote observations. */
+export function normalizeTicks(history) {
+  const times = history && history.times, prices = history && history.prices;
+  if (!Array.isArray(times) || !Array.isArray(prices) || times.length !== prices.length) return [];
+  const ticks = [];
+  for (let i = 0; i < times.length; i++) {
+    const time = Number(times[i]), price = Number(prices[i]);
+    if (!Number.isFinite(time) || time <= 0 || !Number.isFinite(price) || price <= 0) return [];
+    if (i && time < Number(times[i - 1])) return [];
+    ticks.push({ time, price });
+  }
+  return ticks;
+}
+
 /**
  * @param {object}   [options]
  * @param {Function} [options.WebSocketImpl]    defaults to the page's WebSocket, looked up when a connection is opened
@@ -275,12 +289,16 @@ export function createCandleClient({
         fail(job, new CandleError('provider', text + (code ? ' [' + code + ']' : ''), { providerCode: code }));
       }
     } else {
-      const candles = normalizeCandles(msg.candles || (msg.history && msg.history.candles));
-      if (!candles.length) fail(job, new CandleError('empty', 'Deriv returned no usable candles for this market and timeframe.'));
+      const data = job.kind === 'ticks'
+        ? normalizeTicks(msg.history)
+        : normalizeCandles(msg.candles || (msg.history && msg.history.candles));
+      if (!data.length) fail(job, new CandleError('empty', job.kind === 'ticks'
+        ? 'Deriv returned no usable quote ticks for this market.'
+        : 'Deriv returned no usable candles for this market and timeframe.'));
       else {
         if (now() >= backoffUntil) backoffMs = 0;
         counters.answered += 1;
-        job.resolve(candles);
+        job.resolve(data);
       }
     }
     pump();
@@ -353,6 +371,24 @@ export function createCandleClient({
     return fetchCandlesByCode(code, granularity, count, options);
   }
 
+  /** Public quote ticks for tick-count volume analysis; these are not traded volume. */
+  function fetchTicksByCode(code, count = 5000) {
+    const dsym = String(code || ''), n = Number(count);
+    if (!CODE_RE.test(dsym)) return Promise.reject(new CandleError('invalid', 'Invalid Deriv market code.'));
+    if (!Number.isInteger(n) || n < 1 || n > 5000) return Promise.reject(new CandleError('invalid', 'Invalid Deriv tick-history request.'));
+    return new Promise((resolve, reject) => enqueue({
+      payload: { ticks_history: dsym, count: n, end: 'latest', style: 'ticks' },
+      kind: 'ticks', resolve, reject, attempts: 0, timer: null, reqId: 0
+    }));
+  }
+
+  /** Public ticks for one built-in market; count is bounded by the provider. */
+  function fetchTicks(symbol, count = 5000) {
+    const code = DERIV_CODE_MAP[symbol];
+    if (!code) return Promise.reject(new CandleError('unmapped', 'No verified Deriv tick mapping for ' + symbol + '.'));
+    return fetchTicksByCode(code, count);
+  }
+
   /** Counters for diagnostics. Holds no market data and nothing that identifies a person. */
   function stats() {
     withinBudget();
@@ -374,7 +410,7 @@ export function createCandleClient({
     for (const job of waiting) fail(job, new CandleError('connect', 'The candle connection was closed.'));
   }
 
-  return { fetchCandles, fetchCandlesByCode, stats, close, clearCache: () => cache.clear() };
+  return { fetchCandles, fetchCandlesByCode, fetchTicks, fetchTicksByCode, stats, close, clearCache: () => cache.clear() };
 }
 
 /** The client the application uses. Nothing connects until the first request. */

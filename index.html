@@ -1150,6 +1150,20 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <span class="pill hidden" id="azBudget">AI today —</span>
         </div>
 
+        <div class="card" style="margin-bottom:14px" id="fxAnalystPanel">
+          <div class="card-head wrap">
+            <div><h3>Structured Forex Analyst</h3><div class="sub">Real provider candles only · deterministic 1m / 5m / 10m confluence · JSON includes chart candles and overlays · no orders.</div></div>
+            <div class="row wrap">
+              <label class="tiny">Forex pair<select class="input sm" id="fxaPair" style="display:block;margin-top:5px;min-width:145px"></select></label>
+              <label class="tiny">Requested timeframe<select class="input sm" id="fxaTimeframe" style="display:block;margin-top:5px"><option value="1m">1 minute</option><option value="5m" selected>5 minutes</option><option value="10m">10 minutes</option><option value="15m">15 minutes</option></select></label>
+              <button class="btn primary sm" id="fxaAnalyze">ANALYZE</button>
+              <button class="btn sm" id="fxaUpdate" disabled>UPDATE</button>
+            </div>
+          </div>
+          <div class="tiny faint" style="margin:8px 0 12px">Requires 50 completed candles per frame and a fresh live quote. BUY/SELL needs at least 2 of 3 MTF votes, quality score ≥70, a swing-based stop no wider than 15 pips and a verified S/R target ≥1.5:1. Otherwise it returns WAIT with action NONE (no order or open-position assumption). Confidence is a confluence score, not probability. UPDATE compares this browser’s saved prior reading and reports HOLD/EXIT/REVERSE as analysis only. The JSON field <code>chart_data</code> contains the three candle series, EMA(9/21), swing trendlines, S/R zones and validated trade overlays.</div>
+          <div id="fxaStatus" class="hint" role="status" aria-live="polite">Choose a forex pair and analyze verified live candles.</div>
+          <pre id="fxaOutput" class="hidden" style="max-height:520px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:var(--surface-2);padding:12px;border-radius:8px;font-size:11px;line-height:1.5" aria-label="Structured Forex Analyst JSON output"></pre>
+        </div>
         <div class="card">
           <div class="card-head">
             <div><h3>Analyze a symbol</h3><div class="sub">Indicators + MTF votes are computed locally; Opus adds judgement only when a key and budget allow.</div></div>
@@ -1408,7 +1422,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
             <button class="btn" id="psBacktest">Run walk-forward replay</button>
             <button class="btn" id="psPaper" disabled>Record paper setup</button>
           </div>
-          <div class="tiny faint" style="margin-top:8px">A directional reading requires at least 220 valid bars, volume, fresh data and two confirming higher timeframes. If a source does not provide those inputs, the result remains WAIT. Forecast percentages are heuristic scenarios, not calibrated probabilities or guarantees.</div>
+          <div class="tiny faint" style="margin-top:8px">A directional reading requires at least 220 valid bars, fresh data, tick-volume coverage for the latest 21 closed bars and two confirming higher timeframes. Deriv tick counts are a quote-activity proxy, not traded volume; gaps or unavailable ticks keep the result at WAIT. Forecast percentages are heuristic scenarios, not calibrated probabilities or guarantees.</div>
         </div>
         <div class="grid c2" style="margin-top:14px">
           <div class="card"><div class="row between"><div><div class="tiny faint">DETERMINISTIC TECHNICAL READ</div><h2 id="psSignal" style="margin:8px 0">WAIT</h2></div><span class="badge gray" id="psFresh">NOT RUN</span></div><div id="psSummary" class="tiny faint">Choose a supported market and request current candle history.</div><div id="psRejects" class="tiny" style="margin-top:10px"></div></div>
@@ -1456,6 +1470,11 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div class="tiny faint" id="goldSource">Source not connected.</div>
               <div class="tiny faint" id="goldQuoteTime" style="margin-top:4px">Quote time: —</div>
             </div>
+          </div>
+          <div class="card" style="margin:0 0 14px;background:var(--surface-2)">
+            <div class="card-head wrap"><div><h3>Gold / USD price chart</h3><div class="sub">Verified 5-minute candles · live price marker when available · chart only, not an order or signal.</div></div><span class="tiny faint" id="goldChartInfo">Waiting for verified candle history.</span></div>
+            <div id="goldChart" aria-live="polite"><div class="hint">Waiting for verified Gold candle history.</div></div>
+            <div class="hint tiny">The newest candle may still be forming. Signal confirmation continues to use finished candles only.</div>
           </div>
           <div class="az-tiles">
             <div class="az-tile"><div class="k">ENTRY GUIDE</div><div class="v" id="goldEntry">—</div></div>

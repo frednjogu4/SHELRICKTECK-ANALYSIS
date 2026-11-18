@@ -12,7 +12,7 @@ import * as bridgeMod from './bridge.js';
 import { readMt5Identity, saveMt5Identity, forgetMt5Identity } from './mt5identity.js';
 import { marketStatus, typicalActiveWindow, MARKET_HOURS_NOTE } from '../server/lib/markethours.js';
 import * as feed from './marketdata.js';
-import { analyzeProScalper, deriveProScalperTimeframe, backtestProScalper } from '../server/lib/proscalper.js';
+import { analyzeProScalper, deriveProScalperTimeframe, backtestProScalper, attachDerivTickVolume } from '../server/lib/proscalper.js';
 import * as tv from './tradingview.js';
 import { planPosition } from './sizer.js';
 import { analyzeTimeframe, confirmMultiTimeframe, votesSummary, runDeterministicAnalysis, waitReason } from '../server/lib/analyzer.js';
@@ -31,6 +31,8 @@ import { STATE_TIMEFRAMES, STATE_CANDLES, ADX_TREND, ADX_RANGE, VOL_WINDOW, time
 import { evaluateSmcSetups, SMC_SETUP_RULES } from './smcplaybook.js';
 import { closedCandleSets, nextReadingCheck } from './closedcandles.js';
 import { measuredText, measuredLine, isDailyReading } from './measured.js';
+import { renderGoldCandlestickChart } from './goldchart.js';
+import { analyzeForex, FX_ANALYST_TIMEFRAMES } from '../server/lib/forexanalyst.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
 import { headlineConcerns, eventConcerns, eventTime, currenciesOf, marketsForCurrency, eatClock, eatDay, eatDayBounds, eatStamp, standAside, exposureFor, exposureForCurrency, releaseMeasuredText, trendWords, STAND_ASIDE } from './newsimpact.js';
 
@@ -3487,6 +3489,72 @@ $('#resetBtn').onclick=async()=>{
    SIGNAL ANALYZER UI (Express API; real candles; honest fallbacks)
    ================================================================ */
 let lastAz = null;
+const FX_ANALYST_STORAGE_KEY='aurum_forex_analyst_v1';
+let fxAnalystBusy=false;
+let fxAnalystPrevious=(()=>{try{const v=JSON.parse(localStorage.getItem(FX_ANALYST_STORAGE_KEY)||'{}');return v&&typeof v==='object'&&!Array.isArray(v)?v:{};}catch(_e){return {};}})();
+
+function fxAnalystPopulate(){
+  const pair=$('#fxaPair');if(!pair)return;
+  pair.innerHTML=INSTR.filter(I=>I.c==='forex').map(I=>'<option value="'+escHtml(I.s)+'">'+escHtml(I.s)+' — '+escHtml(I.n)+'</option>').join('');
+  pair.value=pair.value||'EUR/USD';
+  const update=$('#fxaUpdate');if(update)update.disabled=!fxAnalystPrevious[pair.value];
+}
+function fxAnalystSave(pair,result){
+  fxAnalystPrevious[pair]={
+    signal:result.signal,action:result.action,entry:result.entry,sl:result.sl,tp:result.tp,
+    confidence:result.confidence,risk_reward:result.risk_reward,timeframe:result.timeframe,
+    latest_closed_candle:result.latest_closed_candle
+  };
+  try{localStorage.setItem(FX_ANALYST_STORAGE_KEY,JSON.stringify(fxAnalystPrevious));}catch(_e){}
+  const update=$('#fxaUpdate');if(update)update.disabled=false;
+}
+async function runForexAnalyst(mode='ANALYZE'){
+  if(fxAnalystBusy)return;
+  const pairEl=$('#fxaPair'),tfEl=$('#fxaTimeframe'),output=$('#fxaOutput'),status=$('#fxaStatus');
+  if(!pairEl||!tfEl||!output||!status)return;
+  const pair=pairEl.value,previous=fxAnalystPrevious[pair]||null;
+  const timeframe=mode==='UPDATE'&&previous?.timeframe?previous.timeframe:tfEl.value;
+  if(!INSTR.some(I=>I.s===pair&&I.c==='forex')){
+    status.textContent='Choose one of the supported forex pairs.';return;
+  }
+  fxAnalystBusy=true;
+  const analyze=$('#fxaAnalyze'),update=$('#fxaUpdate');if(analyze)analyze.disabled=true;if(update)update.disabled=true;
+  status.textContent='Fetching 50+ completed candles for 1m / 5m / 10m'+(timeframe==='15m'?' / 15m':'')+' and validating the live quote…';
+  output.classList.remove('hidden');output.textContent='';
+  try{
+    const timeframes=[...new Set(['1m','5m','10m',timeframe])],candlesByTimeframe={},errorsByTimeframe={},dataSources={};
+    await Promise.all(timeframes.map(async tf=>{
+      try{
+        const history=await historyCandles(pair,FX_ANALYST_TIMEFRAMES[tf],100,{acrossClosures:true});
+        candlesByTimeframe[tf]=history&&history.candles;
+        dataSources[tf]=history&&history.source||'Deriv public candle history';
+      }catch(error){errorsByTimeframe[tf]=String(error&&error.message||'Candle history unavailable');}
+    }));
+    const instrument=bySym[pair],quoteFresh=instrument&&instrument.p>0&&goldFreshTimestamp(instrument.t,120000);
+    const result=analyzeForex({
+      pair,timeframe,candlesByTimeframe,errorsByTimeframe,
+      currentPrice:quoteFresh?instrument.p:null,currentTime:quoteFresh?instrument.t:null,
+      dataSources,mode,previous:mode==='UPDATE'?previous:null,now:Date.now()
+    });
+    output.textContent=JSON.stringify(result,null,2);
+    fxAnalystSave(pair,result);
+    status.textContent=(result.signal==='WAIT'?'WAIT · ':'')+result.data_source+' · '+(result.latest_closed_candle?'latest closed candle '+new Date(result.latest_closed_candle.time*1000).toLocaleString():'no valid closed candle')+' · analysis only; no order sent.';
+  }catch(error){
+    const failure={mode,pair,timeframe,mtf_alignment:{'1m':'NEUTRAL','5m':'NEUTRAL','10m':'NEUTRAL'},signal:'WAIT',action:'NONE',entry:null,sl:null,tp:null,risk_reward:null,confidence:0,reason:String(error&&error.message||'Analysis unavailable'),previous_signal_check:'none',data_source:'unavailable',chart_data:null};
+    output.textContent=JSON.stringify(failure,null,2);
+    status.textContent='Analysis unavailable; no signal or chart data was fabricated.';
+  }finally{
+    fxAnalystBusy=false;if(analyze)analyze.disabled=false;
+    if(update)update.disabled=!fxAnalystPrevious[pair];
+  }
+}
+function wireForexAnalyst(){
+  fxAnalystPopulate();
+  const pair=$('#fxaPair'),analyze=$('#fxaAnalyze'),update=$('#fxaUpdate');
+  if(pair)pair.onchange=()=>{if(update)update.disabled=!fxAnalystPrevious[pair.value];};
+  if(analyze)analyze.onclick=()=>runForexAnalyst('ANALYZE');
+  if(update)update.onclick=()=>runForexAnalyst('UPDATE');
+}
 
 function azPopulateSymbols() {
   const sel = $('#azSymbol');
@@ -3962,6 +4030,7 @@ const GOLD_SYMBOL='XAU/USD';
 const GOLD_REFRESH_MS=60000;
 const GOLD_NEWS_MATCH=/(gold|xau|bullion|dollar|\bUSD\b|federal reserve|\bfed\b|powell|CPI|PCE|payroll|nonfarm|inflation|interest rate|treasury yield)/i;
 let goldMonitorTimer=null, goldAnalysisBusy=false, goldNewsBusy=false, goldAnalysisAt=0, goldNextAttemptAt=0, goldAnalysisError='', goldNewsAt=0;
+let goldChartBusy=false, goldChartReload=false, goldChartAt=0, goldChartError='', goldChartRows=[], goldChartSource='';
 let goldCalendarDay='', goldCalendarEvents=[], goldCalendarError='', goldHeadlineItems=[], goldHeadlineError='', goldMt5Quote=null, goldLastNotifiedKey=(()=>{try{return localStorage.getItem('aurum_gold_signal_last')||'';}catch(_e){return '';}})();
 function goldCalendarTime(e){
   /* The moment of an entry: its own `t` and day where the calendar gives them (the cloud's whole week), else its UTC clock on the calendar's day. */
@@ -4112,13 +4181,47 @@ async function refreshGoldQuote(){
       goldMt5Quote={symbol:String(q.symbol||''),price,time:Number(q.time),digits:q.digits,trade_mode:q.trade_mode};
     }catch(_e){goldMt5Quote=null;}
   }
-  updateGoldQuoteDisplay();
+  updateGoldQuoteDisplay();renderGoldChart();
 }
 /* The live price the Gold monitor is showing, or null when it has no fresh one. */
 function goldLivePrice(){
   if(goldUsingExnessResult())return goldMt5Quote&&goldFreshTimestamp(goldMt5Quote.time)&&Number(goldMt5Quote.price)>0?Number(goldMt5Quote.price):null;
   const I=bySym[GOLD_SYMBOL];
   return I&&I.p!=null&&goldFreshTimestamp(I.t)?I.p:null;
+}
+function renderGoldChart(){
+  const box=$('#goldChart'),info=$('#goldChartInfo');if(!box)return;
+  if(goldChartBusy){if(info)info.textContent='Loading verified 5-minute Gold candle history…';return;}
+  if(goldChartError||goldChartRows.length<2){
+    box.innerHTML='<div class="hint">'+escHtml(goldChartError||'Waiting for verified Gold candle history.')+'</div>';
+    if(info)info.textContent='No chart is shown without current source data.';
+    return;
+  }
+  box.innerHTML=renderGoldCandlestickChart(goldChartRows,{price:goldLivePrice(),digits:goldDisplayDigits()});
+  if(info)info.textContent=goldChartSource+' · 5-minute candles · '+goldChartRows.length+' bars · refreshed '+new Date(goldChartAt).toLocaleTimeString()+' · chart context only, not a trade signal.';
+}
+async function refreshGoldChart(force=false){
+  if(goldChartBusy){if(force)goldChartReload=true;return;}
+  if(!force&&Date.now()-goldChartAt<GOLD_REFRESH_MS)return;
+  goldChartBusy=true;goldChartError='';renderGoldChart();
+  try{
+    let rows,source;
+    if(goldUsingExnessResult()){
+      const symbol=await resolveGoldMt5Symbol(),history=await bridge.bridgeHistory(symbol,'M5',120);
+      rows=history&&history.candles;source='Exness MT5 local bridge';
+    }else{
+      const history=await historyCandles(GOLD_SYMBOL,300,120,{acrossClosures:true});
+      rows=history&&history.candles;
+      source=state.goldAnalysis&&state.goldAnalysis.data_source||history&&history.source||'Deriv public candles';
+    }
+    const valid=(Array.isArray(rows)?rows:[]).filter(c=>c&&[c.time,c.open,c.high,c.low,c.close].every(v=>Number.isFinite(Number(v)))&&Number(c.time)>0&&Number(c.low)>0&&Number(c.high)>=Math.max(Number(c.open),Number(c.close))&&Number(c.low)<=Math.min(Number(c.open),Number(c.close)));
+    if(valid.length<2)throw new Error('Fewer than two valid Gold 5-minute candles were returned.');
+    goldChartRows=valid.slice(-72);goldChartSource=String(source);goldChartError='';
+  }catch(error){goldChartRows=[];goldChartSource='';goldChartError=String(error&&error.message||'Gold chart data unavailable').slice(0,180);}
+  finally{
+    goldChartBusy=false;goldChartAt=Date.now();renderGoldChart();
+    if(goldChartReload){goldChartReload=false;goldChartAt=0;setTimeout(()=>refreshGoldChart(true),0);}
+  }
 }
 /* Gold monitor score: the analysis' own figure, moved by the price since this BUY/SELL was first read. */
 function updateGoldConfidence(){
@@ -4251,7 +4354,7 @@ async function runGoldAnalysis(){
     }
     d.updatedAt=Date.now();state.goldAnalysis=d;goldAnalysisAt=Date.now();goldAnalysisError='';
     goldRuns.observe(Object.assign({},d,{symbol:GOLD_SYMBOL})); /* live confidence follows this BUY/SELL from its first reading */
-    renderGoldAnalysis();updateGoldQuoteDisplay();
+    renderGoldAnalysis();updateGoldQuoteDisplay();refreshGoldChart(true);
     if(status)status.textContent=(d.data_ok===false?'CHECK DATA · ':'LIVE ANALYSIS · ')+(d.data_source||'');
   }catch(e){
     state.goldAnalysis=null;goldRuns.forget(GOLD_SYMBOL);goldAnalysisAt=Date.now();goldAnalysisError=String(e&&e.message||e||'Live analysis unavailable');
@@ -4264,7 +4367,7 @@ async function runGoldAnalysis(){
     const b=$('#goldSignalBadge');if(b){b.textContent='UNAVAILABLE';b.className='badge gray';}
     const s=$('#goldSignal');if(s){s.textContent='—';s.className='faint';}
     ['goldEntry','goldSL','goldTP1','goldTP2'].forEach(id=>{const e2=$('#'+id);if(e2)e2.textContent='—';});
-    updateGoldQuoteDisplay();
+    updateGoldQuoteDisplay();refreshGoldChart(true);
   }finally{
     goldAnalysisBusy=false;if(btn)btn.disabled=false;
     goldNextAttemptAt=state.settings.goldAuto!==false?Date.now()+GOLD_REFRESH_MS:0;
@@ -4275,20 +4378,21 @@ async function runGoldAnalysis(){
 }
 function startGoldMonitor(){
   if(goldMonitorTimer)return;
-  refreshGoldNews();refreshGoldQuote();
+  refreshGoldNews();refreshGoldQuote();refreshGoldChart(true);
   goldMonitorTimer=setInterval(()=>{
     updateGoldEventCountdowns();
     if(Date.now()-goldNewsAt>5*60000)refreshGoldNews();
     if(state.settings.goldAuto!==false&&!goldAnalysisBusy&&goldNextAttemptAt&&Date.now()>=goldNextAttemptAt)runGoldAnalysis();
     updateGoldAnalysisNotice();
     if(state.view==='gold'&&Date.now()-Number(goldQuotePollAt||0)>10000){goldQuotePollAt=Date.now();refreshGoldQuote();}
-    else if(state.view==='gold')updateGoldQuoteDisplay();
+    else if(state.view==='gold'){updateGoldQuoteDisplay();renderGoldChart();}
+    if(state.view==='gold'&&Date.now()-goldChartAt>GOLD_REFRESH_MS)refreshGoldChart();
   },10000);
 }
 function renderGold(){
   const src=$('#goldSourceSelect');if(src){src.value=state.settings.goldSource||'auto';src.onchange=()=>{
     const next=['auto','deriv','mt5'].includes(src.value)?src.value:'auto';state.settings.goldSource=next;save();
-    state.goldAnalysis=null;goldRuns.forget(GOLD_SYMBOL);goldAnalysisAt=0;goldNextAttemptAt=0;goldAnalysisError='';goldMt5Quote=null;
+    state.goldAnalysis=null;goldRuns.forget(GOLD_SYMBOL);goldAnalysisAt=0;goldNextAttemptAt=0;goldAnalysisError='';goldMt5Quote=null;goldChartRows=[];goldChartSource='';goldChartError='';goldChartAt=0;renderGoldChart();refreshGoldChart(true);
     const badge=$('#goldSignalBadge');if(badge){badge.textContent='ANALYZING';badge.className='badge gray';}
     const sig=$('#goldSignal');if(sig){sig.textContent='—';sig.className='faint';}
     ['goldEntry','goldSL','goldTP1','goldTP2'].forEach(id=>{const el=$('#'+id);if(el)el.textContent='—';});
@@ -5140,6 +5244,15 @@ function renderProScalper(){
     const raw=await candleHistory.fetchCandles(sym,psSeconds(tf),600,{acrossClosures:true});
     return psClosed(raw,tf);
   };
+  const withVolumeEvidence=async(sym,tf,candles)=>{
+    if(state.broker?.type==='mt5')return candles;
+    try{
+      const ticks=await candleHistory.fetchTicks(sym,5000);
+      return attachDerivTickVolume(candles,ticks,tf).candles;
+    }catch(err){
+      return attachDerivTickVolume(candles,[],tf,String(err?.message||'Deriv tick history unavailable.')).candles;
+    }
+  };
   const paintResult=(r,candles)=>{
     latestResult=r; paper.disabled=!(r.signal==='BUY'||r.signal==='SELL')||!Number.isFinite(r.entryReference)||!Number.isFinite(r.invalidation);
     $('#psSignal').textContent=r.signal; $('#psSignal').className=r.signal==='BUY'?'buy':r.signal==='SELL'?'sell':'';
@@ -5150,7 +5263,7 @@ function renderProScalper(){
     $('#psRejects').textContent=r.rejectionReasons?.length?'Withheld: '+r.rejectionReasons.join(' '):'No validation rejection. Technical signal only; not authorization to trade.';
     $('#psForecast').innerHTML=r.forecast?['up','sideways','down'].map(k=>`<div class="row between" style="padding:7px 0;border-bottom:1px solid var(--border-soft)"><span>${k==='up'?'Up':k==='down'?'Down':'Sideways'}</span><b>${(r.forecast[k]*100).toFixed(1)}%</b></div>`).join(''):'Unavailable until validation passes.';
     const i=r.indicators;
-    $('#psIndicators').innerHTML=i?`<div class="grid c2"><div>EMA 200 <b>${fmtPx(i.ema200,5)}</b></div><div>Parabolic SAR <b>${fmtPx(i.parabolicSar,5)}</b></div><div>MACD histogram <b>${fmtPx(i.macd.histogram,5)}</b></div><div>RSI 14 <b>${fmtPx(i.rsi,1)}</b></div><div>ADX 14 <b>${fmtPx(i.adx.adx,1)} · +DI ${fmtPx(i.adx.plusDI,1)} / −DI ${fmtPx(i.adx.minusDI,1)}</b></div><div>ATR 14 <b>${fmtPx(i.atr,5)}</b></div><div>Bollinger bands <b>${fmtPx(i.bollinger.lower,5)} / ${fmtPx(i.bollinger.mid,5)} / ${fmtPx(i.bollinger.upper,5)}</b></div><div>Volume ratio <b>${fmtPx(i.volume.ratio,2)}×</b></div></div>`:'Indicator values withheld: input validation failed.';
+    $('#psIndicators').innerHTML=i?`<div class="grid c2"><div>EMA 200 <b>${fmtPx(i.ema200,5)}</b></div><div>Parabolic SAR <b>${fmtPx(i.parabolicSar,5)}</b></div><div>MACD histogram <b>${fmtPx(i.macd.histogram,5)}</b></div><div>RSI 14 <b>${fmtPx(i.rsi,1)}</b></div><div>ADX 14 <b>${fmtPx(i.adx.adx,1)} · +DI ${fmtPx(i.adx.plusDI,1)} / −DI ${fmtPx(i.adx.minusDI,1)}</b></div><div>ATR 14 <b>${fmtPx(i.atr,5)}</b></div><div>Bollinger bands <b>${fmtPx(i.bollinger.lower,5)} / ${fmtPx(i.bollinger.mid,5)} / ${fmtPx(i.bollinger.upper,5)}</b></div><div>Volume ratio <b>${fmtPx(i.volume.ratio,2)}×</b> <span class="faint">${escHtml(i.volume.source)}</span></div></div>`:'Indicator values withheld: input validation failed.';
     $('#psLevels').innerHTML=r.support?.length?`Support: ${r.support.map(v=>fmtPx(v,5)).join(' · ')}<br>Resistance: ${r.resistance.map(v=>fmtPx(v,5)).join(' · ')}${psChart(candles)}`:'Levels withheld pending valid data.';
     const old=(()=>{try{return JSON.parse(localStorage.getItem('aurum-proscalper-audit-v1')||'[]')}catch(_e){return []}})();
     const paperLog=(()=>{try{return JSON.parse(localStorage.getItem('aurum-proscalper-paper-v1')||'[]')}catch(_e){return []}})();
@@ -5160,7 +5273,8 @@ function renderProScalper(){
     btn.disabled=true; btn.textContent='Validating candle history…';
     const sym=select.value,tf=$('#psTimeframe').value;
     try{
-      const frames=psFrames(tf), [primary,...other]=await Promise.all([tf,...frames].map(f=>getData(sym,f)));
+      const frames=psFrames(tf), [primaryRaw,...other]=await Promise.all([tf,...frames].map(f=>getData(sym,f)));
+      const primary=await withVolumeEvidence(sym,tf,primaryRaw);
       const confirmations=Object.fromEntries(frames.map((f,i)=>[f,deriveProScalperTimeframe(other[i],f,Date.now())]));
       const paperRows=psPaperAdvance(sym,tf,primary);
       $('#psAudit').textContent=paperRows.length?`Paper log: ${paperRows.filter(x=>x.status==='open').length} open · ${paperRows.filter(x=>x.status==='settled').length} settled. Hypothetical only; no money or orders.`:'No paper setups recorded.';
@@ -5187,7 +5301,8 @@ function renderProScalper(){
     bt.disabled=true;bt.textContent='Replaying historical bars…';
     const sym=select.value,tf=$('#psTimeframe').value,frames=psFrames(tf);
     try{
-      const [primary,...higher]=await Promise.all([tf,...frames].map(f=>getData(sym,f)));
+      const [primaryRaw,...higher]=await Promise.all([tf,...frames].map(f=>getData(sym,f)));
+      const primary=await withVolumeEvidence(sym,tf,primaryRaw);
       const result=backtestProScalper({symbol:sym,timeframe:tf,candles:primary,higherCandles:Object.fromEntries(frames.map((f,i)=>[f,higher[i]]))});
       $('#psRejects').textContent=`Walk-forward replay: ${result.signals} qualifying analytical signals · ${result.wins} next-close advances · ${result.losses} declines · ${result.winRate==null?'no measured sample':(result.winRate*100).toFixed(1)+'% advances'}. ${result.disclaimer} No orders.`;
       psRecord({symbol:sym,timeframe:tf,event:'backtest',signals:result.signals,wins:result.wins,losses:result.losses});
@@ -5228,6 +5343,7 @@ function boot(){
   syncSide(); updateTradeHeader();
   scanSignals();
   azPopulateSymbols();
+  wireForexAnalyst();
   azFetchBudget();
   $('#azRun').onclick = azAnalyze;
   $('#azUse').onclick = azUseSetup;

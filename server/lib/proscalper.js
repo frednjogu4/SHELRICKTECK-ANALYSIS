@@ -49,6 +49,30 @@ function validateCandles(candles, timeframe, now) {
   return issues;
 }
 
+/** Aggregate real Deriv quote observations into clearly-labelled tick-count volume proxies. */
+export function attachDerivTickVolume(candles, ticks, timeframe, failureReason = '') {
+  const step = FRAME_MS[timeframe] ? FRAME_MS[timeframe] / 1000 : 0;
+  const rows = Array.isArray(candles) ? candles : [];
+  const validTicks = Array.isArray(ticks) && ticks.every((t,i)=>t && finite(Number(t.time)) && Number(t.time)>0 && finite(Number(t.price)) && Number(t.price)>0 && (!i || Number(t.time)>=Number(ticks[i-1].time)))
+    ? ticks : [];
+  const counts = new Array(rows.length).fill(0);
+  if (step && validTicks.length) {
+    let j=0;
+    for (let i=0;i<rows.length;i++) {
+      const start=Number(rows[i].time), end=start+step;
+      while(j<validTicks.length && Number(validTicks[j].time)<start)j++;
+      while(j<validTicks.length && Number(validTicks[j].time)<end){counts[i]++;j++;}
+    }
+  }
+  const firstNeeded = Math.max(0, rows.length-21);
+  const windowStart = rows[firstNeeded] ? Number(rows[firstNeeded].time) : Infinity;
+  const historyCoversWindow = !!step && validTicks.length>0 && Number(validTicks[0].time)<=windowStart;
+  const missingBar = rows.slice(firstNeeded).some((_,j)=>counts[firstNeeded+j]===0);
+  const reason = failureReason || (!validTicks.length ? 'Deriv tick history is unavailable; volume cannot be verified.' : !historyCoversWindow ? 'Deriv tick history does not cover the latest 21 closed candles.' : missingBar ? 'Tick-volume evidence is missing for one or more of the latest 21 candles.' : '');
+  const enriched = rows.map((c,i)=>({...c,volume:counts[i],volumeSource:'Deriv tick-count proxy',volumeCoverageValid:i>=firstNeeded && historyCoversWindow && counts[i]>0,volumeCoverageReason:reason}));
+  return {candles:enriched,valid:!reason,reason,source:'Deriv tick-count proxy'};
+}
+
 export function deriveProScalperTimeframe(candles, timeframe, now = Date.now()) {
   const issues = validateCandles(candles, timeframe, now);
   if (issues.length) return { signal: 'WAIT', valid: false, reason: issues.join(' ') };
@@ -79,9 +103,11 @@ export function analyzeProScalper({ symbol, timeframe = '1m', candles, confirmat
   const rejects2 = [];
   if (![e200,m?.histogram,r,a?.adx,a?.plusDI,a?.minusDI,volatility,bb?.upper,sar].every(finite)) rejects2.push('Required indicator could not be calculated.');
   const volSlice = rows.slice(-21,-1).map(c => c.volume);
+  const recentVolumeRows=rows.slice(-21), coverageIssue=recentVolumeRows.find(c=>c.volumeCoverageValid===false);
+  if (coverageIssue) rejects2.push(coverageIssue.volumeCoverageReason || 'Tick-volume evidence does not cover the latest 21 closed candles.');
   if (!volSlice.length || !finite(last.volume)) rejects2.push('Volume evidence is unavailable.');
   const avgVol = volSlice.reduce((s,v)=>s+v,0) / Math.max(1,volSlice.length);
-  if (!(avgVol > 0)) rejects2.push('Volume baseline is zero or unavailable.');
+  if (!(avgVol > 0) && !coverageIssue) rejects2.push('Volume baseline is zero or unavailable.');
   const volumeRatio = avgVol > 0 ? last.volume / avgVol : null;
   const up = last.close > e200, psarUp = last.close > sar, macdUp = m.histogram > 0, dmiUp = a.plusDI > a.minusDI;
   let score = (up?1:-1) + (psarUp?1:-1) + (macdUp?1:-1) + (dmiUp?1:-1) + (r >= 52 && r <= 70?1:r <= 48 && r >= 30?-1:0) + (volumeRatio >= 1.05 ? (last.close >= last.open?1:-1) : 0);
@@ -97,11 +123,12 @@ export function analyzeProScalper({ symbol, timeframe = '1m', candles, confirmat
   const invalidation = dir ? (dir > 0 ? Math.min(last.close - volatility, levelsNear ?? last.close - volatility) : Math.max(last.close + volatility, levelsNear ?? last.close + volatility)) : null;
   const agreement = [up === (dir > 0), psarUp === (dir > 0), macdUp === (dir > 0), dmiUp === (dir > 0)].filter(Boolean).length;
   const confidence = signal === 'WAIT' ? 0 : Math.round(Math.min(85, 45 + agreement * 7 + (a.adx >= 25 ? 5 : 0) + (volumeRatio >= 1.2 ? 4 : 0)));
+  const forecastBlocked = rejects2.some(reason => reason !== 'Two valid higher-timeframe confirmations are required.');
   const age = Math.max(0, now - (last.time < 1e12 ? last.time * 1000 : last.time));
   return { version:PROSCALPER_VERSION, symbol, timeframe, signal, confidence, execution:'disabled', entryReference: signal === 'WAIT' ? null : last.close, invalidation, support:levels.support, resistance:levels.resistance,
-    indicators:{ema200:e200, parabolicSar:sar, macd:m, rsi:r, adx:a, atr:volatility, bollinger:bb, volume:{last:last.volume, average:avgVol, ratio:volumeRatio}},
+    indicators:{ema200:e200, parabolicSar:sar, macd:m, rsi:r, adx:a, atr:volatility, bollinger:bb, volume:{last:last.volume, average:avgVol, ratio:volumeRatio, source:coverageIssue?'unavailable':last.volumeSource || 'MT5 tick volume'}},
     evidence:{trend:up?'above EMA 200':'below EMA 200', score, timeframeSignals:Object.fromEntries(Object.entries(confirmations).map(([k,v])=>[k,v?.signal||'unavailable']))},
-    forecast:rejects2.length ? null : candleForecast({score}), dataFreshness:{status:'fresh', ageMs:age, lastCandleTime:last.time}, rejectionReasons:rejects2 };
+    forecast:forecastBlocked ? null : {...candleForecast({score}), scope:'primary-timeframe scenarios; directional signal still requires multi-timeframe confirmation'}, dataFreshness:{status:'fresh', ageMs:age, lastCandleTime:last.time}, rejectionReasons:rejects2 };
 }
 
 /** Analysis-only walk-forward replay, no broker/data access. */
