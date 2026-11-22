@@ -67,11 +67,9 @@ function safeCloneChildren(doc, sourceId) {
 
 function statusKind(label) {
   const value = String(label || '').toLowerCase();
-  if (!value || /connect|live|ready|ok/.test(value)) {
-    if (/connect|connecting/.test(value) && !/connected/.test(value)) return 'warn';
-    return /live|connected|ready|ok/.test(value) ? 'good' : 'warn';
-  }
-  if (/error|failed|unavailable|stale|disconnected|not connected/.test(value)) return 'bad';
+  if (/error|failed|unavailable|stale|disconnected|not connected|offline/.test(value)) return 'bad';
+  if (/connecting|pending|unknown/.test(value) || !value) return 'warn';
+  if (/live|connected|ready|healthy|ok/.test(value)) return 'good';
   return 'warn';
 }
 
