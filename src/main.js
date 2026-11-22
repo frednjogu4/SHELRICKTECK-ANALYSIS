@@ -35,6 +35,10 @@ import { renderGoldCandlestickChart } from './goldchart.js';
 import { analyzeForex, FX_ANALYST_TIMEFRAMES } from '../server/lib/forexanalyst.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
 import { headlineConcerns, eventConcerns, eventTime, currenciesOf, marketsForCurrency, eatClock, eatDay, eatDayBounds, eatStamp, standAside, exposureFor, exposureForCurrency, releaseMeasuredText, trendWords, STAND_ASIDE } from './newsimpact.js';
+import { initCommandCentre } from './commandcentre.js';
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => initCommandCentre(), { once: true });
+else initCommandCentre();
 
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));
