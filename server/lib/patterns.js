@@ -70,6 +70,32 @@ export const PATTERN_KEYS = Object.keys(PATTERN_META);
 const last = (a) => a[a.length - 1];
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+/**
+ * Validate feed OHLC ordering and return only bars proven closed by a later
+ * bar. Timestamp units may be seconds or milliseconds. This intentionally
+ * requires caller-supplied granularity; the detector itself remains a pure
+ * consumer of an explicitly closed window.
+ */
+export function confirmedClosedCandles(candles, granularitySec) {
+  if (!Array.isArray(candles) || !Number.isFinite(Number(granularitySec)) || Number(granularitySec) <= 0)
+    throw new Error('Invalid candle history or granularity.');
+  const rows = [];
+  let previous = 0;
+  for (const candle of candles) {
+    const rawTime = Number(candle?.time);
+    const time = rawTime > 1e12 ? rawTime / 1000 : rawTime;
+    const o = Number(candle?.open), h = Number(candle?.high), l = Number(candle?.low), cl = Number(candle?.close);
+    if (![time, o, h, l, cl].every(Number.isFinite) || time <= previous || Math.min(o, h, l, cl) <= 0 ||
+      h < Math.max(o, cl) || l > Math.min(o, cl) ||
+      (candle.volume != null && (!Number.isFinite(Number(candle.volume)) || Number(candle.volume) < 0)))
+      throw new Error('Candle history is unordered or has invalid OHLC values.');
+    rows.push({ ...candle, time });
+    previous = time;
+  }
+  return rows.filter((candle, index) => index + 1 < rows.length &&
+    rows[index + 1].time >= candle.time + Number(granularitySec));
+}
+
 export function atrOf(candles, len = 14) {
   const n = candles.length;
   if (n < 2) return 0;

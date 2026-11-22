@@ -400,16 +400,37 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 </style>
 <style>
 /* ============ View-specific ============ */
-/* overview */
-.mover{display:flex; align-items:center; gap:11px; padding:9px 0; border-bottom:1px solid var(--border-soft); cursor:pointer}
-.mover:last-child{border-bottom:0}
-.mover:hover .sym-name{color:var(--brand)}
-.mover .spark{margin-left:auto}
-.mini-signal{border:1px solid var(--border); border-radius:var(--radius-sm); padding:11px 13px; margin-bottom:9px; cursor:pointer; transition:.13s; background:var(--surface-2)}
-.mini-signal:hover{border-color:var(--text-3)}
-.mini-signal:last-child{margin-bottom:0}
-.mini-signal .top{display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:5px}
-.mini-signal .meta{font-size:11.5px; color:var(--text-3); font-family:var(--mono)}
+/* unified command centre */
+body[data-view="overview"] .mob-order-bar{display:none}
+.command-section{margin-top:16px}
+.command-head{align-items:flex-start}
+.command-section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.command-section-head h2,.command-section .card-head h2{font-size:15px;font-weight:680}
+.command-section-head .sub,.command-section .card-head .sub{font-size:12px;color:var(--text-3);margin-top:3px}
+.command-status-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.command-market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.command-market{display:block;width:100%;min-width:0;text-align:left;padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer}
+.command-market:hover{border-color:var(--text-3);background:var(--surface-2)}
+.command-market-head,.command-market-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.command-market-symbol{font-weight:700;letter-spacing:.01em}
+.command-market-name{display:block;color:var(--text-3);font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.command-market-price{display:block;font:650 18px/1.25 var(--mono);font-variant-numeric:tabular-nums;margin:12px 0 8px;overflow-wrap:anywhere}
+.command-market-change{font:600 12px var(--mono);font-variant-numeric:tabular-nums}
+.command-market-meta{font-size:10.5px;color:var(--text-3);text-align:right}
+.command-market-meta span{display:block}
+.command-market .fresh-badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-2)}
+.command-market .fresh-badge.live{color:var(--green)}
+.command-market .fresh-badge.stale{color:var(--amber)}
+.command-market .fresh-badge.unavailable{color:var(--red)}
+.command-best-pick{margin-top:8px;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);line-height:1.7;overflow-wrap:anywhere}
+.command-kpis{margin-top:4px}
+.command-nav-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.command-nav-link{min-width:0;text-align:left;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-weight:650;cursor:pointer}
+.command-nav-link:hover{border-color:var(--text-3);background:var(--surface-2)}
+.command-nav-link span{display:block;margin-top:3px;color:var(--text-3);font-size:11.5px;font-weight:400;line-height:1.4}
+.command-nav-note{margin-top:9px;line-height:1.5}
+@media(max-width:960px){.command-market-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.command-nav-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.command-market-grid,.command-nav-grid{grid-template-columns:1fr}.command-status-row{align-items:flex-start}.command-status-row .pill{max-width:100%;white-space:normal}.command-market{padding:12px}.command-section-head{align-items:flex-start}.command-best-pick{padding:10px}}
 .news-concern{margin-top:4px; line-height:1.9}
 .news-mkt{display:inline-flex; align-items:center; gap:4px; margin-right:8px; white-space:nowrap}
 .news-mkt a{font-weight:600}
@@ -456,7 +477,51 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 .chart-toolbar .sym-price{font-family:var(--mono); font-weight:700; font-size:15px}
 .chart-body{position:relative; height:430px}
 .chart-body canvas{width:100%; height:100%; display:block; cursor:crosshair}
+.chart-signal-overlay{position:absolute;z-index:5;top:58px;right:12px;max-width:calc(100% - 24px);padding:8px 10px;border:1px solid var(--border);border-radius:9px;background:color-mix(in srgb,var(--surface) 94%,transparent);box-shadow:var(--shadow);font-size:11px;line-height:1.45;pointer-events:none}
+.chart-signal-overlay[hidden]{display:none}
+.chart-signal-overlay .chart-signal-title{font-weight:800;letter-spacing:.04em}
+.chart-signal-overlay .chart-signal-levels{display:flex;gap:4px 10px;flex-wrap:wrap;margin-top:4px;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.chart-signal-overlay .chart-signal-note{display:block;margin-top:4px;color:var(--text-3);font-size:9.5px}
+.chart-signal-overlay.buy{border-color:var(--green);color:var(--green)}
+.chart-signal-overlay.sell{border-color:var(--red);color:var(--red)}
+.chart-signal-overlay.wait{color:var(--text-2)}
 .tv-chart-host{position:absolute; inset:0}
+.chart-signal-view{position:absolute;inset:0;display:flex;flex-direction:column;min-width:0;background:#10151f}
+.chart-signal-view[hidden]{display:none}
+.chart-signal-view canvas{display:block;flex:1;min-width:0;width:100%;min-height:0;cursor:default}
+.chart-signal-status{flex:none;min-height:32px;padding:6px 12px;border-top:1px solid var(--border-soft);background:var(--surface);color:var(--text-2);font-size:11px;line-height:1.4}
+.chart-mode-switch{margin-left:auto}
+.chart-mode-switch button{padding:5px 10px;font-size:11.5px;white-space:nowrap}
+.fxa-result-card{margin-top:12px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2)}
+.fxa-frames{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:14px 0}
+.fxa-frame{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;border:1px solid var(--border-soft);border-radius:8px;background:var(--surface)}
+.fxa-levels{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.fxa-levels>div{display:grid;gap:2px;padding:8px 10px;border-radius:7px;background:var(--surface)}
+.fxa-chart-section{margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+.fxa-chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;margin-top:8px}
+.fxa-chart-card{min-width:0;padding:9px;border:1px solid var(--border-soft);border-radius:8px;background:var(--surface)}
+.fxaChart{display:block;width:100%;height:250px}
+.fxa-chart-markers{margin-top:4px}
+.fxa-reason{margin-top:12px;padding-top:10px;border-top:1px solid var(--border);line-height:1.55}
+@media(max-width:560px){.fxa-levels{grid-template-columns:repeat(2,minmax(0,1fr))}.fxa-frames{gap:5px}.fxa-frame{padding:7px}}
+.short-outlook{padding:10px 12px;border-top:1px solid var(--border);background:var(--surface-2);font-size:12px;line-height:1.5}
+.short-outlook-head{display:flex;justify-content:space-between;align-items:flex-start;gap:6px 12px;flex-wrap:wrap}
+.short-outlook-head>span{font-size:10.5px}
+.short-outlook-results{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0}
+.short-outlook-result{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:7px 9px;border:1px solid var(--border-soft);border-radius:8px;background:var(--surface)}
+.short-outlook-periods{display:flex;gap:4px 12px;flex-wrap:wrap;font-size:11px;color:var(--text-2)}
+.short-outlook-method{margin-top:5px;color:var(--text-3);font-size:10.5px}
+.short-outlook-details{margin-top:6px}
+.short-outlook-details summary{cursor:pointer;color:var(--text-2)}
+.short-outlook-biases{display:grid;gap:3px;margin-top:6px}
+.short-outlook-mini-biases{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 8px;margin:5px 0;font-size:9.5px}
+.short-outlook-bias{display:grid;grid-template-columns:44px 112px minmax(0,1fr);gap:6px;padding:4px 0;border-bottom:1px solid var(--border-soft);font-size:10.5px}
+@media(max-width:600px){.short-outlook-bias{grid-template-columns:38px 92px minmax(0,1fr);font-size:9.5px}}
+.watch-tile .short-outlook{padding:7px 9px;border-top:1px solid var(--border-soft);font-size:10.5px}
+.watch-tile .short-outlook-results{gap:4px;margin:5px 0}
+.watch-tile .short-outlook-result{padding:4px 6px;gap:4px}
+.watch-tile .short-outlook-periods{gap:2px 8px;font-size:9.5px}
+@media(max-width:480px){.short-outlook-results{grid-template-columns:1fr}}
 .tv-widget-box{position:relative; width:100%}
 .tv-widget-box iframe{border:0; width:100%; display:block}
 .tv-notice{padding:18px; color:var(--text-3); font-size:13px; border:1px dashed var(--border-soft); border-radius:10px; margin:8px; text-align:center}
@@ -476,6 +541,17 @@ table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 .chart-ms-tile-head{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:5px}
 .chart-ms-tile-head b{font-size:12px}
 .chart-ms-tile .ms-sketch{height:auto}
+.chart-ms-tile-head .chart-ms-expand{flex:none;border:1px solid var(--border-soft);border-radius:6px;background:var(--surface);color:var(--text-2);font:inherit;line-height:1;padding:4px 6px;cursor:pointer}
+.chart-ms-tile-head .chart-ms-expand:hover{color:var(--text);border-color:var(--brand)}
+.chart-ms-modal{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;padding:18px;background:rgba(4,7,14,.82)}
+.chart-ms-modal[hidden]{display:none!important}
+.chart-ms-modal-panel{width:min(1100px,96vw);max-height:94vh;overflow:auto;padding:16px;border:1px solid var(--border);border-radius:14px;background:var(--surface);box-shadow:var(--shadow)}
+.chart-ms-modal-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.chart-ms-modal-panel .chart-ms-tile{padding:14px}
+.chart-ms-modal-panel .chart-ms-tile-head b{font-size:15px}
+.chart-ms-modal-panel .ms-sketch{display:block;width:100%;height:auto;max-height:66vh;border-radius:10px}
+.chart-ms-modal-panel .chart-ms-state{gap:8px;margin-top:10px}
+.chart-ms-modal-panel .chart-ms-asof{font-size:12px}
 .chart-ms-tile .chart-ms-state{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
 .chart-ms-tile .badge{font-size:10px;padding:2px 6px}
 .chart-ms-tile .chart-ms-asof{margin-top:5px;font-size:10px;line-height:1.35;color:var(--text-3)}
@@ -674,6 +750,58 @@ input[type=range].range{accent-color:var(--brand); width:220px}
   *,*::before,*::after{animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important}
   .ticker-track{animation:none !important}
 }
+
+/* ============ Professional terminal polish (visual-only; layout and workflows unchanged) ============ */
+html[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#090d14; --surface:#0f1621; --surface-2:#141d2a; --surface-3:#1a2636;
+  --border:#263346; --border-soft:#1c2838;
+  --text:#e9eef7; --text-2:#a3afc1; --text-3:#728097;
+  --brand:#d9b66e; --brand-hi:#ebca88; --brand-ink:#181307;
+  --shadow:0 18px 44px rgba(0,0,0,.34),0 2px 8px rgba(0,0,0,.18);
+}
+body{background:radial-gradient(ellipse at 76% -18%,rgba(217,182,110,.055),transparent 36%),var(--bg)}
+button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlight-color:transparent }
+.btn,.chip,.icon-btn,.theme-card,.side-btn{transition:background-color .16s ease,border-color .16s ease,color .16s ease,box-shadow .16s ease,transform .12s ease}
+.btn{border-radius:8px;font-weight:650;letter-spacing:.005em}
+.btn.primary{box-shadow:0 2px 10px rgba(217,182,110,.12)}
+.btn.primary:hover{box-shadow:0 4px 16px rgba(217,182,110,.2);transform:translateY(-1px)}
+.btn.ghost:hover,.icon-btn:hover{border-color:var(--border);box-shadow:inset 0 0 0 1px rgba(255,255,255,.025)}
+.input,select.input,textarea.input{border-radius:8px}
+.badge{letter-spacing:.045em}
+.card,.kpi,.bot-card{
+  border-color:var(--border);
+  box-shadow:0 1px 0 rgba(255,255,255,.018) inset,0 8px 24px rgba(0,0,0,.08);
+}
+.card{border-radius:12px}
+.card-head{margin-bottom:16px}
+.card-head h3{letter-spacing:.005em}
+.kpi{border-radius:12px}
+.tbl th{background:var(--surface-2);backdrop-filter:blur(8px)}
+.tbl tbody tr:hover{background:color-mix(in srgb,var(--surface-3) 62%,transparent)}
+.sidebar{background:linear-gradient(180deg,var(--surface),color-mix(in srgb,var(--surface) 92%,var(--bg)));border-right-color:var(--border)}
+.side-logo{letter-spacing:.12em}
+.side-logo .mark{box-shadow:0 4px 14px rgba(217,182,110,.16)}
+.nav{padding-top:9px}
+.nav-item{border-radius:9px;min-height:38px}
+.nav-item.active{background:linear-gradient(90deg,rgba(217,182,110,.12),rgba(217,182,110,.035));color:var(--brand-hi);box-shadow:inset 2px 0 0 var(--brand),inset 0 0 0 1px rgba(217,182,110,.055)}
+.nav-item.active svg{opacity:1}
+.nav-item:hover:not(.active){background:var(--surface-2)}
+.topbar{background:color-mix(in srgb,var(--bg) 88%,transparent);border-bottom-color:var(--border-soft)}
+.topbar h2{letter-spacing:-.015em}
+.pill{background:color-mix(in srgb,var(--surface) 92%,transparent)}
+.tickerbar{background:var(--surface);border-bottom-color:var(--border-soft)}
+.view-head h1{letter-spacing:-.025em;font-weight:700}
+.view-head .sub{max-width:72ch;line-height:1.55}
+.status-line{border-color:var(--border)}
+.notice{border-radius:10px}
+.modal{border-color:color-mix(in srgb,var(--border) 80%,var(--brand));}
+.toast{border-radius:9px;backdrop-filter:blur(12px);box-shadow:0 14px 38px rgba(0,0,0,.3)}
+:focus-visible{outline-color:color-mix(in srgb,var(--blue) 82%,white);outline-offset:3px}
+@media(max-width:960px){
+  .card,.kpi,.bot-card{box-shadow:0 1px 0 rgba(255,255,255,.018) inset,0 5px 16px rgba(0,0,0,.08)}
+  .sidebar{box-shadow:12px 0 36px rgba(0,0,0,.22)}
+}
 </style>
 </head>
 <body>
@@ -731,7 +859,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <input class="input" id="exnessLogin" type="text" required placeholder="account number">
         </label>
         <label class="field"><span>MT5 account password</span>
-          <input class="input" id="exnessPass" type="password" autocomplete="off" required placeholder="trading password for demo orders; investor password is view-only">
+          <input class="input" id="exnessPass" type="password" autocomplete="off" required placeholder="trading password for manual REAL/DEMO orders; investor is view-only">
         </label>
         <label class="field"><span>Exact Exness MT5 server (required)</span>
           <input class="input" id="exnessServer" type="text" required placeholder="exact server name from Exness Personal Area">
@@ -773,7 +901,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
       <div class="nav-label">Workspace</div>
       <button class="nav-item active" data-view="overview">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
-        Overview
+        Command Centre
       </button>
       <button class="nav-item" data-view="markets">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-5 4 3 6-7"/><path d="M14 8h4v4"/></svg>
@@ -847,11 +975,9 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
       <div class="grow">
-        <h2 id="topTitle">Overview</h2>
-        <div class="crumb" id="topCrumb">Workspace &middot; everything at a glance</div>
+        <h2 id="topTitle">Market Command Centre</h2>
+        <div class="crumb" id="topCrumb">Workspace · unified market and portfolio overview</div>
       </div>
-      <span class="pill" id="feedPill"><span class="dot" id="feedDot"></span> <span id="feedText">Deriv feed · connecting…</span></span>
-      <span class="pill" id="derivPill" title="Deriv proxy (server-side token) status"><span class="dot" id="derivDot"></span> <span id="derivText">proxy · …</span></span>
       <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle colour theme">
         <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.8 6.8 0 0 0 9.8 9.8z"/></svg>
       </button>
@@ -861,64 +987,76 @@ input[type=range].range{accent-color:var(--brand); width:220px}
       <button class="btn primary sm" data-goto="trade">New order</button>
     </header>
 
-    <div class="tickerbar" aria-hidden="true"><div class="ticker-track" id="tickerTrack"></div></div>
-
     <main class="content" id="content">
 
-      <!-- ======= OVERVIEW ======= -->
-      <section class="view active" id="view-overview">
-        <div class="view-head">
+      <!-- Unified read-only command centre. Detailed workflows remain on their specialist pages. -->
+      <section class="view active" id="view-overview" aria-labelledby="commandTitle">
+        <div class="view-head command-head">
           <div>
-            <h1 id="ovGreeting">Good morning</h1>
-            <p class="sub" id="ovSub">Here is what is happening in your workspace right now.</p>
+            <h1 id="commandTitle">Market Command Centre</h1>
+            <p class="sub">One current view of verified market data, analysis status and portfolio totals.</p>
           </div>
-          <div class="row">
-            <button class="btn" data-goto="signals">View signals</button>
-            <button class="btn primary" data-goto="trade">New order</button>
-          </div>
+          <button class="btn ghost sm" type="button" data-goto="settings">Connection details</button>
         </div>
 
-        <div class="grid c4" id="ovKpis">
-          <div class="kpi"><div class="label">Portfolio value</div><div class="value" id="kpiValue">Not connected</div><div class="delta"><span class="v" id="kpiValueDelta">—</span> <span id="kpiValueDeltaLabel">broker equity</span></div></div>
-          <div class="kpi"><div class="label">Open P&amp;L</div><div class="value" id="kpiPl">—</div><div class="delta"><span class="v" id="kpiPlCount">0 open positions</span></div></div>
-          <div class="kpi"><div class="label">Free margin</div><div class="value" id="kpiMargin">Not connected</div><div class="delta"><span class="v" id="kpiMarginSub">connect Deriv or Exness</span></div></div>
-          <div class="kpi"><div class="label">Win rate</div><div class="value" id="kpiWin">—</div><div class="delta"><span class="v" id="kpiWinSub">No closed trades yet</span></div></div>
-        </div>
+        <section class="card command-section" aria-labelledby="marketStatusTitle">
+          <div class="card-head">
+            <div><h2 id="marketStatusTitle">Market Status</h2><div class="sub">Provider state only; detailed diagnostics are in Settings · Connections.</div></div>
+            <span class="tiny faint" id="marketStatusUpdated">Waiting for provider status</span>
+          </div>
+          <div class="command-status-row">
+            <span class="pill" id="feedPill" aria-live="polite"><span class="dot" id="feedDot"></span> <span id="feedText">Deriv feed · connecting…</span></span>
+            <span class="pill" id="derivPill" title="Deriv proxy status"><span class="dot" id="derivDot"></span> <span id="derivText">proxy · …</span></span>
+            <span class="tiny faint" id="marketStatusSource">Price source: Deriv public live feed · no connected broker required for these quotes.</span>
+          </div>
+        </section>
 
-        <div class="split section-gap">
-          <div class="grid" style="gap:16px">
-            <div class="card">
-              <div class="card-head">
-                <div><h3>Top movers</h3><div class="sub">Biggest 24h changes across watched markets</div></div>
-                <button class="btn ghost sm" data-goto="markets">All markets &rarr;</button>
-              </div>
-              <div id="ovMovers"></div>
-            </div>
-            <div class="card">
-              <div class="card-head">
-                <div><h3>Open positions</h3><div class="sub">Live mark-to-market</div></div>
-                <button class="btn ghost sm" data-goto="portfolio">Portfolio &rarr;</button>
-              </div>
-              <div id="ovPositions"></div>
-            </div>
+        <section class="command-section" aria-labelledby="marketOverviewTitle">
+          <div class="command-section-head">
+            <div><h2 id="marketOverviewTitle">Market Overview</h2><p class="sub">Live snapshot from verified Deriv ticks. Each quote carries its own time and freshness.</p></div>
+            <button class="btn ghost sm" data-goto="markets">Open Markets</button>
           </div>
-          <div class="grid" style="gap:16px">
-            <div class="card">
-              <div class="card-head">
-                <div><h3>AI signals</h3><div class="sub">Highest-conviction setups right now</div></div>
-                <button class="btn ghost sm" data-goto="signals">See all &rarr;</button>
-              </div>
-              <div id="ovSignals"></div>
-            </div>
-            <div class="card">
-              <div class="card-head">
-                <div><h3>Market news</h3><div class="sub">Live feed &amp; AI expectations</div></div>
-                <button class="btn ghost sm" data-goto="news">News &rarr;</button>
-              </div>
-              <div id="ovNews"><div class="hint">Live headlines and the AI expectations brief live in the News view.</div></div>
-            </div>
+          <div class="command-market-grid" id="commandMarkets" aria-live="polite"></div>
+        </section>
+
+        <section class="card command-section" aria-labelledby="analysisSummaryTitle">
+          <div class="card-head">
+            <div><h2 id="analysisSummaryTitle">Analysis Summary</h2><div class="sub">Best complete live setup only; incomplete plans are not ranked or presented as trade signals.</div></div>
+            <button class="btn ghost sm" data-goto="signals">Open Signal Analyzer</button>
           </div>
-        </div>
+          <div id="analysisSummaryMeta" class="tiny faint">No current analysis scan.</div>
+          <div id="ovBest" class="command-best-pick" aria-live="polite"></div>
+        </section>
+
+        <section class="card command-section" aria-labelledby="portfolioOverviewTitle">
+          <div class="card-head">
+            <div><h2 id="portfolioOverviewTitle">Portfolio Overview</h2><div class="sub">One authoritative summary; full positions and trade history remain in Portfolio.</div></div>
+            <button class="btn ghost sm" data-goto="portfolio">Open Portfolio</button>
+          </div>
+          <div class="grid c4 command-kpis">
+            <div class="kpi"><div class="label">Balance</div><div class="value" id="pfBalance">Not connected</div><div class="delta">Broker balance</div></div>
+            <div class="kpi"><div class="label">Equity</div><div class="value" id="pfEquity">Not connected</div><div class="delta"><span class="v" id="pfEquityDelta">—</span> floating P&amp;L</div></div>
+            <div class="kpi"><div class="label">Open P&amp;L</div><div class="value" id="pfPl">—</div><div class="delta"><span class="v" id="pfPlCount">Positions unavailable</span></div></div>
+            <div class="kpi"><div class="label">Closed trades</div><div class="value" id="pfClosed">—</div><div class="delta"><span class="v" id="pfClosedSub">No closed-trade data</span></div></div>
+          </div>
+        </section>
+
+        <section class="command-section" aria-labelledby="workspaceNavTitle">
+          <div class="command-section-head"><div><h2 id="workspaceNavTitle">Workspace Navigation</h2><p class="sub">Specialist tools stay separate; this overview does not duplicate their tables or controls.</p></div></div>
+          <nav class="command-nav-grid" aria-label="Workspace sections">
+            <button class="command-nav-link" data-goto="markets">Markets <span>Live catalogue and market scan</span></button>
+            <button class="command-nav-link" data-goto="watch">Watchlist <span>Pinned markets and charts</span></button>
+            <button class="command-nav-link" data-goto="trade">Charts <span>Chart &amp; Trade workspace</span></button>
+            <button class="command-nav-link" data-goto="news">News <span>Headlines and economic calendar</span></button>
+            <button class="command-nav-link" data-goto="signals">Signal Analyzer <span>Current technical scan</span></button>
+            <button class="command-nav-link" data-goto="settings" data-goto-section="analysisHistorySection">Analysis History <span>Existing online history panel in Settings</span></button>
+            <button class="command-nav-link" data-goto="portfolio" data-goto-section="closedHistoryCard">Reports <span>Closed-trade history in Portfolio</span></button>
+            <button class="command-nav-link" data-goto="settings">Settings <span>Connections, privacy and preferences</span></button>
+            <button class="command-nav-link" data-goto="settings" data-goto-section="securitySection">Security <span>Existing connection and safeguard controls</span></button>
+            <button class="command-nav-link" data-goto="proscalper" data-goto-section="psAudit">Audit <span>Local analysis audit log; no orders</span></button>
+          </nav>
+          <p class="tiny faint command-nav-note">Analysis History, Reports, Security and Audit link to their existing specialist sections; no new routes or execution flows are introduced.</p>
+        </section>
       </section>
 
       <!-- ======= MARKETS ======= -->
@@ -1005,11 +1143,12 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         <div id="watchTvWrap">
           <h4 style="margin:0 0 8px">Indices — TradingView <span class="hint">(may be delayed · click a tile header for the full chart)</span></h4>
           <div id="watchWidget" style="min-height:160px"></div>
+          <div id="watchTvOutlooks" class="grid c2" style="gap:8px;margin-top:8px"></div>
         </div>
       </section>
       <section class="view" id="view-trade">
         <div class="view-head">
-          <div><h1>Chart &amp; Trade</h1><p class="sub">Live TradingView chart &middot; real levels &middot; orders go through your connected broker &middot; chart times follow <b>your device clock</b>.</p></div>
+          <div><h1>Chart &amp; Trade</h1><p class="sub">Switch between the interactive TradingView chart and an AURUM M5 chart using the signal’s own verified candle source. The next 5m/10m directional outlook is below the graph. Entry, SL and TP markers appear only for a fresh confirmed setup; TradingView times follow your device clock, and orders still require your normal confirmation.</p></div>
         </div>
         <div class="split">
           <div class="chart-shell">
@@ -1018,12 +1157,21 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <span class="sym-price" id="chartPrice">—</span>
               <span class="mono small" id="chartChg">—</span>
               <div class="grow"></div>
-              <span class="tiny faint">TradingView &middot; live</span>
+              <div class="seg chart-mode-switch" id="chartModeSwitch" role="group" aria-label="Chart display">
+                <button type="button" data-chart-mode="signal" class="active" aria-pressed="true">Signal chart · M5</button>
+                <button type="button" data-chart-mode="tv" aria-pressed="false">TradingView</button>
+              </div>
             </div>
             <div id="chartLevels" class="mono tiny" style="display:flex;gap:14px;flex-wrap:wrap;padding:6px 14px;border-bottom:1px solid var(--border);background:rgba(224,180,92,.05)"></div>
             <div class="chart-body">
-              <div id="tvChart" class="tv-chart-host"></div>
+              <div id="tvChart" class="tv-chart-host" hidden></div>
+              <div id="chartSignalView" class="chart-signal-view">
+                <canvas id="chartSignalCanvas" data-height="378" aria-label="M5 market candles with fresh validated signal entry, stop-loss and target markers"></canvas>
+                <div id="chartSignalStatus" class="chart-signal-status" aria-live="polite">Signal chart loads verified candles from the analysis source.</div>
+              </div>
+              <div id="chartSignalOverlay" class="chart-signal-overlay" aria-live="polite" aria-label="Current chart signal and validated trade levels" hidden></div>
             </div>
+            <div id="chartOutlook" aria-live="polite"><div class="short-outlook"><span class="faint">Waiting for verified closed candles for the selected market.</span></div></div>
             <section class="chart-ms" id="chartMarketState" aria-label="Four-timeframe market state" aria-live="polite">
               <div class="chart-ms-head">
                 <div><b>Market State · M5 / M15 / H1 / H4</b><span class="chart-ms-caption">Four-timeframe descriptions for the chart market; each tile marks LIVE only for a fresh tick in its forming candle. Bias is informational, not profit probability.</span></div>
@@ -1032,6 +1180,12 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div class="chart-ms-grid" id="chartMsGrid"></div>
               <div class="chart-ms-note" id="chartMsNote">Readings will appear when candle history is available. Each timeframe shows its own last observed time.</div>
             </section>
+            <div class="chart-ms-modal" id="chartMsModal" hidden>
+              <section class="chart-ms-modal-panel" role="dialog" aria-modal="true" aria-labelledby="chartMsModalTitle">
+                <div class="chart-ms-modal-head"><div><b id="chartMsModalTitle">Expanded timeframe chart</b><div class="tiny faint">Verified candle history · same timeframe state as the tile</div></div><button class="btn sm" type="button" id="chartMsModalClose" aria-label="Close expanded chart">Close</button></div>
+                <div id="chartMsModalBody"></div>
+              </section>
+            </div>
             <section class="chart-smc" id="chartSmc" aria-label="Smart Money Concepts setup checklist" aria-live="polite">
               <div class="chart-smc-head">
                 <div><b>SMC setup checklist · closed M5 candles + H1/H4 bias</b><div class="chart-smc-sub">Break &amp; retest · liquidity sweep + MSS · FVG + retest. A filter for study, not an entry signal.</div></div>
@@ -1162,7 +1316,11 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           </div>
           <div class="tiny faint" style="margin:8px 0 12px">Requires 50 completed candles per frame and a fresh live quote. BUY/SELL needs at least 2 of 3 MTF votes, quality score ≥70, a swing-based stop no wider than 15 pips and a verified S/R target ≥1.5:1. Otherwise it returns WAIT with action NONE (no order or open-position assumption). Confidence is a confluence score, not probability. UPDATE compares this browser’s saved prior reading and reports HOLD/EXIT/REVERSE as analysis only. The JSON field <code>chart_data</code> contains the three candle series, EMA(9/21), swing trendlines, S/R zones and validated trade overlays.</div>
           <div id="fxaStatus" class="hint" role="status" aria-live="polite">Choose a forex pair and analyze verified live candles.</div>
-          <pre id="fxaOutput" class="hidden" style="max-height:520px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:var(--surface-2);padding:12px;border-radius:8px;font-size:11px;line-height:1.5" aria-label="Structured Forex Analyst JSON output"></pre>
+          <div id="fxaSummary" class="hidden" aria-live="polite"></div>
+          <details id="fxaRawDetails" class="hidden" style="margin-top:12px">
+            <summary class="tiny faint" style="cursor:pointer">Technical details (raw JSON)</summary>
+            <pre id="fxaOutput" style="max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:var(--surface-2);padding:12px;border-radius:8px;font-size:11px;line-height:1.5" aria-label="Optional raw Structured Forex Analyst JSON"></pre>
+          </details>
         </div>
         <div class="card">
           <div class="card-head">
@@ -1353,7 +1511,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
 
         <!-- ========================= ONLINE HISTORY (Supabase) ========================= -->
-        <div class="card section-gap" id="historyCard">
+        <div class="card section-gap" id="analysisHistorySection">
           <div class="card-head">
             <div>
               <span class="title">Online history</span>
@@ -1474,6 +1632,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <div class="card" style="margin:0 0 14px;background:var(--surface-2)">
             <div class="card-head wrap"><div><h3>Gold / USD price chart</h3><div class="sub">Verified 5-minute candles · live price marker when available · chart only, not an order or signal.</div></div><span class="tiny faint" id="goldChartInfo">Waiting for verified candle history.</span></div>
             <div id="goldChart" aria-live="polite"><div class="hint">Waiting for verified Gold candle history.</div></div>
+            <div id="goldOutlook" aria-live="polite"><div class="short-outlook"><span class="faint">Waiting for verified closed Gold candles.</span></div></div>
             <div class="hint tiny">The newest candle may still be forming. Signal confirmation continues to use finished candles only.</div>
           </div>
           <div class="az-tiles">
@@ -1550,12 +1709,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <button class="btn primary" data-goto="trade">New order</button>
         </div>
         <div id="pfAccounts" data-pat-accounts style="margin-bottom:14px"></div>
-        <div class="grid c4">
-          <div class="kpi"><div class="label">Balance</div><div class="value" id="pfBalance">Not connected</div><div class="delta">Broker balance</div></div>
-          <div class="kpi"><div class="label">Equity</div><div class="value" id="pfEquity">Not connected</div><div class="delta"><span class="v" id="pfEquityDelta">—</span> floating</div></div>
-          <div class="kpi"><div class="label">Open P&amp;L</div><div class="value" id="pfPl">$0.00</div><div class="delta"><span class="v" id="pfPlCount">0 positions</span></div></div>
-          <div class="kpi"><div class="label">Closed trades</div><div class="value" id="pfClosed">0</div><div class="delta"><span class="v" id="pfClosedSub">—</span></div></div>
-        </div>
+        <div class="hint section-gap">Portfolio totals are summarized on the Market Command Centre so account metrics have one authoritative location. This page is for detailed positions, broker snapshots and closed-trade history.</div>
 
         <div class="card section-gap" id="mt5PositionsCard" style="display:none">
           <div class="card-head">
@@ -1586,7 +1740,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <div class="empty" id="posEmpty"><b>No app-recorded positions</b>Live MT5 positions are shown in the broker snapshot above.</div>
         </div>
 
-        <div class="card section-gap">
+        <div class="card section-gap" id="closedHistoryCard">
           <div class="card-head"><div><h3>History</h3><div class="sub">Closed trades, newest first</div></div></div>
           <div class="tbl-wrap" id="histWrap">
             <table class="tbl">
@@ -1608,7 +1762,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
         <div class="notice warn" style="margin-bottom:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-          <div><b>Exness execution is DEMO-only and manual.</b> The local MT5 bridge independently verifies the Exness demo account and checks fresh quotes, broker sizing, stop risk, margin, daily realized loss, and open positions before each manually confirmed order. Live accounts, app-side closes, and automated entries remain blocked. Risk estimates are not guaranteed maximum losses. Credentials stay between this local app and your PC terminal; keep the bridge beside MT5 and use the same exact account/server for PC and phone.</div>
+          <div><b>Exness REAL and DEMO orders are manual-only.</b> Each order requires a fresh MT5 preview and your explicit per-order confirmation. The local bridge verifies the exact account mode and rechecks live quotes, broker sizing, buffered stop risk, margin, daily realized loss, and open positions. Hard caps: 0.5% buffered risk per order, 2% daily loss, one open position, at least 1.2 reward:risk, and no more than 80% of free margin. Automated entries and app-side closes stay disabled. Stops and risk estimates cannot guarantee the final loss; manage or close positions directly in MT5. Credentials stay on this PC/local bridge; use the exact same account and server on PC and phone.</div>
         </div>
 
         <div class="grid c3" id="connGrid">
@@ -1632,7 +1786,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div class="hint">If it says unreachable: (1) is the black bridge window open with "listening"? (2) the cloud page may be blocked from reaching your PC — the guaranteed path is the bridge's own app: <a id="openLocalMode" href="http://127.0.0.1:8788/app" target="_blank" rel="noopener" style="color:var(--brand);font-weight:700">Open the local trading app (Exness works there) ↗</a>. To allow the cloud page instead: padlock → Site settings → Insecure content → Allow, and allow Local-network access, then reload.</div></label>
             <label class="field" style="margin:0"><span>Account login</span><input class="input" id="mt5Login" required placeholder="account number"></label>
             <label class="field" style="margin:0"><span>MT5 server (enter exact server for this account)</span><input class="input" id="mt5Server" required placeholder="copy the exact server from Exness Personal Area"></label>
-            <label class="field" style="margin:0"><span>MT5 account password</span><input class="input" type="password" autocomplete="off" id="mt5Pass" required placeholder="trading password for demo orders; investor password is view-only"></label>
+            <label class="field" style="margin:0"><span>MT5 account password</span><input class="input" type="password" autocomplete="off" id="mt5Pass" required placeholder="trading password for manual REAL/DEMO orders; investor is view-only"></label>
             <label class="field" style="margin:0"><span>Bridge token <span class="faint">(required from phone/LAN)</span></span><input class="input" type="password" autocomplete="off" id="mt5Token" placeholder="shared secret — use local bridge_token.txt"><div class="hint">On the PC this is optional. From a phone, use the token from the PC's local bridge_token.txt; it stays in this browser tab only and is also required for phone access to the local analysis API.</div></label>
             <button class="btn primary conn-btn" data-conn="mt5">Connect Exness locally</button>
             <div class="hint">This browser tab keeps the Exness login, server, password and bridge token in session storage for refresh recovery. They clear on disconnect, sign-out, or tab-session end.</div>
@@ -1711,6 +1865,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
           <div id="ddStatus" class="hint" style="margin-top:6px">No history loaded yet.</div>
           <div style="position:relative;margin-top:8px"><canvas id="ddChart" height="180" style="width:100%;height:180px;display:none"></canvas><div id="ddTip" style="position:absolute;display:none;pointer-events:none;background:var(--surface-3);border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:4px 8px;font-size:11px;white-space:nowrap;z-index:2"></div></div>
           <div id="ddStats" class="mono" style="margin-top:8px"></div>
+          <div id="ddOutlook" aria-live="polite"><div class="short-outlook"><span class="faint">Choose an instrument to see a separate short-horizon outlook when fresh M1 history is available.</span></div></div>
           <div class="hint" id="ddSrc">Source: —</div>
         </div>
         <div class="card" style="margin-bottom:14px">
@@ -1742,6 +1897,11 @@ input[type=range].range{accent-color:var(--brand); width:220px}
         </div>
         <div class="split rev">
           <div class="grid" style="gap:16px">
+            <section class="card" id="settingsConnections" aria-labelledby="settingsConnectionsTitle">
+              <div class="card-head"><div><h3 id="settingsConnectionsTitle">Connections</h3><div class="sub">Sanitized provider diagnostics · credentials are never shown here.</div></div></div>
+              <div class="hint" id="connectionDetails" aria-live="polite">Waiting for feed and broker status.</div>
+              <div id="atHealth" style="margin-top:8px"></div>
+            </section>
             <div class="card">
               <div class="card-head"><h3>Brand &amp; logo</h3></div>
               <div class="set-row">
@@ -1788,6 +1948,9 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               <div class="set-row">
                 <div><div class="t">Confirm before closing positions</div><div class="d">Ask for confirmation when closing or flattening.</div></div>
                 <label class="switch"><input type="checkbox" id="confirmChk" checked><i></i></label>
+              </div>
+              <div class="set-row" id="securitySection">
+                <div><div class="t">Security &amp; execution safeguards</div><div class="d">Existing controls remain unchanged; this overview only links to them.</div></div>
               </div>
               <div class="set-row">
                 <div><div class="t">Kill switch — halt ALL new orders</div><div class="d">Server-side: every buy/confirm route returns 503 while on. Closing positions stays allowed. Re-enabling asks for the diagnostics key if one is set.</div></div>
@@ -1940,7 +2103,6 @@ input[type=range].range{accent-color:var(--brand); width:220px}
                 <input type="checkbox" id="atSynth" style="width:auto">
                 <span style="font-weight:400">Include synthetics in auto-trade (VOL/BOOM/CRASH are random-walks \u2014 signals have no edge there; default OFF)</span>
               </label>
-              <div id="atHealth" style="margin-top:8px"></div>
               <label class="field"><span>ChatGPT API key (OpenAI)</span>
                 <input class="input" id="aiOpenaiKey" type="password" placeholder="sk-…">
               </label>
@@ -1973,7 +2135,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
             <div class="card">
               <div class="card-head"><h3>Notifications</h3></div>
               <div class="set-row">
-                <div><div class="t">Browser notifications</div><div class="d">News briefs, trade opened/closed, SL/TP1/TP2 guidance.</div></div>
+                <div><div class="t">Browser notifications</div><div class="d">Upcoming high/medium scheduled releases (while AURUM is open), affected markets, news briefs, and trade/SL/TP alerts. News does not predict BUY or SELL.</div></div>
                 <button class="btn sm" id="notifBtn">Enable</button>
               </div>
               <div class="set-row">
@@ -1982,7 +2144,7 @@ input[type=range].range{accent-color:var(--brand); width:220px}
               </div>
               <div class="set-row">
                 <div><div class="t">Auto-send to WhatsApp</div><div class="d" id="waAutoStatus">Checking server…</div></div>
-                <label class="switch" title="Auto-send signals and briefs"><input type="checkbox" id="waAuto"><i></i></label>
+                <label class="switch" title="Auto-send scheduled news alerts, signals and briefs to WhatsApp"><input type="checkbox" id="waAuto"><i></i></label>
               </div>
               <div class="set-row">
                 <div><div class="t">Session</div><div class="d" id="sessionInfo">Live markets · no trading.</div></div>
@@ -2006,7 +2168,6 @@ input[type=range].range{accent-color:var(--brand); width:220px}
                 <li><span class="k">Workspace</span><span class="v">AURUM 2.0 · live</span></li>
                 <li><span class="k">Mode</span><span class="v" id="aboutMode">Full workspace</span></li>
                 <li><span class="k">Trading &amp; accounts</span><span class="v" id="aboutTrading">Through the broker you connect in this app</span></li>
-                <li><span class="k">Market data</span><span class="v" id="aboutFeed">Deriv live feed</span></li>
                 <li><span class="k">Signal analysis</span><span class="v" id="aboutAnalysis">Exness MT5 first · labelled Deriv / Yahoo fallback</span></li>
                 <li><span class="k">Charts / news</span><span class="v">TradingView official widgets</span></li>
                 <li><span class="k">Storage</span><span class="v">Browser localStorage</span></li>

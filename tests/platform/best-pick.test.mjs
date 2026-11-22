@@ -14,23 +14,25 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isDailyReading, splitBestPick, dailyBarText, sharedDailyBarText, tradingDayText } from '../../src/bestpick.js';
+import { isDailyReading, splitBestPick, dailyBarText, sharedDailyBarText, tradingDayText, contextOnlyDailyReading } from '../../src/bestpick.js';
 
 const INDICES = ['NAS100', 'US30', 'SPX500'];
 
 /* A live reading as the cloud viewer labels it (analysed in the browser). */
 const live = (symbol, signal, confidence, extra = {}) => ({
-  symbol, signal, confidence, tf: 'MTF 1m/5m/1h', model: 'technical', data_state: 'live',
+  symbol, signal, confidence, entry:100, stop_loss:signal==='SELL'?101:99, tp1:signal==='SELL'?98:102, tp2:signal==='SELL'?97:103,
+  tf: 'MTF 1m/5m/1h', model: 'technical', data_state: 'live',
   source: 'Deriv public candles · analysed in this browser', data_source: 'Deriv public candles · analysed in this browser', ...extra
 });
-/* A daily index reading as it reaches the cloud viewer from the AURUM cloud. */
+/* A daily index fixture with a complete plan, solely for picker ranking tests. */
 const cloudDaily = (symbol, signal, confidence, extra = {}) => ({
-  symbol, signal, confidence, tf: 'DAILY (index)', model: 'technical-daily', data_state: 'daily',
+  symbol, signal, confidence, entry: 100, stop_loss: signal==='SELL'?101:99, tp1: signal==='SELL'?98:102, tp2: signal==='SELL'?97:103,
+  tf: 'DAILY (index)', model: 'technical-daily', data_state: 'daily',
   source: 'Yahoo Finance public daily data · AURUM cloud analysis', data_source: 'Yahoo Finance public daily data · AURUM cloud analysis', ...extra
 });
 /* The same reading in the PC app: from the local API, relabelled as a fallback, without a state. */
 const pcDaily = (symbol, signal, confidence) => ({
-  symbol, signal, confidence, tf: 'DAILY (index)', model: 'technical-daily',
+  symbol, signal, confidence, entry: 100, stop_loss: signal==='SELL'?101:99, tp1: signal==='SELL'?98:102, tp2: signal==='SELL'?97:103, tf: 'DAILY (index)', model: 'technical-daily',
   source: 'Yahoo Finance public daily data · fallback (Exness unavailable: Exness bridge is not connected in this tab.)',
   data_source: 'Yahoo Finance public daily data · fallback (Exness unavailable: Exness bridge is not connected in this tab.)', fallback: true
 });
@@ -137,7 +139,7 @@ test('daily line: an index that could not be read belongs to this line, not to t
 
 test('PC app: a daily reading from the local API is recognised without a state and gets its own line', () => {
   const pick = splitBestPick([
-    { symbol: 'EUR/USD', signal: 'SELL', confidence: 61, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv public candles · fallback (Exness unavailable: Exness bridge is not connected in this tab.)' },
+    { symbol: 'EUR/USD', signal: 'SELL', confidence: 61, entry:1.1, stop_loss:1.11, tp1:1.08, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv public candles · fallback (Exness unavailable: Exness bridge is not connected in this tab.)' },
     pcDaily('US30', 'BUY', 90)
   ], INDICES);
   assert.equal(pick.live.symbol, 'EUR/USD');
@@ -145,8 +147,8 @@ test('PC app: a daily reading from the local API is recognised without a state a
 });
 
 test('PC app: an index read live from Exness MT5 is a live market — it competes with the others on the same scale', () => {
-  const fromMt5 = { symbol: 'US30', signal: 'BUY', confidence: 76, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Exness MT5 local candles', data_source: 'Exness MT5 local candles' };
-  const pick = splitBestPick([{ symbol: 'EUR/USD', signal: 'SELL', confidence: 61, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Exness MT5 local candles' }, fromMt5], INDICES);
+  const fromMt5 = { symbol: 'US30', signal: 'BUY', confidence: 76, entry:100, stop_loss:99, tp1:102, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Exness MT5 local candles', data_source: 'Exness MT5 local candles' };
+  const pick = splitBestPick([{ symbol: 'EUR/USD', signal: 'SELL', confidence: 61, entry:1.1, stop_loss:1.11, tp1:1.08, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Exness MT5 local candles' }, fromMt5], INDICES);
   assert.equal(pick.live.symbol, 'US30');
   assert.equal(pick.daily, null);
   assert.deepEqual(pick.dailySide, [], 'no daily reading in this scan: the second line is not shown');
@@ -176,6 +178,26 @@ test('isDailyReading: by state, by model, by timeframe label or by source — an
   assert.equal(isDailyReading(null), false);
   assert.equal(isDailyReading(undefined), false);
   assert.equal(isDailyReading({}), false);
+});
+
+test('daily index BUY with zero or absent levels is normalized to context-only, not a usable signal', () => {
+  for (const levels of [
+    { entry: 0, stop_loss: 0, tp1: 0, tp2: 0 },
+    { entry: null, stop_loss: null, tp1: null, tp2: null },
+    { entry: undefined, stop_loss: undefined, tp1: undefined, tp2: undefined }
+  ]) {
+    const original = { ...cloudDaily('US30', 'BUY', 74), ...levels, bias: 'bullish' };
+    assert.equal(splitBestPick([original], INDICES).daily, null, 'the picker independently rejects daily rows without positive levels');
+    const safe = contextOnlyDailyReading(original);
+    assert.equal(safe.signal, 'WAIT');
+    assert.equal(safe.context_signal, 'BUY');
+    assert.equal(safe.analysis_status, 'CONTEXT_ONLY');
+    assert.equal(safe.confidence, null);
+    assert.equal(safe.tradeable, false);
+    for (const key of ['entry', 'stop_loss', 'tp1', 'tp2']) assert.equal(safe[key], null);
+    const pick = splitBestPick([safe], INDICES);
+    assert.equal(pick.daily, null, 'context cannot be ranked as a daily trade pick');
+  }
 });
 
 test('nothing to split: no readings, missing readings, no index list', () => {

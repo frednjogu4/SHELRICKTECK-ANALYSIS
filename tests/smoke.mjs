@@ -31,6 +31,8 @@ if (typeof window.matchMedia !== 'function') {
 }
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = function(){};
 window.scrollTo = function(){};
+/* Canvas is intentionally unavailable in jsdom; let app fallbacks handle it without emitting a fake browser error. */
+if (window.HTMLCanvasElement) window.HTMLCanvasElement.prototype.getContext = function(){ return null; };
 
 /* ---- scripted Deriv feed (offline) ---- */
 window.__socks = [];
@@ -254,16 +256,16 @@ async function run() {
   check('session persisted', (store.k('session') || {}).mode === 'live');
   check('side sub label', $('#sideSub').textContent.includes('no trading'), $('#sideSub').textContent);
 
-  /* 2 — shell with REAL feed */
-  check('ticker items', $('#tickerTrack').children.length >= 24, $('#tickerTrack').children.length);
-  check('feed label live', $('#feedText').textContent.includes('Deriv'), $('#feedText').textContent);
-  check('no demo balance', $('#kpiValue').textContent === 'Not connected', $('#kpiValue').textContent);
-  check('movers from live ticks', $('#ovMovers').children.length === 6, $('#ovMovers').children.length);
-  check('overview signals from scan', $('#ovSignals').children.length === 3, $('#ovSignals').children.length);
-  check('overview news honest hint', $('#ovNews').textContent.length > 10);
-  check('empty positions msg clearly distinguishes app records from live MT5 positions', $('#ovPositions').textContent.includes('No app-recorded open positions') || $('#ovPositions').textContent.includes('MT5 reports no open positions'));
-  const firstPx = $('#ovMovers').querySelector('[data-px]');
-  check('live price rendered', firstPx && firstPx.textContent !== '—', firstPx && firstPx.textContent);
+  /* 2 — unified, read-only command centre */
+  check('no global ticker duplicates the market snapshot', !$('#tickerTrack'));
+  check('feed label lives in Market Status', $('#feedText').textContent.includes('Deriv'), $('#feedText').textContent);
+  check('Market Overview renders six market cards', $('#commandMarkets').children.length === 6, $('#commandMarkets').children.length);
+  check('Portfolio balance is unavailable rather than a fabricated zero', $('#pfBalance').textContent === 'Not connected', $('#pfBalance').textContent);
+  check('overview has no duplicate mover/signal/position/news panels', !$('#ovMovers') && !$('#ovSignals') && !$('#ovPositions') && !$('#ovNews'));
+  check('best-pick analysis has one authoritative workspace panel', $('#view-overview #ovBest') && !$('#ovDaily'));
+  check('Connection details are in Settings', $('#settingsConnections') && $('#settingsConnections').contains($('#atHealth')));
+  const firstPx = $('#commandMarkets').querySelector('.command-market-price');
+  check('verified market price rendered', firstPx && firstPx.textContent !== 'Unavailable', firstPx && firstPx.textContent);
 
   /* 3 — all views navigate */
   for (const v of ['markets','trade','signals','news','portfolio','automation','settings','overview']) {
@@ -389,7 +391,7 @@ async function run() {
   check('deriv login works', $('#appShell').classList.contains('ready'), 'err=[' + (($('#authErr')||{}).textContent||'') + '] socks=' + (window.__socks||[]).length);
   check('session mode deriv', (store.k('session') || {}).mode === 'deriv');
   check('side sub deriv', $('#sideSub').textContent.includes('Deriv'), $('#sideSub').textContent);
-  check('balance from broker', $('#kpiValue').textContent.includes('1,000.50'), $('#kpiValue').textContent);
+  check('balance from broker appears once in the Command Centre', $('#pfBalance').textContent.includes('1,000.50'), $('#pfBalance').textContent);
 
   /* 11 — place a real order (mock Deriv fills) */
   click(doc.querySelector('.nav-item[data-view="trade"]'));
@@ -545,7 +547,7 @@ async function run() {
   const hubLink = doc.querySelector('#dmt5Card a[href="https://app.deriv.com/"]');
   check('real account link -> Trader\'s Hub (no invented URL)', !!hubLink);
   check('bridge server field (Deriv MT5 needs it)', !!$('#mt5Server'));
-  check('bridge login is Exness-specific with mandatory exact server and accurate demo-trading password guidance', doc.body.innerHTML.includes('Exness MT5 account login') && doc.body.innerHTML.includes('Exact Exness MT5 server (required)') && doc.body.innerHTML.includes('investor password is view-only') && !doc.body.innerHTML.includes('any MT5 broker'));
+  check('bridge login is Exness-specific with mandatory exact server and accurate demo-trading password guidance', doc.body.innerHTML.includes('Exness MT5 account login') && doc.body.innerHTML.includes('Exact Exness MT5 server (required)') && doc.body.innerHTML.includes('investor is view-only') && !doc.body.innerHTML.includes('any MT5 broker'));
   check('duration selector in order ticket', !!$('#orderDuration') && $('#orderDuration').querySelector('option[value="15m"]'));
   check('order amount default within server cap ($10)', $('#orderAmount') && Number($('#orderAmount').getAttribute('value')) === 10, 'default=' + ($('#orderAmount')||{}).getAttribute?.('value'));
   check('confirm dialog shows target account', !!$('#tmAccount'));
@@ -661,7 +663,7 @@ async function run() {
   check('break-even win rate shown in the confirm sheet (payout asymmetry visible BEFORE buying)', doc.getElementById('tmBE') && (srcMain2.match(/beWinRateText\(/g)||[]).length >= 4 && srcMain2.includes('of these trades must WIN just to break even') && srcMain2.includes('size accordingly'));
   check('rebrand: Shelricktech default + Settings name/tagline/logo controls', doc.getElementById('brandName').textContent==='Shelricktech' && doc.getElementById('brandNameInput') && doc.getElementById('brandLogo') && doc.getElementById('brandReset') && srcMain2.includes('BRAND_DEFAULT'));
   check('Shelricktech identity: welcome message replaces the wordmark; headline + trademark intact', (() => { const rawAuth = readFileSync(join(root, 'index.html'), 'utf8'); return rawAuth.includes('Shelricktech Investment <em>Trading Analysis</em> Tool') && rawAuth.includes('&#8482; Designed by Fredrick K under Shelricktech Investment.') && rawAuth.includes('id="authLogo"') && rawAuth.includes('id="authWelcome"') && !rawAuth.includes('SHELricktech INVESTMENT') && srcMain2.includes("+', trader'") && srcMain2.includes("const al=document.getElementById('authLogo');") && srcMain2.includes("logo:'data:image/jpeg;base64,"); })());
-  check('daily motivation (deterministic per day) on the login dashboard + Overview', srcMain2.includes('const DESK_QUOTES=') && srcMain2.includes('function dailyQuote(') && (srcMain2.split("a:'").length - 1) >= 10 && srcMain2.includes('Motivation of the day:') && srcMain2.includes("getElementById('authMotivation')") && srcMain2.includes("getElementById('ovMotivation')"));
+  check('daily motivation is auth-only and not duplicated in the Command Centre', srcMain2.includes('const DESK_QUOTES=') && srcMain2.includes('function dailyQuote(') && (srcMain2.split("a:'").length - 1) >= 10 && srcMain2.includes('Motivation of the day:') && srcMain2.includes("getElementById('authMotivation')") && !srcMain2.includes("getElementById('ovMotivation')"));
   check('login screen: one viewport — big logo, no brand repetition, tabbed connect, walls of text hidden', (() => { const rawAuth = readFileSync(join(root, 'index.html'), 'utf8'); return rawAuth.includes('width:76px;height:76px') && rawAuth.includes('id="authTabDeriv"') && rawAuth.includes('id="authPaneDeriv"') && rawAuth.includes('id="authPaneMt5"') && !rawAuth.includes('auth-feats') && !rawAuth.includes('Live Deriv feed — real ticks') && rawAuth.includes('<details class="auth-details" id="dmt5Card">') && srcMain2.includes("$('#authTabDeriv')") && srcMain2.includes("function welcomeText()"); })());
   check("today's best market: Exness-first scan with provider label on dashboard + Overview", srcMain2.includes('async function refreshBestPick') && srcMain2.includes('scanSignalsPreferred(syms)') && srcMain2.includes('authBestBody') && srcMain2.includes('source:') && srcMain2.includes('the pick appears the moment the live scan finds one') && readFileSync(join(root, 'index.html'), 'utf8').includes("TODAY'S BEST MARKET TO FORECAST ON"));
   check('Shelricktech icons: PWA + favicon generated from the user logo (no SVG-A favicon left)', (() => { const rawHtml = readFileSync(join(root, 'index.html'), 'utf8'); return rawHtml.includes('<link rel="icon" type="image/png" href="/icons/favicon-32.png">') && !rawHtml.includes("rel=\"icon\" href=\"data:image/svg+xml") && readFileSync(join(root, 'public', 'manifest.webmanifest'), 'utf8').includes('/icons/icon-512.png'); })());
@@ -679,7 +681,7 @@ async function run() {
     {
       const ijs = readFileSync(join(root, 'server', 'lib', 'indices.js'), 'utf8');
       check('indices in daily signal analysis: scan includes NAS100/US30/SPX500 (daily, labelled)', srcMain2.includes("['NAS100','US30','SPX500']") && ijs.includes('^NDX') && ijs.includes('^DJI') && ijs.includes('^GSPC') && srcApp.includes("model: 'technical-daily'"));
-      check('index cards: Deriv analysis-only and Exness orders restricted to broker-verified demo instruments; server daily levels stay analysis-only', srcMain2.includes('function openSignalSymbol') && srcMain2.includes('This index is not orderable through Deriv') && srcMain2.includes('local MT5 bridge resolves as tradable on a verified DEMO account') && ijs.includes('entry: null'));
+      check('index cards: Deriv analysis-only and Exness orders restricted to broker-verified demo instruments; server daily levels stay analysis-only', srcMain2.includes('function openSignalSymbol') && srcMain2.includes('This index is not orderable through Deriv') && srcMain2.includes('MT5 bridge resolves as tradable on a verified REAL or DEMO account') && ijs.includes('entry: null'));
     check('news execute: confirm-gated order from signal cards (deduction on linked account)', doc.getElementById('waNumber') && srcMain2.includes('function executeNewsSignal') && srcMain2.includes('news-exec') && srcMain2.includes("const mode=proxyReady?'proxy':(state.broker.mode==='pat_server'?'pat_server':'pat')") && srcMain2.includes('nothing executes without your confirm'));
     check('whatsapp: one-tap signal share + today brief + on-device number', srcMain2.includes('function waLink') && srcMain2.includes('wa.me/') && srcMain2.includes("shareCalBrief") && doc.getElementById('newsCalShare'));
     {
@@ -703,7 +705,7 @@ async function run() {
 
   /* 15e — Supabase cloud sync card + online history */
   check('cloud card has per-user sign-in controls', !!$('#cloudCard') && !!$('#cloudUrl') && !!$('#cloudKey') && !!$('#cloudSave') && !!$('#cloudEmail') && !!$('#cloudPassword') && !!$('#cloudSignIn') && !!$('#cloudSignUp') && !!$('#cloudSignOut'));
-  check('history card present', !!$('#historyCard') && !!$('#cldLoad'));
+  check('analysis history section present', !!$('#analysisHistorySection') && !!$('#cldLoad'));
   click(doc.querySelector('.nav-item[data-view="settings"]'));
   await sleep(60);
   $('#cloudUrl').value = 'https://x.supabase.co';
@@ -814,10 +816,10 @@ async function run() {
     const am = (s) => srcMain2.includes(s);
     check('audit C1: App-ID check accepts letters (forbidden digits-only regression removed)', audApp.includes('A-Za-z0-9._~-]{1,64}') && !audApp.includes('/^\\d{1,10}$/.test(appId)'));
     check('audit H2: trust proxy set - per-IP rate limits key on the real client behind Railway', audApp.includes("app.set('trust proxy', 1)"));
-    check('audit H3: Deriv server dedupe remains and Exness demo intents are cached to avoid a second send', audLim.includes("error: 'duplicate_request'") && audApp.includes("dedupeBody({ name: 'deriv-order' })") && audBrg.includes('if intent_id in _DEMO_ORDER_REPLIES:') && audBrg.includes('_DEMO_ORDER_REPLIES[intent_id] = reply') && audBjs.includes('intent_id: o.intentId'));
+    check('audit H3: Deriv server dedupe remains and Exness REAL/DEMO intents are cached to avoid a second send', audLim.includes("error: 'duplicate_request'") && audApp.includes("dedupeBody({ name: 'deriv-order' })") && audBrg.includes('if intent_id in _MT5_ORDER_REPLIES:') && audBrg.includes('_MT5_ORDER_REPLIES[intent_id] = reply') && audBjs.includes('intent_id: o.intentId'));
     check('audit C2: bridge needs per-connection login before order/close/positions + rejects cross-origin ws on both ports + optional AURUM_BRIDGE_TOKEN', audBrg.includes('auth_required') && (audBrg.match(/_origin_allowed/g) || []).length >= 4 && audBrg.includes('login required on this connection first') && audBrg.includes('AURUM_BRIDGE_TOKEN') && (audBrg.match(/_NEED_AUTH/g) || []).length >= 3);
     check('audit C3: demo preview and fills expose broker-calculated lots, notional, buffered risk and margin', audBrg.includes('"effective_notional"') && audBrg.includes('"risk_amount"') && audBrg.includes('"margin"') && audBrg.includes('"exposure"'));
-    check('audit C3 client: Exness demo order requires a fresh bridge preview and explicit confirmation before send', am('previewBridgeOrder') && am('manualConfirmed:true') && am('Place demo order') && am('Live accounts, app closes and automation remain disabled'));
+    check('audit C3 client: Exness REAL/DEMO orders require a mode-matched preview and explicit per-order confirmation', am('previewBridgeOrder') && am('manualConfirmed:true') && am("Confirm Exness '+environmentLabel+' order") && am('REAL MONEY — this sends a market order') && am('App automation and closes remain disabled'));
     check('audit M2: client fetch timeout on scan calls (AbortSignal.timeout, 30s)', am('timeoutMs=0') && (srcMain2.match(/timeoutMs:30000/g) || []).length >= 3 && am('fallbackSignalBatch') && am('AbortSignal.timeout'));
     check('audit H1: broker secrets are sessionStorage-only with clear-on-logout wording', audIdx.includes('sessionStorage') && audIdx.includes('cleared on disconnect/sign-out') && !audIdx.includes('plain-text backup'));
     check('audit C2 client: Bridge token field actually wired into the login frame', am('mt5Token') && audBjs.includes('token: creds.token'));
@@ -864,7 +866,7 @@ async function run() {
     check('20d: /api/risk/gate runs the tri-state module and returns checks + boss verdict', ap.includes('evaluateRisk({') && ap.includes('bossVerdict({ risk: report') && ap.includes('checks: report.checks'));
     check('20d: kill switch enforced on every buy route (order/confirm/buy) incl. the env-token router', ap.includes('/\\/(order|confirm|buy)$/.test(p)') && ap.includes('requireTrading(req, _res, next)'));
     check('20d: kill switch control endpoint present (GET+POST /api/ctl/killswitch)', ap.includes("app.post('/api/ctl/killswitch'") && ap.includes("app.get('/api/ctl/killswitch'"));
-    check('20d: Exness demo plan uses local broker preview with SL/TP and no browser-supplied risk booleans', srcMain2.includes('previewBridgeOrder({symbol:I.s.replace(\'/\',\'\'),side:state.side,volume:amt,sl,tp})') && srcMain2.includes('previewId:preview.preview_id') && !srcMain2.includes('marketHours:(minqr&&minqr.ask>0)?true:null'));
+    check('20d: Exness demo plan uses local broker preview with SL/TP and no browser-supplied risk booleans', srcMain2.includes('previewBridgeOrder({environment,symbol:I.s.replace(\'/\',\'\'),side:state.side,volume:amt,sl,tp})') && srcMain2.includes('previewId:preview.preview_id') && !srcMain2.includes('marketHours:(minqr&&minqr.ask>0)?true:null'));
     check('20d: Settings kill-switch toggle + visible score formula (quality score, not probability)', srcMain2.includes('killSwitchBtn') && srcMain2.includes('/api/ctl/killswitch') && doc.documentElement.outerHTML.includes('NOT a probability of profit') && doc.documentElement.outerHTML.includes('killSwitchState'));
   }
 
@@ -969,7 +971,7 @@ async function run() {
     const py = readFileSync(join(root, 'bridge', 'mt5_bridge.py'), 'utf8');
     const riskTest = readFileSync(join(root, 'server', 'tests', 'risklimits.test.mjs'), 'utf8');
     check('20p: server tracks pending Exness reservations and only releases matching pending intents', ap.includes('reservations: new Map()') && ap.includes("reservation.status !== 'pending'") && ap.includes("kind === 'release'"));
-    check('20p: Exness automation is blocked and demo bridge reports uncertain outcomes without retry', main.includes('Sniper entries are disabled; the Sniper is analysis-only') && main.includes('async function placeMt5DemoOrder') && py.includes('no further app order will be sent until the bridge is restarted') && py.includes('No automatic retry was made.') && ap.includes('reservations: new Map()'));
+    check('20p: Exness automation is blocked and demo bridge reports uncertain outcomes without retry', main.includes('Sniper entries are disabled; the Sniper is analysis-only') && main.includes('async function placeMt5ManualOrder') && py.includes('no further app order will be sent until the bridge is restarted') && py.includes('No automatic retry was made.') && ap.includes('reservations: new Map()'));
     check('20p: MT5 risk gate rejects untrusted browser news and creates no reservation', riskTest.includes('generic MT5 risk gate fails closed when news evidence is not server-verified') && riskTest.includes('not verified by the server'));
   }
 
@@ -998,10 +1000,10 @@ async function run() {
     const main = readFileSync(join(root, 'src', 'main.js'), 'utf8');
     const html = readFileSync(join(root, 'index.html'), 'utf8');
     check('20t: live MT5 account refresh is authenticated and returns broker metrics only', py.includes('"account", "quote"') && py.includes('def handle_account(_msg):') && py.includes('"margin_free": ai.margin_free') && py.includes('"equity": ai.equity'));
-    check('20t: bridge client exposes account refresh while preserving read-only positions query', bridgeClient.includes("export function bridgeAccount() { return frame({ type: 'account' }); }") && bridgeClient.includes("export function bridgePositions() { return frame({ type: 'positions' }); }"));
+    check('20t: bridge client exposes account refresh while preserving read-only positions query', bridgeClient.includes("export async function bridgeAccount() {") && bridgeClient.includes("export function bridgePositions() { return frame({ type: 'positions' }); }"));
     check('20t: Exness UI refreshes balance/equity and live broker positions without merging into app-managed positions', main.includes('bridge.bridgeAccount()') && main.includes('bridge.bridgePositions()') && main.includes('setInterval(()=>{ if(state.broker?.type===\'mt5\')void refreshMt5Snapshot(false); },15000)') && html.includes('id="mt5PositionsCard"'));
     check('20t: Exness account ID is masked in bridge response and logs', py.includes('"account": _mask_account(ai.login)') && py.includes('MT5 account ending %s') && !py.includes('log.info("MT5 account %s @ %s'));
-    check('20t: live Exness remains read-only while demo order gate requires broker-verified demo mode', main.includes('Live accounts remain read-only') && py.includes('This order path is demo-only; MT5 did not verify a DEMO account') && py.includes('def _demo_account_gate()'));
+    check('20t: Exness REAL/DEMO orders require an exact broker-verified mode and a manual order gate', main.includes('REAL MONEY — this sends a market order') && py.includes('def _mt5_manual_account_gate(expected_environment=None):') && py.includes('actual_environment != expected_environment') && py.includes('Explicit per-order confirmation is required') && py.includes('app automation remains disabled'));
   }
 
   /* ---------- round 20u: broker-authoritative Exness cap reconciles stale cloud opens safely ---------- */
@@ -1016,7 +1018,7 @@ async function run() {
     check('20u: bridge serializes Exness orders and rechecks live MT5 positions immediately before send', py.includes('_ORDER_LOCK = threading.Lock()') && order.includes('with _ORDER_LOCK:') && order.indexOf('validate_open_positions') >= 0 && order.indexOf('validate_open_positions') < order.indexOf('mt5.order_send(request)'));
     check('20u: MT5 position gate fails closed and cannot exceed the existing 10-position cap', pyRisk.includes('MAX_MT5_OPEN_POSITIONS = 10') && pyRisk.includes('if positions is None:') && pyRisk.includes('limit = min(requested, MAX_MT5_OPEN_POSITIONS)'));
     check('20u: demo client sends only the fresh preview id and explicit manual-confirmation intent', client.includes("type: 'preview_order'") && client.includes('preview_id: o.previewId') && client.includes('intent_id: o.intentId') && client.includes('confirmed: true') && main.includes('previewId:preview.preview_id') && main.includes('manualConfirmed:true'));
-    check('20u: Exness demo risk stays local and requires fresh broker positions and history before preview/send', py.includes('DEMO_MAX_OPEN_POSITIONS = 1') && py.includes('positions = mt5.positions_get()') && py.includes('_demo_daily_net()') && py.includes('history_deals_get(start, now)') && !main.includes("api('/api/risk/gate'"));
+    check('20u: Exness demo risk stays local and requires fresh broker positions and history before preview/send', py.includes('MT5_MAX_OPEN_POSITIONS = 1') && py.includes('positions = mt5.positions_get()') && py.includes('_mt5_daily_net()') && py.includes('history_deals_get(start, now)') && !main.includes("api('/api/risk/gate'"));
     check('20u: Exness close cannot decrement an unrelated or already-closed reservation', server.includes("reservation.status !== 'committed'") && server.includes("error: 'reservation_not_committed'"));
   }
 

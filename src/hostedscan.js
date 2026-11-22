@@ -31,6 +31,7 @@ import { runDeterministicAnalysis, votesSummary, waitReason } from '../server/li
 import { localDecision } from '../server/lib/localdecision.js';
 import { isFeedFailure } from './derivhistory.js';
 import { closedCandleSets } from './closedcandles.js';
+import { contextOnlyDailyReading } from './bestpick.js';
 
 export const DERIV_SOURCE = 'Deriv public candles';
 export const YAHOO_SOURCE = 'Yahoo Finance public daily data';
@@ -269,15 +270,16 @@ export function createHostedScanner({ fetchCandles, cloudScan, now = () => Date.
     const ask = [];
     for (const symbol of symbols) {
       const hit = cloudCache.get(symbol);
-      if (hit && now() - hit.at < (isDerivBacked(symbol) ? CLOUD_DERIV_TTL_MS : CLOUD_INDEX_TTL_MS)) out.set(symbol, hit.reading);
+      if (hit && now() - hit.at < (isDerivBacked(symbol) ? CLOUD_DERIV_TTL_MS : CLOUD_INDEX_TTL_MS)) out.set(symbol, contextOnlyDailyReading(hit.reading));
       else ask.push(symbol);
     }
     if (!ask.length) return out;
     try {
       const found = await cloudScan(ask);
       for (const symbol of ask) {
-        const reading = found && found.get(symbol);
-        if (!reading) { out.set(symbol, { symbol, error: 'FEED_ERROR', detail: 'no reading returned for ' + symbol + '.' }); continue; }
+        const rawReading = found && found.get(symbol);
+        if (!rawReading) { out.set(symbol, { symbol, error: 'FEED_ERROR', detail: 'no reading returned for ' + symbol + '.' }); continue; }
+        const reading = contextOnlyDailyReading(rawReading);
         out.set(symbol, reading);
         if (!reading.error) cloudCache.set(symbol, { at: now(), reading });
       }

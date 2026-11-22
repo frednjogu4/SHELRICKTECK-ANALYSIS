@@ -36,7 +36,7 @@ import { createDerivRouter, attachDerivWs } from './derivproxy.js';
 import { runBacktest } from './lib/backtest.js';
 import { evaluateSetups, DEFAULT_SETUP_CONFIG } from './lib/setups.js';
 import { runSetupsBacktest } from './lib/setupsBacktest.js';
-import { detectPatterns, studyPatterns, PATTERN_KEYS, PATTERN_META } from './lib/patterns.js';
+import { detectPatterns, studyPatterns, PATTERN_KEYS, PATTERN_META, confirmedClosedCandles } from './lib/patterns.js';
 import { rateLimit, dedupeBody, parseGranularity, parseIntInRange, GRANULARITIES } from './lib/limits.js';
 import { resolveSymbolInput, INSTRUMENT_MAP } from './lib/symbols.js';
 import { derivAuthorize, derivBuy, derivSell, derivContractStatus } from './lib/tradederiv.js';
@@ -155,11 +155,15 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
     if (!granularity) return res.status(400).json({ error: 'invalid_granularity', allowed: [60, 180, 300, 900, 1800, 3600, 14400, 86400] });
     const bars = parseIntInRange(req.body?.bars, 40, 240, 120);
     try {
-      const all = await dataFeed.fetchCandles(symbol, granularity, Math.max(bars, 100));
+      /* Request one look-ahead bar so the requested response count remains
+         available after excluding the newest potentially-open candle. */
+      const all = await dataFeed.fetchCandles(symbol, granularity, Math.max(bars + 1, 101));
       if (!all || all.length < 30) return res.status(502).json({ error: 'insufficient_history', got: all?.length ?? 0 });
-      const window = all.slice(-bars);
+      const closed = confirmedClosedCandles(all, granularity);
+      if (closed.length < 30) return res.status(502).json({ error: 'insufficient_closed_history', got: closed.length });
+      const window = closed.slice(-bars);
       const patterns = detectPatterns(window);
-      res.json({ symbol, granularity, bars: window.length, patterns, candles: window, source: 'deriv-candles', ts: Date.now() });
+      res.json({ symbol, granularity, bars: window.length, patterns, candles: window, candle_close_confirmed: true, source: 'deriv-candles', ts: Date.now() });
     } catch (e) {
       res.status(502).json({ error: 'patterns_data_unavailable', detail: String(e.message || e).slice(0, 160) });
     }
@@ -538,11 +542,11 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
           const sig = indexDailySignal(rows.candles, { sma, rsi });
           if (!sig.ok) throw new Error('insufficient history for ' + symbol);
           return {
-            symbol, price: sig.price, mtf_signal: sig.bias.toUpperCase(), data_ok: true,
-            signal: sig.signal, bias: sig.bias, votes: sig.votes,
-            wait_reason: sig.signal === 'WAIT' ? 'daily_no_setup' : null,
-            wait_detail: sig.signal === 'WAIT' ? 'Daily indicators are mixed - no directional edge today.' : null,
-            confidence: sig.confidence, entry: null, stop_loss: null, tp1: null, tp2: null,
+            symbol, price: sig.price, mtf_signal: 'DAILY_CONTEXT_ONLY', data_ok: true,
+            signal: 'WAIT', context_signal: sig.context_signal, bias: sig.bias,
+            analysis_status: sig.analysis_status, tradeable: false, votes: sig.votes,
+            wait_reason: sig.wait_reason, wait_detail: sig.wait_detail,
+            confidence: null, entry: null, stop_loss: null, tp1: null, tp2: null,
             tf: 'DAILY (index)', model: 'technical-daily', source: 'Yahoo Finance public daily data', ts: Date.now()
           };
         }

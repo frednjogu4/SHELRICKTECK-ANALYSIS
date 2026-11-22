@@ -1,6 +1,6 @@
 # AURUM Trading Workspace
 
-Real-data-only trading workspace: **Deriv live prices** (public WebSocket, no key), **TradingView** official widgets (charts, news, calendar), **Deriv's existing gated execution path**, **Exness MT5 local connection with demo-only manual orders**, and **AI guidance** behind a shared **$5/day** budget. Exness live-account orders, app-side closes, and automated entries stay disabled; its demo orders require a verified DEMO account, fresh local risk preview, and explicit manual confirmation. No simulated prices or fake content — unavailable data is stated honestly.
+Real-data-only trading workspace: **Deriv live prices** (public WebSocket, no key), **TradingView** official widgets (charts, news, calendar), **Deriv's existing gated execution path**, **Exness MT5 local connection with manually confirmed REAL/DEMO orders**, and **AI guidance** behind a shared **$5/day** budget. Exness orders require a fresh local MT5 risk preview and explicit confirmation for each order. Automated entries and app-side closes remain disabled; REAL orders can lose real funds and are not guaranteed safe by stops or risk estimates. No simulated prices or fake content — unavailable data is stated honestly.
 
 ## Quick start
 
@@ -41,6 +41,7 @@ entered by the user in the app at runtime, per browser session.
 
 ## MT5 convenience, session status, and signal timing
 
+- Live chart views (Gold, Chart & Trade, Watchlist market graphs, and the selected drawdown instrument) show a next-5-minute and next-10-minute directional outlook when all seven fresh closed-M1 return windows are available: 4h, 3h, 2h, 1h, 30m, 5m, and 1m. Each window gets a −2…+2 historical bias score; strong versus weak uses the window return relative to recent median absolute M1 movement scaled by the square root of the window length. The total score is bounded −14…+14. Horizon scores use 5m weights 1/1/1/1/2/3/4 (4h→1m) and 10m weights 3/3/2/2/2/1/1, and require at least five of seven timeframe votes to agree before showing UP or DOWN. Alignment percentages count agreeing timeframe votes; they are not confidence or probability estimates. Observed nearby swing levels come only from available M1 candles. The app withholds an outlook when the M1 feed is stale, a required window is missing, or the selected provider has no intraday candles. It never substitutes daily or delayed values and never places an order.
 - During a connected browser-tab session, AURUM keeps Exness login, server, MT5 password and bridge token in `sessionStorage` so a page refresh can reconnect. It does not write those secrets to `localStorage` or the server. They are cleared on disconnect/sign-out or when the tab session ends. Use **Forget saved Exness details** to clear saved values immediately.
 - Forex/commodity open/closed badges use typical Deriv session hours in UTC; crypto/synthetics are marked 24/7. Index badges remain **UNKNOWN** until a fresh local Exness MT5 tick and terminal trade mode are available. A broker's own symbol schedule is authoritative.
 - Markets show approximate higher-activity windows in Nairobi time (EAT), with daylight-saving caveats. They are context only—not a guaranteed best time, profitability claim, or substitute for checking the live spread and broker schedule.
@@ -1055,13 +1056,16 @@ Then check the published URL:
 - `/` carries `content-security-policy`, `x-frame-options` and `x-robots-tag` headers
 - `/does-not-exist.js` answers `404`, not the app page
 
-If the Worker is deployed by Cloudflare's Git integration (Workers Builds)
-instead, use build command `npm ci && npm run build` and deploy command
-`npx wrangler deploy --config wrangler.jsonc`. A deploy that skips the build
-now stops with "dist verification FAILED" rather than publishing a site without
-its service worker, manifest, icons and headers file. To pin the Node version
-there, set the build variable `NODE_VERSION` (22 or 24) in the Cloudflare
-dashboard.
+If the Worker is deployed by Cloudflare's Git integration (Workers Builds),
+set **Root directory** to the repository root (blank or `/`), build command to
+`npm ci --no-fund && npm run build`, and deploy command to
+`npx wrangler deploy --config ./wrangler.jsonc`. For pull-request previews, set
+the **Preview command** to `npm run cf:preview` rather than Wrangler's bare
+auto-detection command; this script builds the static assets and explicitly
+points Wrangler at the Worker configuration. The config serves static assets
+from `dist/`. A build that skips the UI build stops at `dist` verification
+instead of deploying incomplete assets. To pin Node, set `NODE_VERSION` to 22
+or 24 in the Cloudflare dashboard.
 
 ### When a merge does not reach the live site
 
@@ -1176,17 +1180,15 @@ What follows from both:
 - Merging at five minutes past the hour or later costs nothing, and avoids
   the one pattern seen so far.
 
-**Pull requests get a separate preview build.** It runs Cloudflare's Preview
-command (`npx wrangler preview` by default, an open-beta Wrangler command)
-instead of the deploy command. Every preview build so far has failed: on each
-of the pull requests #3 to #12, before the repository was renamed and after.
-The cause is in Cloudflare's build log and has not been established. The log
-is behind the **View logs** link of Cloudflare's comment on the pull request
-and opens only for someone signed in to the Cloudflare account. Wrangler
-itself accepts the configuration: `npx wrangler versions upload --dry-run`
-passes, and so does the production deploy. A red preview mark on a pull
-request is not the result of the production publish: #3 was published after
-its preview had failed.
+**Pull-request preview command.** Cloudflare Workers Builds uses a separate
+Preview command for pull requests. Set it to `npm run cf:preview`, which runs
+`npm run build` and then `wrangler preview --config ./wrangler.jsonc`. The
+explicit root config is required here: allowing Wrangler's auto-detection to
+run from a different build directory can produce “Could not detect a directory
+containing static files.” The repository root must contain `wrangler.jsonc`,
+and the built assets are in `dist/`. A failed preview is separate from the
+production deployment; it does not publish the branch to the live staging
+Worker.
 
 **The repository's name.** The Worker's name, the site's address and `name` in
 `wrangler.jsonc` do not depend on the name of the GitHub repository, and the
@@ -1378,12 +1380,12 @@ browser ── /api ──> Express :4100 ── Deriv candles              anal
                       └── /api/deriv (WS relay + REST proxy) ── Deriv WS  [env token, server-side only]
                            proposal → confirm → buy  (trading OFF by default, server-side limits)
                       └── /api/backtest ── walk-forward over real Deriv candles (same indicator engine)
-browser ── local/LAN only ──> bridge/mt5_bridge.py ──> Exness MT5 terminal [Windows PC; DEMO-only manual orders]
+browser ── local/LAN only ──> bridge/mt5_bridge.py ──> Exness MT5 terminal [Windows PC; manual REAL/DEMO orders]
 ```
 
 - **Instrument universe**: `server/lib/symbols.js` — single source of truth for supported instruments and verified TradingView symbols; index CFDs are Exness MT5-only, never Deriv-orderable, and remain excluded from automation.
 - **AI budget**: device-wide ledger under `local` (`server/lib/store.js` usage rows) — switching sessions never resets the $5/day cap. Keys come from Settings vault (`x-ai-*` headers) or server env (`.env.example`).
-- **Trading**: Deriv orders relay through `/api/deriv/*` with the existing gated auth flow. Exness account/position/quote/symbol/history reads use the local bridge; only manual orders on an MT5-verified USD DEMO account are enabled, after a short-lived local risk preview and confirmation. Live-account orders, app-side closes, and automated/Sniper entries remain blocked. The bridge rechecks account identity, quote, estimated stop risk, margin, daily realized loss, and open positions; unknowns fail closed. These limits are estimates, not guaranteed maximum losses. Exact server and Exness identity are verified locally; the bridge pins one account/server for connected PC/phone clients.
+- **Trading**: Deriv orders relay through `/api/deriv/*` with the existing gated auth flow. Exness account/position/quote/symbol/history reads use the local bridge. Manually confirmed orders are supported on MT5-verified USD REAL or DEMO accounts after a 30-second local preview and explicit per-order confirmation. Bridge hard limits are one open position, 0.5% buffered estimated stop risk per order, at least 1.2 reward/risk, up to 80% free margin, and a 2% UTC-day realized-loss threshold; all required state is rechecked immediately before send. These checks and stop estimates cannot guarantee maximum losses. App automation and closes remain disabled; manage positions in MT5. Exact server and Exness identity are verified locally; the bridge pins one account/server for connected PC/phone clients. The real-account route has not been end-to-end tested against a live Exness account.
 - **Notifications**: `src/notify.js` — browser Notification + toasts for feed, analysis, news briefs, trade lifecycle, TP1 guidance / TP2 / SL crossings (`src/main.js` level watcher).
 - **Honesty rules** (tests enforce): live feed down → `502 live_data_unavailable` (never simulated candles); no keys → `technical` mode label (never fake AI); no broker → orders blocked. Exness demo execution is a real broker demo account, never a local simulated fill.
 
@@ -1400,10 +1402,10 @@ src/smcplaybook.js    Closed-candle SMC checklist: break/retest, sweep/MSS, FVG 
 src/tradingview.js    Advanced Chart / timeline / calendar mounts
 src/notify.js         notifications engine
 src/vault.js          AI key vault (localStorage, x-ai-* headers)
-src/bridge.js         Exness MT5 local bridge client (verified-demo manual orders only)
+src/bridge.js         Exness MT5 local bridge client (verified REAL/DEMO manual orders)
 server/app.js         Express routes: analyze, scan, news, usage, health, deriv/*
 server/lib/           analyzer, decision (Claude/OpenAI/Perplexity), derivfeed, tradederiv, store
-bridge/               Exness MT5 local bridge (Python, MetaTrader5; demo-only manual execution) — see bridge/README.md
+bridge/               Exness MT5 local bridge (Python, MetaTrader5; manual REAL/DEMO execution) — see bridge/README.md
 server/lib/derivconn.js persistent Deriv connection manager (authorize-first, ping 30s, backoff+re-subscribe)
 server/derivproxy.js    /api/deriv REST + WS relay — token never reaches the browser
 server/lib/backtest.js  walk-forward backtest on real candles (no simulated data anywhere)

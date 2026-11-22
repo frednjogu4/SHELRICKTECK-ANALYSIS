@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectPatterns, studyPatterns, PATTERN_META, PATTERN_KEYS } from '../lib/patterns.js';
+import { detectPatterns, studyPatterns, PATTERN_META, PATTERN_KEYS, confirmedClosedCandles } from '../lib/patterns.js';
 
 /* ================================================================
  * Chart-pattern engine tests. FIXTURES are parametric textbook
@@ -159,6 +159,16 @@ test('studyPatterns: honest walk-forward structure', () => {
   for (const [k, list] of Object.entries(byKey)) {
     for (let i = 1; i < list.length; i++) assert.ok(list[i].i >= list[i - 1].exitI, k + ' overlap');
   }
+});
+
+test('confirmed closed candles exclude the newest unproven bar and reject corrupt OHLC', () => {
+  const rows = [0, 60, 120].map((offset) => ({
+    time: 1700000000 + offset, open: 100, high: 102, low: 99, close: 101, volume: 1
+  }));
+  const closed = confirmedClosedCandles(rows, 60);
+  assert.deepEqual(closed.map((bar) => bar.time), [1700000000, 1700000060]);
+  assert.throws(() => confirmedClosedCandles([{ ...rows[0], low: 103 }], 60), /invalid OHLC/);
+  assert.throws(() => confirmedClosedCandles([rows[1], rows[0]], 60), /unordered/);
 });
 
 test('study respects keys filter and empty windows', () => {

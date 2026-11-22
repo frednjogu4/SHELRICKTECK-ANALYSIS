@@ -59,6 +59,20 @@ export function detectSignalBias({ price, indicators, trend }) {
 }
 
 /** Compute indicators + bias vote for one timeframe. */
+function candleIntegrityError(candles) {
+  let previous = -Infinity;
+  for (const candle of candles) {
+    const time = Number(candle?.time), open = Number(candle?.open), high = Number(candle?.high);
+    const low = Number(candle?.low), close = Number(candle?.close);
+    if (![time, open, high, low, close].every(Number.isFinite) || time <= previous ||
+      Math.min(open, high, low, close) <= 0 || high < Math.max(open, close) || low > Math.min(open, close) ||
+      (candle.volume != null && (!Number.isFinite(Number(candle.volume)) || Number(candle.volume) < 0)))
+      return 'Invalid candle integrity (timestamp, OHLC, or volume).';
+    previous = time;
+  }
+  return '';
+}
+
 export function analyzeTimeframe(symbol, candles, timeframe) {
   if (!Array.isArray(candles) || candles.length < MIN_CANDLES) {
     return {
@@ -70,7 +84,9 @@ export function analyzeTimeframe(symbol, candles, timeframe) {
       signal: null
     };
   }
-  const closes = candles.map((c) => c.close);
+  const integrityError = candleIntegrityError(candles);
+  if (integrityError) return { error: integrityError, symbol, timeframe, required: MIN_CANDLES, have: candles.length, signal: null };
+  const closes = candles.map((c) => Number(c.close));
   const price = closes[closes.length - 1];
   const indicators = {
     rsi: rsi(closes),
@@ -83,6 +99,12 @@ export function analyzeTimeframe(symbol, candles, timeframe) {
     sma200: sma(closes, 200),
     atr: atr(candles)
   };
+  const bb = indicators.bb, m = indicators.macd;
+  if (![indicators.rsi, m?.line, m?.signal, m?.histogram, bb?.upper, bb?.mid, bb?.lower,
+    indicators.ema20, indicators.ema50, indicators.atr].every(Number.isFinite) ||
+    indicators.rsi < 0 || indicators.rsi > 100 || indicators.atr < 0 ||
+    bb.upper < bb.mid || bb.mid < bb.lower)
+    return { error: 'Invalid indicator output (EMA, RSI, MACD, ATR, or Bollinger Bands).', symbol, timeframe, required: MIN_CANDLES, have: candles.length, signal: null };
   const levels = findLevels(candles, 50);
   const fib = fibRetracement(candles);
   const trend = identifyTrend(closes);

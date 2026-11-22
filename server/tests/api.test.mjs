@@ -82,6 +82,18 @@ test('health reports keyless technical mode on the deriv feed', async () => {
   assert.deepEqual(r.available_now, []);
 });
 
+test('pattern analysis exposes completed candles only and labels the close contract', async () => {
+  const response = await post('/api/patterns/analyze', { symbol: 'BTC/USD', granularity: 300, bars: 40 });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.candle_close_confirmed, true);
+  assert.ok(result.bars >= 30);
+  const last = result.candles.at(-1);
+  assert.ok(last.time + result.granularity <= STUB_NOW);
+  assert.ok(last.time < Math.floor(STUB_NOW / result.granularity) * result.granularity,
+    'the feed newest (potentially forming) candle is not passed to pattern detection');
+});
+
 test('analyze returns the full decision contract (technical, no keys, live stub candles)', async () => {
   const r = await post('/api/signals/analyze', { symbol: 'EUR/USD' });
   assert.equal(r.status, 200);

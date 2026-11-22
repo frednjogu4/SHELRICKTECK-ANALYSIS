@@ -4,9 +4,41 @@ import { readFileSync } from 'node:fs';
 
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 
-test('Signal Analyzer exposes the deterministic Forex JSON workflow without broker execution', () => {
+test('Signal Analyzer shows a readable result by default and keeps raw JSON behind a collapsed technical-details disclosure', () => {
   const html = read('../index.html'), main = read('../src/main.js'), logic = read('../server/lib/forexanalyst.js');
-  for (const id of ['fxaPair', 'fxaTimeframe', 'fxaAnalyze', 'fxaUpdate', 'fxaOutput']) assert.match(html, new RegExp(`id="${id}"`));
+  for (const id of ['fxaPair', 'fxaTimeframe', 'fxaAnalyze', 'fxaUpdate', 'fxaOutput', 'fxaSummary', 'fxaRawDetails']) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /<details id="fxaRawDetails"/);
+  assert.match(html, /id="fxaSummary" class="hidden"/);
+  assert.match(html, /Technical details \(raw JSON\)/);
+  assert.match(main, /class="fxa-chart-grid"/);
+  assert.match(html, /id="chartMsModal"/);
+  assert.match(html, /id="chartSignalOverlay"/);
+  assert.match(html, /id="chartModeSwitch"/);
+  assert.match(html, /data-chart-mode="signal"/);
+  assert.match(html, /id="chartSignalCanvas"/);
+  assert.match(main, /function refreshChartSignalPlot/);
+  assert.match(main, /showTradeMarkers:true/);
+  assert.match(main, /reading\.mtf_signal===\(signal\+'_CONFIRMED'\)/);
+  assert.match(main, /ENTRY '\+price\(entry\)/);
+  assert.match(main, /function updateChartSignalOverlay/);
+  assert.match(main, /marketCandleFresh\(r\.latest_candle_time,5\*60000\)/);
+  assert.match(main, /!\/deriv\/i\.test\(source\)/);
+  assert.match(html, /aria-label="Close expanded chart"/);
+  assert.match(main, /data-chart-ms-expand="'\+tf\.key\+'"/);
+  assert.match(main, /function renderChartMsModal/);
+  assert.match(main, /renderChartMsModal\(\)/);
+  assert.match(main, /function renderForexAnalystResult/);
+  assert.match(main, /function updateForexAnalystLiveConfidence/);
+  assert.match(main, /liveConfidence\(\{symbol:result\.pair,signal:result\.signal,entry:result\.entry,stop_loss:result\.sl,tp1:result\.tp,base\},instrument\.p\)/);
+  assert.match(main, /function tickForexAnalystAutomation/);
+  assert.match(main, /else if\(state\.view==='signals'\)tickForexAnalystAutomation\(\)/);
+  assert.match(main, /renderAnnotatedCandlestickChart\(canvas,frame/);
+  assert.match(main, /const FXA_CHART_TIMEFRAMES=\['4h','3h','2h','1h','30m','5m','1m'\]/);
+  assert.match(main, /aggregateFxCandles\(hourly,2\)/);
+  assert.match(main, /aggregateFxCandles\(hourly,3\)/);
+  assert.match(main, /result\.seven_timeframe_outlook=analyzeShortOutlook\(visualCandles\.m1Long/);
+  assert.match(main, /LIVE CONFLUENCE SCORE/);
+  assert.match(main, /quality score, not probability/);
   for (const tf of ['1m', '5m', '10m', '15m']) assert.match(html, new RegExp(`value="${tf}"`));
   assert.match(main, /historyCandles\(pair,FX_ANALYST_TIMEFRAMES\[tf\],100,\{acrossClosures:true\}\)/);
   assert.match(main, /currentPrice:quoteFresh\?instrument\.p:null/);

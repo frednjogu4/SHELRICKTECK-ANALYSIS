@@ -7,7 +7,7 @@ this PC + LAN (remote devices need the bridge token), and speaks the JSON protoc
 
   -> {id, type:'login',    login, password, server}
   <- {id, type:'logged',   balance, equity, currency, account}
-  -> {id, type:'order',    symbol, side, volume, sl, tp, max_open_trades, exec:'market'}
+  -> {id, type:'order', environment:'demo'|'real', symbol, side, volume, sl, tp, preview_id, intent_id, confirmed:true}
   <- {id, type:'filled',   ticket, price}
   -> {id, type:'close',    ticket}
   <- {id, type:'closed',   ticket, profit}
@@ -50,20 +50,20 @@ from localapiauth import api_proxy_authorized
 HOST = os.environ.get("AURUM_BRIDGE_HOST", "0.0.0.0")
 PORT = 8787
 MAGIC = 234000  # our orders' magic number
-# Exness demo-only manual execution. Live accounts, closes, automation and
-# browser-provided risk assertions remain blocked. The local bridge rechecks
-# the account, quote, SL/TP, volume, equity, daily loss and open positions.
-DEMO_ORDER_EXECUTION_ENABLED = True
-DEMO_MAX_OPEN_POSITIONS = 1
-DEMO_MAX_RISK_PCT = 0.5
-DEMO_MAX_DAILY_LOSS_PCT = 2.0
-DEMO_MIN_REWARD_RISK = 1.2
-DEMO_MAX_TICK_AGE_SECONDS = 60
+# Exness real/demo manual-only execution. Automation and app-side closes remain
+# blocked. The local bridge independently verifies the selected account mode,
+# quote, SL/TP, volume, equity, daily loss and open positions before each send.
+MT5_MANUAL_ORDER_EXECUTION_ENABLED = True
+MT5_MAX_OPEN_POSITIONS = 1
+MT5_MAX_RISK_PCT = 0.5
+MT5_MAX_DAILY_LOSS_PCT = 2.0
+MT5_MIN_REWARD_RISK = 1.2
+MT5_MAX_TICK_AGE_SECONDS = 60
 _ORDER_LOCK = threading.Lock()  # serialize fresh position-check + order_send across WS/HTTP clients
-_DEMO_PREVIEW_LOCK = threading.Lock()
-_DEMO_PREVIEWS = {}  # short-lived server-side order preview, keyed by an unguessable id
-_DEMO_ORDER_REPLIES = {}  # same intent id never sends twice during this bridge process
-_DEMO_ORDER_UNCERTAIN = False  # ambiguous/partial MT5 outcome halts further app orders until bridge restart
+_MT5_PREVIEW_LOCK = threading.Lock()
+_MT5_PREVIEWS = {}  # short-lived server-side order preview, keyed by an unguessable id
+_MT5_ORDER_REPLIES = {}  # same intent id never sends twice during this bridge process
+_MT5_ORDER_UNCERTAIN = False  # ambiguous/partial MT5 outcome halts further app orders until bridge restart
 _LOGIN_LOCK = threading.RLock()  # one account/server identity shared by PC + phone clients
 _LOCKED_LOGIN = None  # in-memory numeric login; never logged or returned
 _LOCKED_SERVER = None
@@ -90,6 +90,17 @@ def err(message):
 def _mask_account(value):
     text = str(value or "")
     return "••••" + text[-4:] if len(text) > 4 else "••••"
+
+
+def _account_environment(trade_mode):
+    """Return only an MT5-verified account mode; unknown modes stay unknown."""
+    demo_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None)
+    real_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_REAL", None)
+    if demo_mode is not None and trade_mode == demo_mode:
+        return "demo"
+    if real_mode is not None and trade_mode == real_mode:
+        return "real"
+    return None
 
 
 _NEED_AUTH = ("order", "preview_order", "close", "positions", "account", "quote", "search", "symbols", "history")
@@ -338,7 +349,7 @@ def handle_login(msg):
     password = msg.get("password") or ""
     server = (msg.get("server") or "").strip()
     if not password:
-        return {**err("MT5 password required; an investor/read-only password permits viewing only, while demo orders require MT5 trade permission.")}
+        return {**err("MT5 password required; an investor/read-only password permits viewing only, while manual order sending requires MT5 trade permission.")}
     if not login:
         return {**err("account number required")}
     if not server:
@@ -400,7 +411,8 @@ def handle_login(msg):
         "account": _mask_account(ai.login),
         "server": ai.server,
         "leverage": ai.leverage,
-        "demo": (getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None) is not None and getattr(ai, "trade_mode", None) == getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None)),
+        "demo": _account_environment(getattr(ai, "trade_mode", None)) == "demo",
+        "environment": _account_environment(getattr(ai, "trade_mode", None)),
         "trade_mode": getattr(ai, "trade_mode", None),
         "terminal": term.name,
     }
@@ -573,15 +585,18 @@ def handle_account(_msg):
         "margin_free": ai.margin_free,
         "currency": ai.currency,
         "leverage": ai.leverage,
-        "demo": (getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None) is not None and getattr(ai, "trade_mode", None) == getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None)),
+        "demo": _account_environment(getattr(ai, "trade_mode", None)) == "demo",
+        "environment": _account_environment(getattr(ai, "trade_mode", None)),
         "trade_mode": getattr(ai, "trade_mode", None),
     }
 
 
-def _demo_account_gate():
-    """Return the current account after fail-closed demo/exact-identity checks."""
-    if not DEMO_ORDER_EXECUTION_ENABLED:
-        return None, "Demo order execution is turned off in this bridge."
+def _mt5_manual_account_gate(expected_environment=None):
+    """Verify account mode, exact identity, currency, terminal and permissions."""
+    if not MT5_MANUAL_ORDER_EXECUTION_ENABLED:
+        return None, "Exness manual order execution is turned off in this bridge."
+    if expected_environment not in ("demo", "real"):
+        return None, "Select DEMO or REAL explicitly before requesting an order preview; no order was sent."
     identity_error = _locked_identity_error()
     if identity_error:
         return None, identity_error
@@ -589,29 +604,34 @@ def _demo_account_gate():
         account = mt5.account_info()
         terminal = mt5.terminal_info()
     except Exception:
-        return None, "MT5 account/terminal state could not be verified; no demo order was sent."
+        return None, "MT5 account/terminal state could not be verified; no order was sent."
     if account is None or terminal is None:
-        return None, "MT5 account/terminal state is unavailable; no demo order was sent."
+        return None, "MT5 account/terminal state is unavailable; no order was sent."
     demo_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None)
-    if demo_mode is None or getattr(account, "trade_mode", None) != demo_mode:
-        return None, "This order path is demo-only; MT5 did not verify a DEMO account. No order was sent."
+    real_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_REAL", None)
+    mode = getattr(account, "trade_mode", None)
+    if demo_mode is None or real_mode is None:
+        return None, "MT5 did not expose verified REAL and DEMO account modes; no order was sent."
+    actual_environment = "demo" if mode == demo_mode else "real" if mode == real_mode else None
+    if actual_environment is None or actual_environment != expected_environment:
+        return None, "Selected account mode does not match the currently verified MT5 account; no order was sent. Reconnect and review the account label."
     if str(getattr(account, "currency", "")).upper() != "USD":
-        return None, "Demo order sizing currently requires a USD-denominated account; no order was sent."
+        return None, "Manual MT5 order sizing currently requires a USD-denominated account; no order was sent."
     if not bool(getattr(terminal, "connected", False)):
-        return None, "MT5 is not connected to Exness; no demo order was sent."
+        return None, "MT5 is not connected to Exness; no order was sent."
     if not bool(getattr(terminal, "trade_allowed", False)):
-        return None, "MT5 terminal trade permission (Algo Trading) is off. If you intend to continue with this manually confirmed DEMO order, enable terminal trading in MT5 and retry; this does not enable app automation. No order was sent."
+        return None, "MT5 terminal trading permission is off. Enable it only if you intend to place this manually confirmed order; app automation remains disabled. No order was sent."
     try:
         equity = float(account.equity)
         free_margin = float(account.margin_free)
         if not math.isfinite(equity) or equity <= 0 or not math.isfinite(free_margin) or free_margin <= 0:
             raise ValueError
     except (AttributeError, TypeError, ValueError, OverflowError):
-        return None, "MT5 equity/free margin could not be verified; no demo order was sent."
+        return None, "MT5 equity/free margin could not be verified; no order was sent."
     return account, None
 
 
-def _demo_daily_net():
+def _mt5_daily_net():
     """Broker-reported realized P/L since UTC midnight; None means unverifiable."""
     now = datetime.datetime.now(datetime.timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -630,9 +650,13 @@ def _demo_daily_net():
         return None
 
 
-def _demo_order_plan(msg):
-    """Recompute all order facts from this PC's authenticated demo terminal."""
-    account, problem = _demo_account_gate()
+def _mt5_order_plan(msg):
+    """Recompute all order facts from the verified MT5 account, in either manual mode."""
+    environment = str(msg.get("environment") or "").strip().lower()
+    if environment not in ("demo", "real"):
+        return None, "Select DEMO or REAL explicitly; no order was sent."
+    env_label = environment.upper()
+    account, problem = _mt5_manual_account_gate(environment)
     if problem:
         return None, problem
     requested_symbol = str(msg.get("symbol") or "").strip()
@@ -641,7 +665,7 @@ def _demo_order_plan(msg):
         return None, _symbol_match_error(requested_symbol)
     info = mt5.symbol_info(symbol)
     if info is None:
-        return None, "Symbol specifications are unavailable; no demo order was sent."
+        return None, "Symbol specifications are unavailable; no order was sent."
     side = str(msg.get("side") or "").upper()
     if side not in ("BUY", "SELL"):
         return None, "Side must be BUY or SELL."
@@ -650,7 +674,7 @@ def _demo_order_plan(msg):
     except (TypeError, ValueError, OverflowError):
         trade_mode = 0
     if not (trade_mode == 4 or (trade_mode == 1 and side == "BUY") or (trade_mode == 2 and side == "SELL")):
-        return None, "This symbol/side is not verified as tradable by the demo broker."
+        return None, "This symbol/side is not verified as tradable by the broker."
     try:
         requested_usd = float(msg.get("volume"))
         sl = float(msg.get("sl"))
@@ -670,12 +694,12 @@ def _demo_order_plan(msg):
         if not all(math.isfinite(x) and x > 0 for x in (equity, free_margin, contract_size, price_point, bid, ask, price)):
             raise ValueError
         age = time.time() - tick_time
-        if age < -5 or age > DEMO_MAX_TICK_AGE_SECONDS:
-            return None, "No fresh Exness demo tick (maximum age 60 seconds); no order was sent."
+        if age < -5 or age > MT5_MAX_TICK_AGE_SECONDS:
+            return None, "No fresh Exness MT5 tick (maximum age 60 seconds); no order was sent."
         if side == "BUY" and not (sl < price < tp):
-            return None, "For a demo BUY, stop-loss must be below the live ask and take-profit above it."
+            return None, "For a BUY, stop-loss must be below the live ask and take-profit above it."
         if side == "SELL" and not (tp < price < sl):
-            return None, "For a demo SELL, take-profit must be below the live bid and stop-loss above it."
+            return None, "For a SELL, take-profit must be below the live bid and stop-loss above it."
         stops_level = int(getattr(info, "trade_stops_level", 0) or 0) * price_point
         if stops_level and (abs(price - sl) < stops_level or abs(tp - price) < stops_level):
             return None, "Stop-loss/take-profit is closer than the broker's minimum stop distance."
@@ -688,7 +712,7 @@ def _demo_order_plan(msg):
         notional_cap = max(requested_usd * 1.5, equity * 10)
         if exposure > notional_cap:
             return None, (
-                f"Broker minimum size is about ${exposure:,.2f} notional, above this demo request's cap of ${notional_cap:,.2f}. "
+                f"Broker minimum size is about ${exposure:,.2f} notional, above this request's cap of ${notional_cap:,.2f}. "
                 "No order was sent. Reducing the requested size cannot get below the broker minimum; choose a symbol with a smaller minimum exposure or stop here."
             )
         order_type = mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL
@@ -706,25 +730,25 @@ def _demo_order_plan(msg):
         buffered_risk = abs(loss) * 1.25
         risk_pct = buffered_risk / equity * 100
         rr = reward / abs(loss)
-        if risk_pct > DEMO_MAX_RISK_PCT + 1e-9:
-            return None, f"Estimated buffered stop risk is {risk_pct:.3f}% of demo equity; this demo path caps it at {DEMO_MAX_RISK_PCT:.1f}%. No order was sent."
-        if rr < DEMO_MIN_REWARD_RISK:
-            return None, f"Reward-to-risk is {rr:.2f}; the demo path requires at least {DEMO_MIN_REWARD_RISK:.1f}. No order was sent."
+        if risk_pct > MT5_MAX_RISK_PCT + 1e-9:
+            return None, f"Estimated buffered stop risk is {risk_pct:.3f}% of {env_label} equity; this {env_label} path caps it at {MT5_MAX_RISK_PCT:.1f}%. No order was sent."
+        if rr < MT5_MIN_REWARD_RISK:
+            return None, f"Reward-to-risk is {rr:.2f}; the {env_label} path requires at least {MT5_MIN_REWARD_RISK:.1f}. No order was sent."
         if margin > free_margin * 0.8:
-            return None, "Required margin would use more than 80% of free margin; no demo order was sent."
+            return None, "Required margin would use more than 80% of free margin; no order was sent."
     except (TypeError, ValueError, OverflowError, AttributeError, ZeroDivisionError):
-        return None, "Live quote, account equity, broker sizing, or stop-risk estimate could not be verified; no demo order was sent."
+        return None, "Live quote, account equity, broker sizing, or stop-risk estimate could not be verified; no order was sent."
 
     positions = mt5.positions_get()
-    open_gate = validate_open_positions(positions, DEMO_MAX_OPEN_POSITIONS)
+    open_gate = validate_open_positions(positions, MT5_MAX_OPEN_POSITIONS)
     if not open_gate["ok"]:
         return None, open_gate["reason"]
-    daily_net = _demo_daily_net()
+    daily_net = _mt5_daily_net()
     if daily_net is None:
-        return None, "Today's broker-reported demo P/L could not be verified; no order was sent."
-    daily_limit = equity * DEMO_MAX_DAILY_LOSS_PCT / 100
+        return None, "Today's broker-reported account P/L could not be verified; no order was sent."
+    daily_limit = equity * MT5_MAX_DAILY_LOSS_PCT / 100
     if daily_net <= -daily_limit:
-        return None, f"Demo daily-loss limit reached ({DEMO_MAX_DAILY_LOSS_PCT:.1f}% of equity); no order was sent."
+        return None, f"{env_label} daily-loss limit reached ({MT5_MAX_DAILY_LOSS_PCT:.1f}% of equity); no order was sent."
     return {
         "symbol": symbol, "side": side, "requested_usd": requested_usd,
         "lots": lots, "raw_lots": raw_lots, "exposure": exposure,
@@ -733,61 +757,66 @@ def _demo_order_plan(msg):
         "rr": rr, "margin": margin, "currency": str(account.currency),
         "equity": equity, "daily_net": daily_net, "daily_limit": daily_limit,
         "point": price_point, "trade_mode": trade_mode,
+        "environment": environment, "demo": environment == "demo",
     }, None
 
 
-def handle_demo_preview(msg):
-    plan, problem = _demo_order_plan(msg)
+def handle_order_preview(msg):
+    """Create a 30-second, no-send preview for one explicitly selected account mode."""
+    plan, problem = _mt5_order_plan(msg)
     if problem:
         return {**err(problem)}
     preview_id = secrets.token_urlsafe(18)
     now = time.time()
-    with _DEMO_PREVIEW_LOCK:
-        for key in list(_DEMO_PREVIEWS):
-            if now - _DEMO_PREVIEWS[key]["created"] > 30:
-                _DEMO_PREVIEWS.pop(key, None)
-        _DEMO_PREVIEWS[preview_id] = {"created": now, "plan": plan}
+    with _MT5_PREVIEW_LOCK:
+        for key in list(_MT5_PREVIEWS):
+            if now - _MT5_PREVIEWS[key]["created"] > 30:
+                _MT5_PREVIEWS.pop(key, None)
+        _MT5_PREVIEWS[preview_id] = {"created": now, "plan": plan}
     return {"type": "order_preview", "preview_id": preview_id,
-            **{key: plan[key] for key in ("symbol", "side", "requested_usd", "lots", "exposure", "price", "sl", "tp", "risk_amount", "risk_pct", "reward_amount", "rr", "margin", "currency", "equity")},
-            "max_open_positions": DEMO_MAX_OPEN_POSITIONS,
-            "max_risk_pct": DEMO_MAX_RISK_PCT,
-            "max_daily_loss_pct": DEMO_MAX_DAILY_LOSS_PCT,
+            **{key: plan[key] for key in ("symbol", "side", "requested_usd", "lots", "exposure", "price", "sl", "tp", "risk_amount", "risk_pct", "reward_amount", "rr", "margin", "currency", "equity", "environment", "demo")},
+            "max_open_positions": MT5_MAX_OPEN_POSITIONS,
+            "max_risk_pct": MT5_MAX_RISK_PCT,
+            "max_daily_loss_pct": MT5_MAX_DAILY_LOSS_PCT,
+            "min_reward_risk": MT5_MIN_REWARD_RISK,
             "manual_only": True}
 
 
 def handle_order(msg):
-    """One manually confirmed Exness DEMO market order. Live/automatic paths fail closed."""
-    global _DEMO_ORDER_UNCERTAIN
-    if not DEMO_ORDER_EXECUTION_ENABLED:
-        return {**err("Exness demo order execution is disabled; no order was sent.")}
+    """One explicitly confirmed manual Exness order; no app automation or close path."""
+    global _MT5_ORDER_UNCERTAIN
+    environment = str(msg.get("environment") or "").strip().lower()
+    env_label = environment.upper() if environment in ("demo", "real") else "MT5"
+    if not MT5_MANUAL_ORDER_EXECUTION_ENABLED:
+        return {**err("Exness manual order execution is disabled; no order was sent.")}
     if msg.get("confirmed") is not True:
-        return {**err("Explicit confirmation is required; no demo order was sent.")}
+        return {**err("Explicit per-order confirmation is required; no order was sent.")}
     preview_id = str(msg.get("preview_id") or "")
     intent_id = str(msg.get("intent_id") or "")
-    if not preview_id or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", intent_id):
-        return {**err("A current demo preview and unique intent id are required; no order was sent.")}
+    if environment not in ("demo", "real") or not preview_id or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", intent_id):
+        return {**err("A current mode-matched preview, explicit account mode, and unique intent id are required; no order was sent.")}
     with _ORDER_LOCK:
-        if intent_id in _DEMO_ORDER_REPLIES:
-            return _DEMO_ORDER_REPLIES[intent_id]
-        if _DEMO_ORDER_UNCERTAIN:
-            return {**err("A previous demo order outcome is uncertain. Inspect MT5 positions/history; no further app order will be sent until the bridge is restarted after the outcome is understood.")}
-        with _DEMO_PREVIEW_LOCK:
-            preview = _DEMO_PREVIEWS.pop(preview_id, None)
+        if intent_id in _MT5_ORDER_REPLIES:
+            return _MT5_ORDER_REPLIES[intent_id]
+        if _MT5_ORDER_UNCERTAIN:
+            return {**err("A previous MT5 order outcome is uncertain. Inspect MT5 positions/history; no further app order will be sent until the bridge is restarted after the outcome is understood.")}
+        with _MT5_PREVIEW_LOCK:
+            preview = _MT5_PREVIEWS.pop(preview_id, None)
         if not preview or time.time() - preview["created"] > 30:
-            return {**err("Demo preview expired; review a fresh quote and confirm again. No order was sent.")}
-        request_msg = {key: msg.get(key) for key in ("symbol", "side", "volume", "sl", "tp")}
-        plan, problem = _demo_order_plan(request_msg)
+            return {**err("Order preview expired; review a fresh quote and confirm again. No order was sent.")}
+        request_msg = {key: msg.get(key) for key in ("symbol", "side", "volume", "sl", "tp", "environment")}
+        plan, problem = _mt5_order_plan(request_msg)
         if problem:
             return {**err(problem)}
         old = preview["plan"]
-        if (plan["symbol"] != old["symbol"] or plan["side"] != old["side"]
+        if (plan["environment"] != old["environment"] or plan["symbol"] != old["symbol"] or plan["side"] != old["side"]
                 or plan["lots"] != old["lots"] or plan["sl"] != old["sl"] or plan["tp"] != old["tp"]
                 or plan["requested_usd"] != old["requested_usd"]
                 or abs(plan["price"] - old["price"]) > max(plan["point"] * 20, old["point"] * 20)
                 or abs(plan["risk_amount"] - old["risk_amount"]) > max(old["risk_amount"] * 0.05, 0.01)):
-            return {**err("Demo order size, stop/target, quote, or risk changed since confirmation; preview and confirm again. No order was sent.")}
+            return {**err("Order mode, size, stop/target, quote, or risk changed since preview; review a fresh quote and confirm again. No order was sent.")}
         try:
-            account, account_problem = _demo_account_gate()
+            account, account_problem = _mt5_manual_account_gate(plan["environment"])
             if account_problem:
                 return {**err(account_problem)}
             info = mt5.symbol_info(plan["symbol"])
@@ -795,23 +824,23 @@ def handle_order(msg):
             positions = mt5.positions_get()
             if info is None or tick is None or positions is None:
                 raise RuntimeError("fresh broker state unavailable")
-            open_gate = validate_open_positions(positions, DEMO_MAX_OPEN_POSITIONS)
+            open_gate = validate_open_positions(positions, MT5_MAX_OPEN_POSITIONS)
             if not open_gate["ok"]:
                 return {**err(open_gate["reason"])}
             send_price = float(tick.ask if plan["side"] == "BUY" else tick.bid)
             if not math.isfinite(send_price) or send_price <= 0 or abs(send_price - plan["price"]) > float(info.point) * 20:
-                return {**err("Demo quote moved beyond the confirmation tolerance; preview and confirm again. No order was sent.")}
+                return {**err(f"{env_label} quote moved beyond the confirmation tolerance; preview and confirm again. No order was sent.")}
             order_type = mt5.ORDER_TYPE_BUY if plan["side"] == "BUY" else mt5.ORDER_TYPE_SELL
             actual_loss = mt5.order_calc_profit(order_type, plan["symbol"], plan["lots"], send_price, plan["sl"])
             actual_margin = mt5.order_calc_margin(order_type, plan["symbol"], plan["lots"], send_price)
             if actual_loss is None or actual_margin is None:
-                raise RuntimeError("fresh demo risk calculation unavailable")
+                raise RuntimeError("fresh MT5 risk calculation unavailable")
             actual_risk = abs(float(actual_loss)) * 1.25
             if (not math.isfinite(actual_risk) or actual_loss >= 0
-                    or actual_risk > float(account.equity) * DEMO_MAX_RISK_PCT / 100
+                    or actual_risk > float(account.equity) * MT5_MAX_RISK_PCT / 100
                     or not math.isfinite(float(actual_margin))
                     or float(actual_margin) > float(account.margin_free) * 0.8):
-                return {**err("Fresh demo stop risk or margin exceeds the confirmed limit; no order was sent.")}
+                return {**err(f"Fresh {env_label} stop risk or margin exceeds the confirmed limit; no order was sent.")}
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": plan["symbol"],
@@ -820,44 +849,44 @@ def handle_order(msg):
                 "price": send_price,
                 "sl": plan["sl"], "tp": plan["tp"],
                 "deviation": 20, "magic": MAGIC,
-                "comment": "AURUM-DEMO-" + intent_id[:10],
+                "comment": "AURUM-" + env_label + "-" + intent_id[:10],
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": fillings_for(info)[0],
             }
             # A single send only. Ambiguous transport outcomes are not retried by this bridge.
             result = mt5.order_send(request)
         except Exception:
-            log.exception("demo order send returned an ambiguous exception")
-            _DEMO_ORDER_UNCERTAIN = True
-            reply = {**err("Demo order outcome is uncertain. Inspect MT5 positions/history; no further app order will be sent until the bridge is restarted after the outcome is understood. No automatic retry was made.")}
-            _DEMO_ORDER_REPLIES[intent_id] = reply
+            log.exception("MT5 order send returned an ambiguous exception")
+            _MT5_ORDER_UNCERTAIN = True
+            reply = {**err(f"{env_label} order outcome is uncertain. Inspect MT5 positions/history; no further app order will be sent until the outcome is understood. No automatic retry was made.")}
+            _MT5_ORDER_REPLIES[intent_id] = reply
             return reply
         if result is None:
-            _DEMO_ORDER_UNCERTAIN = True
-            reply = {**err("Demo order outcome is uncertain (MT5 returned no result). Inspect MT5 positions/history; no further app order will be sent until the bridge is restarted after the outcome is understood. No automatic retry was made.")}
+            _MT5_ORDER_UNCERTAIN = True
+            reply = {**err(f"{env_label} order outcome is uncertain (MT5 returned no result). Inspect positions/history; no further app order will be sent until the outcome is understood. No automatic retry was made.")}
         elif result.retcode in tuple(code for code in (
                 getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", None),
                 getattr(mt5, "TRADE_RETCODE_PLACED", None)) if code is not None):
-            _DEMO_ORDER_UNCERTAIN = True
-            reply = {**err("MT5 reports a partial or pending demo order. Inspect positions/history; no further app order will be sent until the bridge is restarted after the outcome is understood. Do not retry.")}
+            _MT5_ORDER_UNCERTAIN = True
+            reply = {**err(f"MT5 reports a partial or pending {env_label} order. Inspect positions/history; no further app order will be sent until the outcome is understood. Do not retry.")}
         elif result.retcode == getattr(mt5, "TRADE_RETCODE_DONE", -1):
-            log.info("demo fill: %s %s %.2f lots @ %s ticket=%s", plan["side"], plan["symbol"], plan["lots"], result.price, result.order)
+            log.info("%s fill: %s %s %.2f lots @ %s ticket=%s", env_label, plan["side"], plan["symbol"], plan["lots"], result.price, result.order)
             reply = {"type": "filled", "ticket": result.order, "price": result.price,
-                     "lots": plan["lots"], "symbol": plan["symbol"], "demo": True,
+                     "lots": plan["lots"], "symbol": plan["symbol"], "demo": plan["demo"], "environment": plan["environment"],
                      "currency": plan["currency"], "requested_usd": plan["requested_usd"],
                      "effective_notional": round(plan["exposure"], 2),
                      "estimated_buffered_risk": round(plan["risk_amount"], 2),
                      "risk_pct": round(plan["risk_pct"], 4), "rr": round(plan["rr"], 3),
-                     "open_positions_before": open_gate["count"], "max_open_positions": DEMO_MAX_OPEN_POSITIONS}
+                     "open_positions_before": open_gate["count"], "max_open_positions": MT5_MAX_OPEN_POSITIONS}
         else:
-            reply = {**err(f"Demo order rejected by MT5 (retcode={getattr(result, 'retcode', None)}): {getattr(result, 'comment', '')}. No retry was made.")}
-        _DEMO_ORDER_REPLIES[intent_id] = reply
-        if len(_DEMO_ORDER_REPLIES) > 256:
-            _DEMO_ORDER_REPLIES.pop(next(iter(_DEMO_ORDER_REPLIES)))
+            reply = {**err(f"{env_label} order rejected by MT5 (retcode={getattr(result, 'retcode', None)}): {getattr(result, 'comment', '')}. No retry was made.")}
+        _MT5_ORDER_REPLIES[intent_id] = reply
+        if len(_MT5_ORDER_REPLIES) > 256:
+            _MT5_ORDER_REPLIES.pop(next(iter(_MT5_ORDER_REPLIES)))
         return reply
 
 def handle_close(_msg):
-    return {**err("The demo-only app path can open manually confirmed demo orders, but cannot close positions. Manage or close demo positions directly in MetaTrader 5.")}
+    return {**err("App-side Exness position closing is disabled. Manage or close REAL/DEMO positions directly in MetaTrader 5.")}
 
 
 def handle_positions(_msg):
@@ -1000,7 +1029,7 @@ def handle_history(msg):
             "source": "local MT5 terminal", "ts": int(time.time())}
 
 
-HANDLERS = {"login": handle_login, "preview_order": handle_demo_preview, "order": handle_order, "close": handle_close, "positions": handle_positions, "account": handle_account, "quote": handle_quote, "search": handle_search, "symbols": handle_symbols, "history": handle_history}
+HANDLERS = {"login": handle_login, "preview_order": handle_order_preview, "order": handle_order, "close": handle_close, "positions": handle_positions, "account": handle_account, "quote": handle_quote, "search": handle_search, "symbols": handle_symbols, "history": handle_history}
 
 
 # ---------------------------------------------------------------- server
@@ -1232,8 +1261,8 @@ def _attach_terminal_once(wait_ms, account=None, account_follows=False):
         log.error("MetaTrader5.initialize() failed: %s", last)
     if last and ("Authorization failed" in last or "(-6" in last):
         log.error("  The terminal was seen but NOT fully logged in / attachable. Checklist:")
-        log.error("   1. In MT5: File > Login to Trade Account -- DEMO number on the ...Demo...")
-        log.error("      server (or LIVE number on the ...Live... server) with the TRADE password.")
+        log.error("   1. In MT5: File > Login to Trade Account -- use the account number,")
+        log.error("      matching DEMO/REAL Exness server, and MT5 trading password.")
         log.error("   2. Connected = GREEN bars bottom-right of MT5 + ticking prices in Market Watch.")
         log.error("   3. Just re-run this bridge -- if MT5 was mid-reconnect, the retry attaches.")
         log.error("   4. If MT5 was started with 'Run as administrator': close it and start it")
