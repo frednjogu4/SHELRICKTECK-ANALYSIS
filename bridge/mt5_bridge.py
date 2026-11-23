@@ -936,14 +936,26 @@ def handle_quote(msg):
             unresolved.append({"requested": requested, "resolved": sym, "message": "No current tick for MT5 symbol '" + sym + "'."})
             continue
         _inf = mt5.symbol_info(sym)
+        _path = str(getattr(_inf, "path", "") or "")
+        _desc = str(getattr(_inf, "description", "") or "")
         out.append({"symbol": sym, "bid": float(t.bid or 0), "ask": float(t.ask or 0), "time": int(t.time or 0),
                     "volume_min": getattr(_inf, "volume_min", None),
                     "volume_max": getattr(_inf, "volume_max", None),
                     "volume_step": getattr(_inf, "volume_step", None),
+                    "volume_limit": getattr(_inf, "volume_limit", None),
                     "contract_size": getattr(_inf, "trade_contract_size", None),
                     "currency_base": getattr(_inf, "currency_base", None),
                     "currency_profit": getattr(_inf, "currency_profit", None),
-                    "trade_mode": getattr(_inf, "trade_mode", None), "digits": getattr(_inf, "digits", None)})
+                    "currency_margin": getattr(_inf, "currency_margin", None),
+                    "trade_mode": getattr(_inf, "trade_mode", None), "digits": getattr(_inf, "digits", None),
+                    "point": getattr(_inf, "point", None),
+                    "tick_size": getattr(_inf, "tick_size", None),
+                    "tick_value": getattr(_inf, "tick_value", None),
+                    "trade_stops_level": getattr(_inf, "trade_stops_level", None),
+                    "path": _path, "description": _desc,
+                    "category": market_category(_path, _desc, sym),
+                    "spec_source": "local MT5 terminal",
+                    "spec_at": int(time.time())})
     return {"type": "quotes", "quotes": out, "unresolved": unresolved}
 
 

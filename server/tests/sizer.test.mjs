@@ -39,9 +39,13 @@ test('sizer: cross-currency WITHOUT a conversion rate is INCOMPLETE — never as
 });
 
 test('sizer: cross-currency WITH a user-supplied rate works', () => {
-  const p = planPosition({ ...cfd, equityCurrency: 'KES', conversionRate: 1 / 129 });
+  // conversionRate is ACCOUNT currency per 1 ORDER currency unit (here: 129 KES per 1 USD).
+  // 1,290,000 KES equity → 25,800 KES budget → 200 USD → 2 lots at $100 risk/lot.
+  const p = planPosition({ ...cfd, equity: 1290000, equityCurrency: 'KES', conversionRate: 129 });
   assert.equal(p.status, 'OK');
   assert.ok(p.riskBudget > 0);
+  assert.ok(Math.abs(p.riskBudget - 200) < 1e-6);   // budget expressed in order currency (USD)
+  assert.ok(Math.abs(p.riskBudgetAccount - 25800) < 1e-6); // account currency (KES)
 });
 
 test('sizer: missing stop or wrong-side stop is BLOCKED; missing entry is INCOMPLETE', () => {

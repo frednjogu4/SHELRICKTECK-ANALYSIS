@@ -1,0 +1,35 @@
+Position sizer (adaptive, formula shown)
+MT5 equity (latest broker snapshot)
+71.67 USD
+MT5 leverage
+1:400
+Balance / free margin
+71.67 / 71.67 USD
+Account type (MT5-verified)
+DEMO — MT5 trade mode verified
+Instrument
+Gold spot · Exness MT5 · Metal CFD (commodity)
+Broker specification source
+local MT5 terminal · tick 4:07:46 PM · age 0s
+Broker contract / volume specs
+100 contract · 0.01–200 lots · step 0.01
+Minimum volume
+0.01 lots ≈ $3,684.79 notional
+Tick / stop specs
+tick size 0.01 · tick value ≈ $1.00 · point 0.01 · stop level 0 pts
+Size-plan entry (live ask)
+3,684.79 @ 4:07:46 PM
+Exposure limit (broker minimum lot exempt)
+$716.70 — max(amount×1.5, 10× equity); the broker minimum lot is always allowed
+BLOCKED — Below the broker minimum: the smallest accepted size is 0.01 lots — at this stop that risks USD 31.50 (notional ≈ USD 3684.79), far above the USD 0.36 risk budget (the bridge buffers stop risk ×1.25 — at most 0.29 raw loss is acceptable). Widen the risk %, use a tighter stop on a larger size, or pick a smaller instrument.
+Broker minimum exposure
+≈ $3,684.79
+Min-lot risk at this stop
+$31.50
+Estimated margin at minimum size
+≈ $9.21 (leverage 1:400)
+Risk budget (0.5% of equity)
+$0.36
+Risk budget after bridge buffer (×1.25)
+$0.29
+Formula + assumptions
