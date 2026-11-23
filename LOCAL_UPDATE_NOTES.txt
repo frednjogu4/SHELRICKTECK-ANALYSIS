@@ -1,3 +1,12 @@
+FREDRICK AURUM LOCAL UPDATE — 23 NOVEMBER 2026
+
+What changed
+- The package now ships the complete current source (bridge, API, frontend, build scripts, PWA assets) instead of only the files it happened to contain when it was built. Two frontend modules added after 16 November (server/lib/proscalper.js and server/lib/forexanalyst.js) were missing from the old package; the sync script now requires every file under bridge/, server/, src/, scripts/, public/ and cloudflare/, so that class of omission cannot happen again.
+- New START_LOCAL_MARKET_COMMAND_CENTRE.bat: a dashboard-only launcher for http://127.0.0.1:8788/app that installs missing dependencies, runs the real npm run build plus dist verification, and serves the page with Wrangler. It does not start MT5, the broker bridge, or any order path, and it refuses to take over a port that is already in use.
+- The built page (bridge\app.html), bridge and API in this package are byte-for-byte the files in the repository; extract this ZIP over the package folder to bring the PC up to date, then press Ctrl+F5 in the app tab.
+
+---
+
 FREDRICK AURUM LOCAL UPDATE — 16 NOVEMBER 2026
 
 What changed
