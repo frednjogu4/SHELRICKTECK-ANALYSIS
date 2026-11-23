@@ -513,6 +513,7 @@ function updateSessionInfo(){
 }
 function signOut(){
   sessLog.add('signed','Signed out');
+  if(state.broker?.type==='mt5')mt5SnapshotEpoch++;
   store.del('session'); state.user=null; state.broker=null; state.balance=null;
   state.mt5LivePositions=null; state.mt5LastSnapshotAt=null; state.mt5SnapshotFailed=false;
   state.connections={deriv:false,mt5:false}; save();
@@ -805,6 +806,7 @@ async function connectMt5(url,login,password,server,token){
   const account=await bridge.connectBridge(health.url||url,{login,password,server:server||'',token,transport:health.transport||''});
   /* Session-only vault: reconnect after refresh, never persist to localStorage. */
   saveMt5Session({login,password,server,token,url:health.url||url});
+  mt5SnapshotEpoch++;
   state.broker={type:'mt5',account};
   state.cfdSpec=null;
   goldMt5SymbolCache={name:'',at:0};
@@ -823,13 +825,14 @@ async function connectMt5(url,login,password,server,token){
   return account;
 }
 
-let mt5SyncBusy=false;
+let mt5SyncBusy=false, mt5SnapshotEpoch=0;
 async function refreshMt5Snapshot(showToast=false){
   if(state.broker?.type!=='mt5'||mt5SyncBusy)return false;
+  const epoch=mt5SnapshotEpoch;
   mt5SyncBusy=true;
   try{
     const [acct,positions]=await Promise.all([bridge.bridgeAccount(),bridge.bridgePositions()]);
-    if(state.broker?.type!=='mt5')return false;
+    if(state.broker?.type!=='mt5'||epoch!==mt5SnapshotEpoch)return false;
     const a=state.broker.account||{};
     state.broker.account=Object.assign({},a,{
       balance:acct.balance,equity:acct.equity,margin_free:acct.margin_free,
@@ -851,7 +854,17 @@ async function refreshMt5Snapshot(showToast=false){
     return false;
   }finally{ mt5SyncBusy=false; }
 }
-setInterval(()=>{ if(state.broker?.type==='mt5')void refreshMt5Snapshot(false); },15000);
+const MT5_SNAPSHOT_REFRESH_MS=15000;
+function scheduleMt5SnapshotRefresh(){
+  if(state.broker?.type!=='mt5'||document.visibilityState==='hidden')return;
+  void refreshMt5Snapshot(false);
+}
+setInterval(scheduleMt5SnapshotRefresh,MT5_SNAPSHOT_REFRESH_MS);
+window.addEventListener('focus',scheduleMt5SnapshotRefresh);
+window.addEventListener('pageshow',scheduleMt5SnapshotRefresh);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible')scheduleMt5SnapshotRefresh();
+});
 const mt5RefreshBtn=$('#mt5RefreshBtn');
 if(mt5RefreshBtn)mt5RefreshBtn.onclick=()=>void refreshMt5Snapshot(true);
 
@@ -1002,6 +1015,7 @@ $('#exnessForm').onsubmit=async e=>{
   }catch(e){ box.innerHTML='<div class="tiny">'+escHtml(String(e.message||e))+'</div>'; }
 }); }
 $('#guestBtn').onclick=()=>{
+  if(state.broker?.type==='mt5')mt5SnapshotEpoch++;
   state.broker=null; state.balance=null;
   state.connections={deriv:false,mt5:false}; save();
   patStore.forget(); clearMt5Session(); forgetMt5Identity();
@@ -3151,7 +3165,7 @@ function renderMt5BrokerPositions(){
   if(meta){
     if(state.mt5SnapshotFailed)meta.textContent=state.mt5LastSnapshotAt?'Latest refresh failed; showing last confirmed MT5 snapshot.':'MT5 refresh failed; no live position snapshot is available.';
     else if(!Array.isArray(list))meta.textContent='Waiting for the first live MT5 account/positions snapshot.';
-    else meta.textContent='Read-only broker snapshot · '+list.length+' open position'+(list.length===1?'':'s')+' · refreshed '+(state.mt5LastSnapshotAt?new Date(state.mt5LastSnapshotAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—');
+    else meta.textContent='Read-only broker snapshot · '+list.length+' open position'+(list.length===1?'':'s')+' · refreshed '+(state.mt5LastSnapshotAt?new Date(state.mt5LastSnapshotAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—')+' · auto-refresh every '+Math.round(MT5_SNAPSHOT_REFRESH_MS/1000)+'s';
   }
   if(!body||!empty||!wrap)return;
   body.innerHTML='';
@@ -3355,7 +3369,7 @@ $$('.conn-btn').forEach(btn=>btn.onclick=async()=>{
   const k=btn.dataset.conn;
   if(k==='live')return;
   if(state.broker&&((k==='deriv'&&state.broker.type==='deriv')||(k==='mt5'&&state.broker.type==='mt5'))){
-    if(k==='mt5'){bridge.disconnectBridge('user');state.cfdSpec=null;}
+    if(k==='mt5'){mt5SnapshotEpoch++;bridge.disconnectBridge('user');state.cfdSpec=null;}
     state.broker=null; state.balance=null; state.mode='live';
     if(k==='mt5')renderSizePlan();
     state.connections[k==='deriv'?'deriv':'mt5']=false; save();
@@ -5570,7 +5584,7 @@ function render(view){
     case 'sniper': renderSniperView(); break;
     case 'gold': renderGold(); break;
     case 'proscalper': renderProScalper(); break;
-    case 'portfolio': renderPortfolio(); break;
+    case 'portfolio': renderPortfolio(); scheduleMt5SnapshotRefresh(); break;
     case 'automation': connUI(); renderBots(); break;
     case 'learn': learnInit(); break;
     case 'watch': renderWatch(); break;
