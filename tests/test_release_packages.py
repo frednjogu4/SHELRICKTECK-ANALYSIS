@@ -9,10 +9,11 @@ PACKAGES = ("FREDRICK_AURUM_LOCAL_UPDATE.zip", "FREDRICK_AURUM_DEMO_UPDATE.zip")
 
 
 class LocalUpdatePackageParityTests(unittest.TestCase):
-    def test_update_archives_ship_the_canonical_page_and_read_only_bridge(self):
+    def test_update_archives_ship_the_canonical_page_and_manual_execution_bridge(self):
         page = (ROOT / "dist" / "index.html").read_bytes()
         bridge = (ROOT / "bridge" / "mt5_bridge.py").read_bytes()
-        self.assertIn(b"MT5_MANUAL_ORDER_EXECUTION_ENABLED = False", bridge)
+        self.assertIn(b"MT5_MANUAL_ORDER_EXECUTION_ENABLED = True", bridge)
+        self.assertIn(b"App-side Exness position closing is disabled", bridge)
         digest = hashlib.sha256(page).hexdigest().encode()
         for package in PACKAGES:
             prefix = Path(package).stem + "/"

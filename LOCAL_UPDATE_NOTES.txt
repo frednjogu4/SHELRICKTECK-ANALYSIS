@@ -3,6 +3,7 @@ FREDRICK AURUM LOCAL UPDATE — 23 NOVEMBER 2026
 What changed
 - The package now ships the complete current source (bridge, API, frontend, build scripts, PWA assets) instead of only the files it happened to contain when it was built. Two frontend modules added after 16 November (server/lib/proscalper.js and server/lib/forexanalyst.js) were missing from the old package; the sync script now requires every file under bridge/, server/, src/, scripts/, public/ and cloudflare/, so that class of omission cannot happen again.
 - New START_LOCAL_MARKET_COMMAND_CENTRE.bat: a dashboard-only launcher for http://127.0.0.1:8788/app that installs missing dependencies, runs the real npm run build plus dist verification, and serves the page with Wrangler. It does not start MT5, the broker bridge, or any order path, and it refuses to take over a port that is already in use.
+- Manual Exness order execution is enabled on the verified connected account, REAL or DEMO. Every order still requires a fresh 30-second MT5 risk preview and your explicit confirmation, and the bridge's hard limits stay in force: one open position, 0.5% buffered stop risk per order, 2% daily realized-loss threshold, minimum 1.2 reward:risk, 80% free-margin ceiling. App-side closes and automated/Sniper entries remain disabled — manage positions in MT5. REAL orders send real money; stops and estimates cannot guarantee the final loss.
 - The built page (bridge\app.html), bridge and API in this package are byte-for-byte the files in the repository; extract this ZIP over the package folder to bring the PC up to date, then press Ctrl+F5 in the app tab.
 
 ---
@@ -22,7 +23,7 @@ Install
 4. In MT5, confirm a live connection (connection speed/bars and updating Market Watch), then press Connect in the local app.
 
 Limit
-This update can make the bridge target the correct running MT5 installation, but it cannot restore an Exness network connection or validate account credentials. If MT5 still shows "No connection" or stale prices, resolve that in the MT5 terminal first. The local app remains read-only for Exness; this update does not enable order execution.
+This update can make the bridge target the correct running MT5 installation, but it cannot restore an Exness network connection or validate account credentials. If MT5 still shows "No connection" or stale prices, resolve that in the MT5 terminal first. The local app was read-only for Exness at that time; superseded 23 November 2026 — manual REAL/DEMO order execution is now enabled (see above).
 
 Privacy
 Do not share MT5 passwords, bridge_token.txt, terminal_path.txt, or unredacted startup logs.

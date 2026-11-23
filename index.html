@@ -859,7 +859,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
           <input class="input" id="exnessLogin" type="text" required placeholder="account number">
         </label>
         <label class="field"><span>MT5 account password</span>
-          <input class="input" id="exnessPass" type="password" autocomplete="off" required placeholder="MT5 password; account access is read-only">
+          <input class="input" id="exnessPass" type="password" autocomplete="off" required placeholder="trading password for manual REAL/DEMO orders; investor is view-only">
         </label>
         <label class="field"><span>Exact Exness MT5 server (required)</span>
           <input class="input" id="exnessServer" type="text" required placeholder="exact server name from Exness Personal Area">
@@ -1251,7 +1251,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
                 <div id="sizePlanBody" class="tiny">Pick a market and set a stop-loss — the size plan appears here. Nothing is assumed: missing inputs are listed, never invented.</div>
               </div>
               <button class="btn buy lg" id="placeOrderBtn" style="width:100%">Place BUY order</button>
-              <p class="hint">This release is analysis-only for broker execution. The Exness MT5 connection can provide account metrics and market data, but broker order previews and placement are disabled. Paper-trading records are hypothetical and isolated from broker accounts. Risk: <b id="riskTxt">—</b> if stop-loss is hit.</p>
+              <p class="hint">Deriv orders use their existing gated path. Exness orders run only in the local app on a broker-verified <b>REAL or DEMO</b> account — each one needs a fresh MT5 risk preview and your explicit confirmation. App-side closes and all automated entries remain disabled; manage positions in MT5. Stop risk is estimated, not guaranteed. Risk: <b id="riskTxt">—</b> if stop-loss is hit.</p>
             </div>
             <div class="card">
               <div class="card-head"><h3>Instrument info</h3></div>
@@ -1762,7 +1762,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
         </div>
         <div class="notice warn" style="margin-bottom:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-          <div><b>Exness connection is read-only in this release.</b> Account metrics, quotes, positions and candle history may be read from the local MT5 bridge, but broker order previews and placement are disabled for both REAL and DEMO accounts. No automated trading or bots are activated. Credentials stay on this PC/local bridge; use the exact same account and server on PC and phone.</div>
+          <div><b>Exness REAL and DEMO orders are manual-only.</b> Each order requires a fresh MT5 preview and your explicit per-order confirmation. The local bridge verifies the exact account mode and rechecks live quotes, broker sizing, buffered stop risk, margin, daily realized loss, and open positions. Hard caps: 0.5% buffered risk per order, 2% daily loss, one open position, at least 1.2 reward:risk, and no more than 80% of free margin. Automated entries and app-side closes stay disabled. Stops and risk estimates cannot guarantee the final loss; manage or close positions directly in MT5. Credentials stay on this PC/local bridge; use the exact same account and server on PC and phone.</div>
         </div>
 
         <div class="grid c3" id="connGrid">
@@ -1786,7 +1786,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               <div class="hint">If it says unreachable: (1) is the black bridge window open with "listening"? (2) the cloud page may be blocked from reaching your PC — the guaranteed path is the bridge's own app: <a id="openLocalMode" href="http://127.0.0.1:8788/app" target="_blank" rel="noopener" style="color:var(--brand);font-weight:700">Open the local trading app (Exness works there) ↗</a>. To allow the cloud page instead: padlock → Site settings → Insecure content → Allow, and allow Local-network access, then reload.</div></label>
             <label class="field" style="margin:0"><span>Account login</span><input class="input" id="mt5Login" required placeholder="account number"></label>
             <label class="field" style="margin:0"><span>MT5 server (enter exact server for this account)</span><input class="input" id="mt5Server" required placeholder="copy the exact server from Exness Personal Area"></label>
-            <label class="field" style="margin:0"><span>MT5 account password</span><input class="input" type="password" autocomplete="off" id="mt5Pass" required placeholder="MT5 password; account access is read-only"></label>
+            <label class="field" style="margin:0"><span>MT5 account password</span><input class="input" type="password" autocomplete="off" id="mt5Pass" required placeholder="trading password for manual REAL/DEMO orders; investor is view-only"></label>
             <label class="field" style="margin:0"><span>Bridge token <span class="faint">(required from phone/LAN)</span></span><input class="input" type="password" autocomplete="off" id="mt5Token" placeholder="shared secret — use local bridge_token.txt"><div class="hint">On the PC this is optional. From a phone, use the token from the PC's local bridge_token.txt; it stays in this browser tab only and is also required for phone access to the local analysis API.</div></label>
             <button class="btn primary conn-btn" data-conn="mt5">Connect Exness locally</button>
             <div class="hint">This browser tab keeps the Exness login, server, password and bridge token in session storage for refresh recovery. They clear on disconnect, sign-out, or tab-session end.</div>

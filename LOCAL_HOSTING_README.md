@@ -42,6 +42,6 @@ A phone can use the app in its browser over this private Wi-Fi. A full phone PWA
 
 - This is local hosting, not a public website. No production deployment or external tunnel is configured.
 - Technical analysis runs keyless. AI/news providers remain unconfigured unless the user separately sets their own keys locally; never put secrets in this package or share them in chat.
-- Existing trade/execution settings are not changed by this hosting package. The Exness MT5 bridge remains read-only; this setup does not authorize live orders.
+- Existing trade/execution settings are not changed by this hosting package. Manual Exness orders (REAL or DEMO) go through the app's per-order risk preview and explicit confirmation with the bridge's hard limits; app automation and app-side closes stay disabled.
 - Cloud Sync is optional and separate; no Supabase project is changed by installing this package.
 - To stop: close the local API and bridge windows. The desktop/Startup shortcut restarts them on launch/sign-in.

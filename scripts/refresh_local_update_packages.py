@@ -77,7 +77,7 @@ def manifest(page: bytes) -> bytes:
         "FREDRICK AURUM LOCAL UPDATE PACKAGE",
         "Source: canonical repository working tree; package copies of repository files are byte-for-byte synchronized.",
         "Contains the local PC runtime, built page, PWA assets, MT5 bridge, API and frontend source, build scripts, and launchers (START_ALL_LOCAL.bat and the dashboard-only START_LOCAL_MARKET_COMMAND_CENTRE.bat).",
-        "Execution scope: Exness MT5 account and market data are read-only; broker order previews and placement are disabled.",
+        "Execution scope: manual Exness orders on the verified connected account (REAL or DEMO) after a fresh local risk preview and explicit per-order confirmation; app automation and app-side closes remain disabled.",
         "No credentials, bridge token, account details, machine-specific MT5 path, logs, or node_modules are included.",
         "Install steps: see START_HERE_LOCAL_PACKAGE.txt.",
         f"Built app SHA-256: {hashlib.sha256(page).hexdigest()}",

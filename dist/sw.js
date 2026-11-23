@@ -4,7 +4,7 @@
  *  - icons/manifest: cache-first with background refresh
  *  - /api/* and WebSocket/live data: NEVER cached
  */
-const VERSION = 'aurum-local-78bf0239d142d5d1';
+const VERSION = 'aurum-local-v2';
 const SHELL = ['/app', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png'];
 
 self.addEventListener('install', (e) => {

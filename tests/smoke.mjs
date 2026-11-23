@@ -547,7 +547,7 @@ async function run() {
   const hubLink = doc.querySelector('#dmt5Card a[href="https://app.deriv.com/"]');
   check('real account link -> Trader\'s Hub (no invented URL)', !!hubLink);
   check('bridge server field (Deriv MT5 needs it)', !!$('#mt5Server'));
-  check('bridge login is Exness-specific with mandatory exact server and read-only account access guidance', doc.body.innerHTML.includes('Exness MT5 account login') && doc.body.innerHTML.includes('Exact Exness MT5 server (required)') && doc.body.innerHTML.includes('account access is read-only') && !doc.body.innerHTML.includes('any MT5 broker'));
+  check('bridge login is Exness-specific with mandatory exact server and accurate demo-trading password guidance', doc.body.innerHTML.includes('Exness MT5 account login') && doc.body.innerHTML.includes('Exact Exness MT5 server (required)') && doc.body.innerHTML.includes('investor is view-only') && !doc.body.innerHTML.includes('any MT5 broker'));
   check('duration selector in order ticket', !!$('#orderDuration') && $('#orderDuration').querySelector('option[value="15m"]'));
   check('order amount default within server cap ($10)', $('#orderAmount') && Number($('#orderAmount').getAttribute('value')) === 10, 'default=' + ($('#orderAmount')||{}).getAttribute?.('value'));
   check('confirm dialog shows target account', !!$('#tmAccount'));
@@ -642,7 +642,7 @@ async function run() {
       check('index quotes: bridge quote/search ops + client pump (no Deriv subscribe for indices)', py.includes('def handle_quote') && py.includes('def handle_search') && bjs2.includes('export function quoteBridge') && bjs2.includes('export function searchBridge') && srcMain2.includes('async function pumpIndexQuotes') && mdjs.includes('if (!I.deriv) return;'));
       check('index signals are Exness-first or clearly labelled Yahoo fallback; Sniper only analyses', srcMain2.includes('Exness MT5 local candles') && srcMain2.includes('Yahoo Finance public daily data') && srcMain2.includes('labelled fallback') && srcMain2.includes('Sniper entry is blocked'));
       check('index CFD note: stop-anytime + server-side SL/TP', srcMain2.includes('CFD — stop anytime ✓') && srcMain2.includes('SL/TP execute on Exness') && srcMain2.includes('even with this app closed'));
-      check('Exness login: terminal/credential diagnostics, exact-server + company identity checks, and PC/phone guidance', py.includes('step terminal, code') && py.includes('step login, code') && py.includes('read-only data access') && py.includes('exact Exness MT5 server is required') && py.includes('actual_server.casefold() != server.casefold()') && py.includes('"exness" not in company.casefold()') && srcMain2.includes('SETUP_AND_RUN.bat') && srcMain2.includes('from a phone is the phone itself, not your PC') && srcMain2.includes('The account number and MT5 server must MATCH') && !srcMain2.includes('Account 54998262'));
+      check('Exness login: terminal/credential diagnostics, exact-server + company identity checks, and PC/phone guidance', py.includes('step terminal, code') && py.includes('step login, code') && py.includes('investor') && py.includes('exact Exness MT5 server is required') && py.includes('actual_server.casefold() != server.casefold()') && py.includes('"exness" not in company.casefold()') && srcMain2.includes('SETUP_AND_RUN.bat') && srcMain2.includes('from a phone is the phone itself, not your PC') && srcMain2.includes('The account number and MT5 server must MATCH') && !srcMain2.includes('Account 54998262'));
     }
     check('news timeline: UPCOMING / JUST RELEASED (15 min) / PAST 2 HOURS sections with exact UTC times + live countdowns', srcMain2.includes('JUST RELEASED — current news (last 15 min)') && srcMain2.includes('UPCOMING TODAY — exact times, live countdown') && srcMain2.includes('PAST 2 HOURS') && srcMain2.includes('function newsBucket(') && srcMain2.includes('function newsTLabel(') && srcMain2.includes('data-nt=') && srcMain2.includes('crossed a boundary -> re-section') && srcMain2.includes('{ updateNewsValidity(); updateNewsTimeline(); }'));
     check('news signals show a validity window (25m sniper window, STALE stands Execute down, unknown stays honest)', srcMain2.includes('const NEWS_VALIDITY_MIN=25;') && srcMain2.includes('function newsValidity(') && srcMain2.includes('freshness unknown') && srcMain2.includes('STALE (') && srcMain2.includes("if(state.view==='news'){ updateNewsValidity(); updateNewsTimeline(); }") && srcMain2.includes('then goes STALE and Execute stands down') && srcMain2.includes('Valid window: ~') && srcMain2.includes("outside the '+NEWS_VALIDITY_MIN+'m news window"));
@@ -681,7 +681,7 @@ async function run() {
     {
       const ijs = readFileSync(join(root, 'server', 'lib', 'indices.js'), 'utf8');
       check('indices in daily signal analysis: scan includes NAS100/US30/SPX500 (daily, labelled)', srcMain2.includes("['NAS100','US30','SPX500']") && ijs.includes('^NDX') && ijs.includes('^DJI') && ijs.includes('^GSPC') && srcApp.includes("model: 'technical-daily'"));
-      check('index cards: Exness reads are analysis-only and server daily levels stay analysis-only', srcMain2.includes('function openSignalSymbol') && srcMain2.includes('This index is not orderable through Deriv') && srcMain2.includes('local Exness MT5 connection is read-only in this release') && ijs.includes('entry: null'));
+      check('index cards: Deriv analysis-only and Exness orders restricted to broker-verified demo instruments; server daily levels stay analysis-only', srcMain2.includes('function openSignalSymbol') && srcMain2.includes('This index is not orderable through Deriv') && srcMain2.includes('MT5 bridge resolves as tradable on a verified REAL or DEMO account') && ijs.includes('entry: null'));
     check('news execute: confirm-gated order from signal cards (deduction on linked account)', doc.getElementById('waNumber') && srcMain2.includes('function executeNewsSignal') && srcMain2.includes('news-exec') && srcMain2.includes("const mode=proxyReady?'proxy':(state.broker.mode==='pat_server'?'pat_server':'pat')") && srcMain2.includes('nothing executes without your confirm'));
     check('whatsapp: one-tap signal share + today brief + on-device number', srcMain2.includes('function waLink') && srcMain2.includes('wa.me/') && srcMain2.includes("shareCalBrief") && doc.getElementById('newsCalShare'));
     {
@@ -816,10 +816,10 @@ async function run() {
     const am = (s) => srcMain2.includes(s);
     check('audit C1: App-ID check accepts letters (forbidden digits-only regression removed)', audApp.includes('A-Za-z0-9._~-]{1,64}') && !audApp.includes('/^\\d{1,10}$/.test(appId)'));
     check('audit H2: trust proxy set - per-IP rate limits key on the real client behind Railway', audApp.includes("app.set('trust proxy', 1)"));
-    check('audit H3: Deriv request dedupe remains and Exness previews/orders are rejected before execution', audLim.includes("error: 'duplicate_request'") && audApp.includes("dedupeBody({ name: 'deriv-order' })") && audBrg.includes('MT5_MANUAL_ORDER_EXECUTION_ENABLED = False') && audBrg.includes('Exness broker order placement is disabled in this release.') && !audBjs.includes('intent_id: o.intentId'));
+    check('audit H3: Deriv server dedupe remains and Exness REAL/DEMO intents are cached to avoid a second send', audLim.includes("error: 'duplicate_request'") && audApp.includes("dedupeBody({ name: 'deriv-order' })") && audBrg.includes('if intent_id in _MT5_ORDER_REPLIES:') && audBrg.includes('_MT5_ORDER_REPLIES[intent_id] = reply') && audBjs.includes('intent_id: o.intentId'));
     check('audit C2: bridge needs per-connection login before order/close/positions + rejects cross-origin ws on both ports + optional AURUM_BRIDGE_TOKEN', audBrg.includes('auth_required') && (audBrg.match(/_origin_allowed/g) || []).length >= 4 && audBrg.includes('login required on this connection first') && audBrg.includes('AURUM_BRIDGE_TOKEN') && (audBrg.match(/_NEED_AUTH/g) || []).length >= 3);
-    check('audit C3: Exness preview/order methods are absent from the browser client and disabled in the bridge', !audBjs.includes('previewBridgeOrder') && !audBjs.includes('placeBridgeOrder') && audBrg.includes('MT5_MANUAL_ORDER_EXECUTION_ENABLED = False'));
-    check('audit C3 client: Exness order entry is read-only and the UI never requests a broker preview', am("toast('Broker orders disabled'") && am('Exness broker order placement is disabled in this release') && !am('previewBridgeOrder') && !am('manualConfirmed:true'));
+    check('audit C3: demo preview and fills expose broker-calculated lots, notional, buffered risk and margin', audBrg.includes('"effective_notional"') && audBrg.includes('"risk_amount"') && audBrg.includes('"margin"') && audBrg.includes('"exposure"'));
+    check('audit C3 client: Exness REAL/DEMO orders require a mode-matched preview and explicit per-order confirmation', am('previewBridgeOrder') && am('manualConfirmed:true') && am("Confirm Exness '+environmentLabel+' order") && am('REAL MONEY — this sends a market order') && am('App automation and closes remain disabled'));
     check('audit M2: client fetch timeout on scan calls (AbortSignal.timeout, 30s)', am('timeoutMs=0') && (srcMain2.match(/timeoutMs:30000/g) || []).length >= 3 && am('fallbackSignalBatch') && am('AbortSignal.timeout'));
     check('audit H1: broker secrets are sessionStorage-only with clear-on-logout wording', audIdx.includes('sessionStorage') && audIdx.includes('cleared on disconnect/sign-out') && !audIdx.includes('plain-text backup'));
     check('audit C2 client: Bridge token field actually wired into the login frame', am('mt5Token') && audBjs.includes('token: creds.token'));
@@ -856,7 +856,6 @@ async function run() {
 
   /* ---------- round 20d: Phase-2 safety slice (RISK/BOSS + kill switch) ---------- */
   {
-    const py = readFileSync(join(root, 'bridge', 'mt5_bridge.py'), 'utf8');
     const rg = readFileSync(join(root, 'server', 'lib', 'riskgate.js'), 'utf8');
     const ks = readFileSync(join(root, 'server', 'lib', 'killswitch.js'), 'utf8');
     const ap = readFileSync(join(root, 'server', 'app.js'), 'utf8');
@@ -867,7 +866,7 @@ async function run() {
     check('20d: /api/risk/gate runs the tri-state module and returns checks + boss verdict', ap.includes('evaluateRisk({') && ap.includes('bossVerdict({ risk: report') && ap.includes('checks: report.checks'));
     check('20d: kill switch enforced on every buy route (order/confirm/buy) incl. the env-token router', ap.includes('/\\/(order|confirm|buy)$/.test(p)') && ap.includes('requireTrading(req, _res, next)'));
     check('20d: kill switch control endpoint present (GET+POST /api/ctl/killswitch)', ap.includes("app.post('/api/ctl/killswitch'") && ap.includes("app.get('/api/ctl/killswitch'"));
-    check('20d: Exness preview and order requests are disabled before execution details can be sent', srcMain2.includes('Exness broker order placement is disabled in this release') && py.includes('MT5_MANUAL_ORDER_EXECUTION_ENABLED = False') && py.includes('if not MT5_MANUAL_ORDER_EXECUTION_ENABLED:'));
+    check('20d: Exness demo plan uses local broker preview with SL/TP and no browser-supplied risk booleans', srcMain2.includes('previewBridgeOrder({environment,symbol:I.s.replace(\'/\',\'\'),side:state.side,volume:amt,sl,tp})') && srcMain2.includes('previewId:preview.preview_id') && !srcMain2.includes('marketHours:(minqr&&minqr.ask>0)?true:null'));
     check('20d: Settings kill-switch toggle + visible score formula (quality score, not probability)', srcMain2.includes('killSwitchBtn') && srcMain2.includes('/api/ctl/killswitch') && doc.documentElement.outerHTML.includes('NOT a probability of profit') && doc.documentElement.outerHTML.includes('killSwitchState'));
   }
 
@@ -957,13 +956,12 @@ async function run() {
     check('20m: bridge window identifies the current IPC-compatible bundle', py.includes('BRIDGE_BUNDLE = "21a"'));
   }
 
-  /* ---------- round 20o: broker execution disabled in the read-only release ---------- */
+  /* ---------- round 20o: MetaTrader5 invalid-fill constant compatibility ---------- */
   {
     const py = readFileSync(join(root, 'bridge', 'mt5_bridge.py'), 'utf8');
-    const preview = py.slice(py.indexOf('def handle_order_preview(msg):'), py.indexOf('def handle_order(msg):'));
     const order = py.slice(py.indexOf('def handle_order(msg):'), py.indexOf('def handle_close(msg):'));
-    check('20o: the bridge ships with MT5 order execution disabled', py.includes('MT5_MANUAL_ORDER_EXECUTION_ENABLED = False'));
-    check('20o: order previews and confirmed orders fail closed before any MT5 order send', preview.indexOf('if not MT5_MANUAL_ORDER_EXECUTION_ENABLED:') < preview.indexOf('_mt5_order_plan(msg)') && order.indexOf('if not MT5_MANUAL_ORDER_EXECUTION_ENABLED:') < order.indexOf('mt5.order_send(request)'));
+    check('20o: demo order uses a broker-reported fill policy without dereferencing optional retcode constants', py.includes('def fillings_for(info):') && order.includes('"type_filling": fillings_for(info)[0]'));
+    check('20o: demo order makes a single MT5 send attempt and reports rejection without retry', order.includes('A single send only') && order.includes('result = mt5.order_send(request)') && order.includes('No retry was made.') && !order.includes('invalid_fill_codes'));
   }
 
   /* ---------- round 20p: failed Exness orders release their risk reservation ---------- */
@@ -973,7 +971,7 @@ async function run() {
     const py = readFileSync(join(root, 'bridge', 'mt5_bridge.py'), 'utf8');
     const riskTest = readFileSync(join(root, 'server', 'tests', 'risklimits.test.mjs'), 'utf8');
     check('20p: server tracks pending Exness reservations and only releases matching pending intents', ap.includes('reservations: new Map()') && ap.includes("reservation.status !== 'pending'") && ap.includes("kind === 'release'"));
-    check('20p: Exness automation and broker-order entry are blocked in the analysis-only release', main.includes('Sniper entries are disabled; the Sniper is analysis-only') && main.includes('async function placeMt5ManualOrder') && main.includes('Exness broker order placement is disabled in this release') && py.includes('MT5_MANUAL_ORDER_EXECUTION_ENABLED = False') && ap.includes('reservations: new Map()'));
+    check('20p: Exness automation is blocked and demo bridge reports uncertain outcomes without retry', main.includes('Sniper entries are disabled; the Sniper is analysis-only') && main.includes('async function placeMt5ManualOrder') && py.includes('no further app order will be sent until the bridge is restarted') && py.includes('No automatic retry was made.') && ap.includes('reservations: new Map()'));
     check('20p: MT5 risk gate rejects untrusted browser news and creates no reservation', riskTest.includes('generic MT5 risk gate fails closed when news evidence is not server-verified') && riskTest.includes('not verified by the server'));
   }
 
@@ -1005,7 +1003,7 @@ async function run() {
     check('20t: bridge client exposes account refresh while preserving read-only positions query', bridgeClient.includes("export async function bridgeAccount() {") && bridgeClient.includes("export function bridgePositions() { return frame({ type: 'positions' }); }"));
     check('20t: Exness account/positions poll automatically and refresh immediately on tab focus or return', main.includes('bridge.bridgeAccount()') && main.includes('bridge.bridgePositions()') && main.includes('setInterval(scheduleMt5SnapshotRefresh,MT5_SNAPSHOT_REFRESH_MS)') && main.includes("window.addEventListener('focus',scheduleMt5SnapshotRefresh)") && main.includes("document.addEventListener('visibilitychange'") && html.includes('id="mt5PositionsCard"'));
     check('20t: Exness account ID is masked in bridge response and logs', py.includes('"account": _mask_account(ai.login)') && py.includes('MT5 account ending %s') && !py.includes('log.info("MT5 account %s @ %s'));
-    check('20t: Exness REAL/DEMO broker order previews and placements are disabled while account data stays read-only', main.includes('Exness broker order placement is disabled in this release') && py.includes('MT5_MANUAL_ORDER_EXECUTION_ENABLED = False') && py.includes('Exness broker order placement is disabled in this release.'));
+    check('20t: Exness REAL/DEMO orders require an exact broker-verified mode and a manual order gate', main.includes('REAL MONEY — this sends a market order') && py.includes('def _mt5_manual_account_gate(expected_environment=None):') && py.includes('actual_environment != expected_environment') && py.includes('Explicit per-order confirmation is required') && py.includes('app automation remains disabled'));
   }
 
   /* ---------- round 20u: broker-authoritative Exness cap reconciles stale cloud opens safely ---------- */
@@ -1019,7 +1017,7 @@ async function run() {
     const order = py.slice(py.indexOf('def handle_order(msg):'), py.indexOf('def handle_close(msg):'));
     check('20u: bridge serializes Exness orders and rechecks live MT5 positions immediately before send', py.includes('_ORDER_LOCK = threading.Lock()') && order.includes('with _ORDER_LOCK:') && order.indexOf('validate_open_positions') >= 0 && order.indexOf('validate_open_positions') < order.indexOf('mt5.order_send(request)'));
     check('20u: MT5 position gate fails closed and cannot exceed the existing 10-position cap', pyRisk.includes('MAX_MT5_OPEN_POSITIONS = 10') && pyRisk.includes('if positions is None:') && pyRisk.includes('limit = min(requested, MAX_MT5_OPEN_POSITIONS)'));
-    check('20u: disabled Exness order controls cannot call the preview/order bridge client', !main.includes('previewBridgeOrder') && !main.includes('placeBridgeOrder') && main.includes('btn.disabled=mt5ReadOnly') && main.includes('Broker orders disabled'));
+    check('20u: demo client sends only the fresh preview id and explicit manual-confirmation intent', client.includes("type: 'preview_order'") && client.includes('preview_id: o.previewId') && client.includes('intent_id: o.intentId') && client.includes('confirmed: true') && main.includes('previewId:preview.preview_id') && main.includes('manualConfirmed:true'));
     check('20u: Exness demo risk stays local and requires fresh broker positions and history before preview/send', py.includes('MT5_MAX_OPEN_POSITIONS = 1') && py.includes('positions = mt5.positions_get()') && py.includes('_mt5_daily_net()') && py.includes('history_deals_get(start, now)') && !main.includes("api('/api/risk/gate'"));
     check('20u: Exness close cannot decrement an unrelated or already-closed reservation', server.includes("reservation.status !== 'committed'") && server.includes("error: 'reservation_not_committed'"));
   }

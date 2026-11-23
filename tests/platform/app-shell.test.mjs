@@ -100,18 +100,20 @@ test('the service worker is registered at /sw.js on http(s) only', async () => {
 
 /* ---------------------------------------------------------------- index.html */
 
-test('Exness remains read-only: the ticket cannot request a preview or order in this release', () => {
-  const page = indexHtml;
+test('Exness ticket drives a mode-matched preview and explicitly confirmed manual order', () => {
   const entry = readFileSync(join(root, 'src', 'main.js'), 'utf8');
   const start = entry.indexOf('async function placeMt5ManualOrder(');
   const end = entry.indexOf('async function placeOrder(){', start);
-  assert.ok(start >= 0 && end > start, 'MT5 order handler exists as an explicit read-only refusal');
+  assert.ok(start >= 0 && end > start, 'MT5 manual order handler exists');
   const mt5Handler = entry.slice(start, end);
-  assert.match(mt5Handler, /broker order placement is disabled in this release/i);
-  assert.doesNotMatch(mt5Handler, /previewBridgeOrder|placeBridgeOrder|order_send/);
-  assert.match(entry, /const mt5ReadOnly=state\.broker\?\.type==='mt5';[\s\S]*?btn\.disabled=mt5ReadOnly/);
-  assert.match(page, /Exness connection is read-only in this release/);
-  assert.match(page, /broker order previews and placement are disabled for both REAL and DEMO accounts/);
+  assert.match(mt5Handler, /previewBridgeOrder/);
+  assert.match(mt5Handler, /placeBridgeOrder/);
+  assert.match(mt5Handler, /manualConfirmed:true/);
+  assert.match(mt5Handler, /askConfirm\(/);
+  assert.match(mt5Handler, /REAL MONEY/);
+  assert.doesNotMatch(entry, /const mt5ReadOnly=state\.broker\?\.type==='mt5'/);
+  const bridgeClient = readFileSync(join(root, 'src', 'bridge.js'), 'utf8');
+  assert.match(bridgeClient, /const MT5_MANUAL_ORDER_EXECUTION_ENABLED = true/);
 });
 
 test('live MT5 positions refresh periodically and refresh immediately when the app becomes active', () => {
