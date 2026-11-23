@@ -9,9 +9,7 @@ const ROOT_ID = 'shelrick-command-centre';
 
 const css = `
 /* Keep legacy overview DOM as a data source for existing renderers, but show only the unified Command Centre. */
-#view-overview > .view-head,
-#view-overview > #ovKpis,
-#view-overview > .split.section-gap{display:none!important}
+#view-overview > :not(#shelrick-command-centre){display:none!important}
 #${ROOT_ID}{margin:0 0 18px;display:grid;gap:14px;color:var(--text)}
 #${ROOT_ID} .cc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}
 #${ROOT_ID} .cc-eyebrow{font-size:10px;letter-spacing:.14em;text-transform:uppercase;font-weight:800;color:var(--brand)}
