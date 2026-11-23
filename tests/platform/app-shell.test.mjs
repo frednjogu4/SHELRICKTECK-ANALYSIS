@@ -100,6 +100,20 @@ test('the service worker is registered at /sw.js on http(s) only', async () => {
 
 /* ---------------------------------------------------------------- index.html */
 
+test('Exness remains read-only: the ticket cannot request a preview or order in this release', () => {
+  const page = indexHtml;
+  const entry = readFileSync(join(root, 'src', 'main.js'), 'utf8');
+  const start = entry.indexOf('async function placeMt5ManualOrder(');
+  const end = entry.indexOf('async function placeOrder(){', start);
+  assert.ok(start >= 0 && end > start, 'MT5 order handler exists as an explicit read-only refusal');
+  const mt5Handler = entry.slice(start, end);
+  assert.match(mt5Handler, /broker order placement is disabled in this release/i);
+  assert.doesNotMatch(mt5Handler, /previewBridgeOrder|placeBridgeOrder|order_send/);
+  assert.match(entry, /const mt5ReadOnly=state\.broker\?\.type==='mt5';[\s\S]*?btn\.disabled=mt5ReadOnly/);
+  assert.match(page, /Exness connection is read-only in this release/);
+  assert.match(page, /broker order previews and placement are disabled for both REAL and DEMO accounts/);
+});
+
 test('index.html keeps one valid manifest link, a <noscript> notice and the module entry', () => {
   assert.equal((indexHtml.match(/<link rel="manifest"/g) || []).length, 1);
   assert.doesNotMatch(indexHtml, /<meta name="manifest"/, 'a <meta> element cannot link a manifest');

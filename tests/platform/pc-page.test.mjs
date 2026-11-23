@@ -13,6 +13,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -52,6 +53,20 @@ test('the build ends by refreshing the PC page', () => {
   const postbuild = read('scripts', 'postbuild.mjs').toString('utf8');
   assert.match(postbuild, /import \{[^}]*\brefreshPcPage\b[^}]*\} from '\.\/pc-page\.mjs';/);
   assert.ok(postbuild.indexOf('refreshPcPage()') > postbuild.indexOf('verifyDist(dist)'), 'the page is copied only after dist/ was verified');
+  assert.match(postbuild, /createHash\('sha256'\)[\s\S]*update\(appShell\)[\s\S]*update\(manifest\)[\s\S]*serviceWorkerSource/);
+});
+
+test('the service-worker cache version is build-derived and the PC copy matches the website', () => {
+  const shell = read('dist', 'index.html');
+  const manifest = read('dist', 'manifest.webmanifest');
+  const source = read('public', 'sw.js').toString('utf8');
+  const id = createHash('sha256').update(shell).update(manifest).update(source.replace('__AURUM_BUILD_ID__', '')).digest('hex').slice(0, 16);
+  const expected = `aurum-local-${id}`;
+  const builtWorker = read('dist', 'sw.js').toString('utf8');
+  const localWorker = read('bridge', 'pwa', 'sw.js').toString('utf8');
+  assert.ok(builtWorker.includes(`const VERSION = '${expected}';`), `expected cache name ${expected}`);
+  assert.ok(!builtWorker.includes('__AURUM_BUILD_ID__'), 'the build placeholder must be replaced');
+  assert.equal(localWorker, builtWorker, 'the local PC service worker must be the same build');
 });
 
 function scratchRoot() {

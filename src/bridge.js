@@ -10,10 +10,6 @@
  * that the reply echoes back):
  *   -> {id, type:'login',    login, password, server}
  *   <- {id, type:'logged',   balance, equity, currency, account}
- *   -> {id, type:'order', environment:'demo'|'real', symbol, side, volume, sl, tp, preview_id, intent_id, confirmed:true}
- *   <- {id, type:'filled',   ticket, price}
- *   -> {id, type:'close',    ticket}
- *   <- {id, type:'closed',   ticket, profit}
  *   -> {id, type:'positions'}
  *   <- {id, type:'positions', list:[{ticket,symbol,side,volume,price,profit,sl,tp}]}
  *   -> {id, type:'account'}
@@ -22,10 +18,8 @@
  *   -> {id, type:'history', symbol, timeframe:'M1'|'M5'|'H1', count}
  * ================================================================ */
 
-// Manual-only real and demo orders are available after explicit per-order
-// confirmation. The local bridge verifies the exact MT5 mode and reapplies
-// strict risk caps. App-side closes and automated entries remain disabled.
-const MT5_MANUAL_ORDER_EXECUTION_ENABLED = true;
+// This client exposes read-only Exness account and market-data operations.
+// Broker order placement and app-side closes are not part of this release.
 
 const statusCbs = new Set();
 let sock = null;
@@ -331,26 +325,6 @@ export function disconnectBridge(reason) {
   setStatus('not_running');
 }
 
-function verifiedOrderEnvironment(environment) {
-  return MT5_MANUAL_ORDER_EXECUTION_ENABLED
-    && (environment === 'demo' || environment === 'real')
-    && account
-    && account.environment === environment
-    && account.demo === (environment === 'demo');
-}
-export function previewBridgeOrder(o) {
-  if (!verifiedOrderEnvironment(o?.environment)) return Promise.reject(new Error('MT5 account mode does not match the explicitly selected REAL or DEMO preview. Reconnect and verify the account; no order was sent.'));
-  return frame({ type: 'preview_order', environment: o.environment, symbol: o.symbol, side: o.side, volume: o.volume, sl: o.sl, tp: o.tp });
-}
-export function placeBridgeOrder(o) {
-  if (!verifiedOrderEnvironment(o?.environment)) return Promise.reject(new Error('MT5 account mode does not match the explicitly selected REAL or DEMO order. Reconnect and verify the account; no order was sent.'));
-  if (o?.manualConfirmed !== true || !o.previewId || !o.intentId) return Promise.reject(new Error('A fresh mode-matched preview and explicit per-order confirmation are required. No order was sent.'));
-  return frame({ type: 'order', environment: o.environment, symbol: o.symbol, side: o.side, volume: o.volume, sl: o.sl, tp: o.tp,
-    preview_id: o.previewId, intent_id: o.intentId, confirmed: true });
-}
-export function closeBridgeOrder(_ticket) {
-  return Promise.reject(new Error('App-side Exness position closing is disabled. Manage or close the position directly in MetaTrader 5.'));
-}
 export function bridgePositions() { return frame({ type: 'positions' }); }
 export async function bridgeAccount() {
   const snapshot=await frame({ type: 'account' });
