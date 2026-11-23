@@ -168,6 +168,13 @@ the PC runs the files in its own package folder (the folder that holds
 
 Copy the whole folder, not single files: the page (`bridge\app.html`), the
 bridge (`bridge\mt5_bridge.py`) and the server (`server\`) belong together.
+
+For a machine that only needs the dashboard, `START_LOCAL_MARKET_COMMAND_CENTRE.bat`
+does the same update check in one step: it installs what is missing, runs the
+real `npm run build` plus dist verification, and serves
+`http://127.0.0.1:8788/app` without starting MT5 or the broker bridge. It
+refuses to start while that port is already taken, so close the bridge window
+first if both launchers live in the same folder.
 The server folder is complete on its own (nothing under `server/` imports a
 file from outside it, `tests/platform/pc-package.test.mjs`), and it needs the
 three packages `npm ci --omit=dev` installs, which have not changed.
