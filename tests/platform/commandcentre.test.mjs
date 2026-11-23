@@ -25,6 +25,11 @@ test('Command Centre mirrors existing overview values and previews without inven
   const root = document.getElementById('shelrick-command-centre');
   assert.ok(root);
   assert.equal(root.querySelectorAll('.cc-kpi').length, 4);
+  const style = document.getElementById('shelrick-command-centre-style');
+  assert.ok(style?.textContent.includes('#view-overview > .view-head'));
+  assert.ok(style?.textContent.includes('#view-overview > #ovKpis'));
+  assert.ok(style?.textContent.includes('#view-overview > .split.section-gap'));
+  assert.ok(document.getElementById('ovKpis'), 'legacy KPI source remains available to existing renderers');
   assert.equal(root.querySelector('.cc-kpi-value').textContent, '$10,000.00');
   assert.match(root.querySelector('#ccMovers').textContent, /BTC\/USD/);
   assert.match(root.querySelector('#ccSignals').textContent, /WAIT/);
