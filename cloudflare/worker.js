@@ -208,6 +208,11 @@ function publicSymbol(code, row = {}) {
  * Yahoo stamps a bar with the session's open or with its latest trade.
  */
 function dailyBarInfo(json, candles, readAtMs) {
+  const sourceTimes = json?.chart?.result?.[0]?.timestamp;
+  const sourceNewestTime = Array.isArray(sourceTimes) && sourceTimes.length ? Number(sourceTimes[sourceTimes.length - 1]) : 0;
+  /* If Yahoo's newest source slot has no usable timestamp, don't imply a date
+     by falling back to an older parsed candle. */
+  if (!Number.isFinite(sourceNewestTime) || sourceNewestTime <= 0) return { time: 0, final: null };
   const newest = candles[candles.length - 1];
   const time = Number(newest && newest.time) > 0 ? Number(newest.time) : 0;
   const regular = json?.chart?.result?.[0]?.meta?.currentTradingPeriod?.regular;
@@ -370,11 +375,11 @@ function createReadOnlyWorker({
         if (!sig.ok) throw new Error('Insufficient daily history');
         const source = 'Yahoo Finance public daily data';
         return {
-          symbol, price: sig.price, mtf_signal: sig.bias.toUpperCase(), data_ok: true,
-          signal: sig.signal, bias: sig.bias, votes: sig.votes,
-          wait_reason: sig.signal === 'WAIT' ? 'daily_no_setup' : null,
-          wait_detail: sig.signal === 'WAIT' ? 'Daily indicators are mixed — no directional edge today.' : null,
-          confidence: sig.confidence, entry: null, stop_loss: null, tp1: null, tp2: null,
+          symbol, price: sig.price, mtf_signal: 'DAILY_CONTEXT_ONLY', data_ok: true,
+          signal: 'WAIT', context_signal: sig.context_signal, bias: sig.bias,
+          analysis_status: sig.analysis_status, tradeable: false, votes: sig.votes,
+          wait_reason: sig.wait_reason, wait_detail: sig.wait_detail,
+          confidence: null, entry: null, stop_loss: null, tp1: null, tp2: null,
           tf: 'DAILY (index)', model: 'technical-daily', source, data_source: source,
           /* The day this reading speaks for: the newest daily bar it was computed
              from, and whether that bar was a close or still forming. `ts` is only

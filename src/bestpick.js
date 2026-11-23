@@ -32,7 +32,49 @@ export function isDailyReading(reading) {
   return String(reading.data_source || reading.source || '').startsWith('Yahoo Finance');
 }
 
-const isDirectional = (reading) => !reading.error && (reading.signal === 'BUY' || reading.signal === 'SELL');
+export function hasCompleteTradePlan(reading) {
+  const entry = Number(reading?.entry);
+  const stop = Number(reading?.stop_loss);
+  const target = Number(reading?.tp1 ?? reading?.take_profit);
+  if (![entry, stop, target].every(Number.isFinite) || entry <= 0 || stop <= 0 || target <= 0) return false;
+  if (reading.signal === 'BUY') return stop < entry && target > entry;
+  if (reading.signal === 'SELL') return stop > entry && target < entry;
+  return false;
+}
+
+/**
+ * Daily index bars are context, not a trade setup. Strip an old directional
+ * label and any zero/missing levels before they can be shown as an approval.
+ */
+export function contextOnlyDailyReading(reading) {
+  if (!isDailyReading(reading) || reading.error ||
+      (reading.analysis_status !== 'CONTEXT_ONLY' && hasCompleteTradePlan(reading))) return reading;
+  return {
+    ...reading,
+    context_signal: reading.context_signal || (['BUY', 'SELL'].includes(reading.signal) ? reading.signal : null),
+    signal: 'WAIT', confidence: null,
+    entry: null, stop_loss: null, tp1: null, tp2: null,
+    analysis_status: 'CONTEXT_ONLY', tradeable: false,
+    wait_reason: 'daily_context_only',
+    wait_detail: 'Daily index trend is context only. Entry, stop, target, and trade-confidence values are unavailable; this is not a validated setup.'
+  };
+}
+
+const isDirectional = (reading) => !reading.error && (reading.signal === 'BUY' || reading.signal === 'SELL') &&
+  reading.analysis_status !== 'INCOMPLETE' && hasCompleteTradePlan(reading) &&
+  (!isDailyReading(reading) || reading.analysis_status !== 'CONTEXT_ONLY');
+
+export function validateTradePlan(reading) {
+  if (reading.error || !['BUY', 'SELL'].includes(reading.signal) || hasCompleteTradePlan(reading)) return reading;
+  const levels = [
+    ['entry', reading.entry],
+    ['stop-loss', reading.stop_loss],
+    ['take-profit', reading.tp1 ?? reading.take_profit]
+  ];
+  const missing = levels.filter(([, value]) => !(Number.isFinite(Number(value)) && Number(value) > 0)).map(([name]) => name);
+  const invalid = missing.length ? [] : ['levels do not form a valid plan'];
+  return { ...reading, analysis_status: 'INCOMPLETE', incomplete_reasons: missing.concat(invalid) };
+}
 
 /* The BUY or SELL with the highest score; the first one when two are level. */
 function strongest(readings) {
@@ -56,7 +98,7 @@ function strongest(readings) {
  */
 export function splitBestPick(readings, indexSymbols = []) {
   const indices = new Set(indexSymbols);
-  const all = (readings || []).filter(Boolean);
+  const all = (readings || []).filter(Boolean).map(validateTradePlan);
   const dailyRead = all.filter(isDailyReading);
   const dailySide = all.filter((reading) => isDailyReading(reading) || (reading.error && indices.has(reading.symbol)));
   const liveSide = all.filter((reading) => !dailySide.includes(reading));

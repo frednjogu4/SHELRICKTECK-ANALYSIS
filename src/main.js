@@ -7,7 +7,8 @@
  * simulated price engine, no demo balance and no fake content.
  * ================================================================ */
 import { INSTRUMENTS, INSTRUMENT_MAP, WATCHLIST_DEFAULTS, DERIV_CODE_MAP } from '../server/lib/symbols.js';
-import { createSignalTracker, describeLive } from './signalrun.js';
+import { createSignalTracker, describeLive, liveConfidence } from './signalrun.js';
+import { validateTradePlan, hasCompleteTradePlan } from './bestpick.js';
 import * as bridgeMod from './bridge.js';
 import { readMt5Identity, saveMt5Identity, forgetMt5Identity } from './mt5identity.js';
 import { marketStatus, typicalActiveWindow, MARKET_HOURS_NOTE } from '../server/lib/markethours.js';
@@ -32,11 +33,16 @@ import { evaluateSmcSetups, SMC_SETUP_RULES } from './smcplaybook.js';
 import { closedCandleSets, nextReadingCheck } from './closedcandles.js';
 import { measuredText, measuredLine, isDailyReading } from './measured.js';
 import { renderGoldCandlestickChart } from './goldchart.js';
+import { analyzeShortOutlook, renderShortOutlook } from './shortoutlook.js';
+import { renderAnnotatedCandlestickChart } from './annotatedchart.js';
 import { analyzeForex, FX_ANALYST_TIMEFRAMES } from '../server/lib/forexanalyst.js';
-import { splitBestPick, dailyBarText, sharedDailyBarText } from './bestpick.js';
+import { emaSeries, findLevels } from '../server/lib/indicators.js';
+import { splitBestPick, dailyBarText, sharedDailyBarText, contextOnlyDailyReading } from './bestpick.js';
 import { headlineConcerns, eventConcerns, eventTime, currenciesOf, marketsForCurrency, eatClock, eatDay, eatDayBounds, eatStamp, standAside, exposureFor, exposureForCurrency, releaseMeasuredText, trendWords, STAND_ASIDE } from './newsimpact.js';
+import { buildScheduledNewsAlerts } from './schedulednews.js';
 import { initCommandCentre } from './commandcentre.js';
 
+/* The new unified Overview has its own structure; the legacy initializer safely no-ops without its old KPI anchor. */
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => initCommandCentre(), { once: true });
 else initCommandCentre();
 
@@ -78,7 +84,7 @@ const STREAM_FEED='stream';
 const feedOfReading=r=>r&&r.model==='technical-exness'?'exness':STREAM_FEED;
 const signalRuns=createSignalTracker({feedOf:feedOfReading}), goldRuns=createSignalTracker();
 /* Why an index card of the cloud has three empty boxes: said on the card itself, for BUY, SELL and WAIT alike. */
-const DAILY_NOTE='Daily index reading from daily closing prices: it has no entry, stop or target, so nothing here moves with the price and there is no measured result. Levels need minute-by-minute prices, which for indices come only from Exness MT5 in the PC app.';
+const DAILY_NOTE='Daily index data is context only. It does not provide a validated trade setup, trade-confidence score, entry, stop or target. Use verified intraday broker data and risk checks before considering a trade.';
 const NO_LEVELS_NOTE='This reading has no entry, stop or target, so its score does not move with the price.';
 /* A market that ticks again after a pause, with every finished candle still from before it: no reading yet (closedcandles.js). */
 const RESUMED_NOTE=what=>what+' has just resumed after a pause: no 5-minute candle has closed since. The first reading comes with the next 5-minute close.';
@@ -103,15 +109,21 @@ function liveView(symbol,side,base,levels,short,feedName,daily){
   return {score:base,note:short?'not the newest reading':'This '+side+' reading is no longer the newest for this market: refresh to see the latest.'};
 }
 const liveViewOf=(r,short)=>liveView(r.symbol,r.signal,Number(r.confidence)||0,hasLevels(r),short,feedOfReading(r),isDailyReading(r));
-function liveScore(r){return r&&r.symbol?liveViewOf(r).score:(Number(r&&r.confidence)||0);}
+function liveScore(r){
+  if(!r||r.confidence==null||!Number.isFinite(Number(r.confidence)))return null;
+  return r.symbol?liveViewOf(r).score:Number(r.confidence);
+}
 /* The sentence beside a reading's score: how far the market has moved since it was first read. */
 function liveNoteFor(r,short){return r&&!r.error?liveViewOf(r,short).note:'';}
 /* What paintLiveConfidence() needs to redo that computation on every tick. `role` is Conf, Bar or Note. */
 function setLiveData(el,r,role){el.dataset['live'+role]=r.symbol;el.dataset.liveSide=r.signal||'';el.dataset.liveBase=String(Number(r.confidence)||0);el.dataset.liveLevels=hasLevels(r)?'1':'0';el.dataset.liveFeed=feedOfReading(r);el.dataset.liveDaily=isDailyReading(r)?'1':'0';}
 function liveData(r,role,short){return ' data-live-'+role+'="'+escHtml(r.symbol)+'" data-live-side="'+escHtml(r.signal||'')+'" data-live-base="'+(Number(r.confidence)||0)+'" data-live-levels="'+(hasLevels(r)?1:0)+'" data-live-feed="'+feedOfReading(r)+'" data-live-daily="'+(isDailyReading(r)?1:0)+'"'+(short?' data-live-short="1"':'');}
 /* '<b data-live-conf="EUR/USD" …>75%</b>': a score that paintLiveConfidence() keeps current between renders. */
-function liveScoreHtml(r,tag='b'){return '<'+tag+liveData(r,'conf')+'>'+liveScore(r)+'%</'+tag+'>';}
-function liveNoteHtml(r,short){return '<div class="tiny faint"'+liveData(r,'note',short)+'>'+escHtml(liveNoteFor(r,short))+'</div>';}
+function liveScoreHtml(r,tag='b'){
+  const score=liveScore(r);
+  return score==null?'<'+tag+' class="score-unavailable" title="Trade confidence is unavailable">—</'+tag+'>':'<'+tag+liveData(r,'conf')+'>'+score+'%</'+tag+'>';
+}
+function liveNoteHtml(r,short){return '<div class="tiny faint"'+(r&&r.confidence==null?'':' '+liveData(r,'note',short))+'>'+escHtml(liveNoteFor(r,short))+'</div>';}
 /* Runs on every price tick: rewrites the scores, bars and sentences already on the page. */
 function paintLiveConfidence(){
   const view=(el,symbol)=>liveView(symbol,el.dataset.liveSide,Number(el.dataset.liveBase)||0,el.dataset.liveLevels==='1',el.dataset.liveShort==='1',el.dataset.liveFeed,el.dataset.liveDaily==='1');
@@ -198,6 +210,8 @@ state.settings.autotrade=Object.assign(
   { on:false, conf:70, stake:10, target:25, maxTrades:10, dir:'both', brakes:'run' },
   state.settings.autotrade||{}
 );
+let chartDisplayMode=store.get('chartDisplayMode','signal')==='tv'?'tv':'signal';
+let chartSignalPlotSeq=0,chartSignalPlotAt=0,chartSignalPlotPending=false,chartSignalPlotSymbol='';
 const save=()=>{
   store.set('positions',state.positions); store.set('history',state.history);
   store.set('settings',state.settings); store.set('connections',state.connections);
@@ -400,7 +414,7 @@ $('#themeBtn').onclick=()=>{
 
 /* ---------- navigation ---------- */
 const VIEW_META={
-  overview:['Overview','Workspace · everything at a glance'],
+  overview:['Market Command Centre','Workspace · unified read-only overview'],
   markets:['Markets','All instruments · live Deriv prices'],
   trade:['Chart & Trade','Live TradingView chart · broker-routed orders'],
   state:['Market state','Four timeframes · live directional bias'],
@@ -430,21 +444,28 @@ function goto(view){
   closeSidebar();
   render(view);
   if(view==='markets'){ mktScanRefresh(); }
-  if(view==='trade') setTimeout(()=>tv.mountChart($('#tvChart'),state.chart.sym),40);
+  if(view==='trade'){ if(chartDisplayMode==='tv')setTimeout(()=>tv.mountChart($('#tvChart'),state.chart.sym),40);else refreshChartSignalPlot(true); refreshChartOutlook(true); }
+  if(view==='gold')refreshGoldOutlook(true);
+  if(view==='watch')refreshWatchOutlooks();
+  if(view==='learn')refreshDrawdownOutlook();
   if(view==='news'){ setTimeout(()=>{ tv.mountNews($('#tvNews')); tv.mountCalendar($('#tvCalendar')); },40); renderNewsFeed(); renderNewsCal(); mktScanRefresh(); }
   window.scrollTo({top:0,behavior:'instant'in window?'instant':'auto'});
 }
 $$('.nav-item').forEach(b=>b.onclick=()=>goto(b.dataset.view));
 document.addEventListener('click',e=>{
-  const g=e.target.closest('[data-goto]'); if(g) goto(g.dataset.goto);
+  const g=e.target.closest('[data-goto]'); if(g){
+    goto(g.dataset.goto);
+    const target=g.dataset.gotoSection;
+    if(target)setTimeout(()=>{ const section=document.getElementById(target); if(section&&section.scrollIntoView)section.scrollIntoView({behavior:'smooth',block:'start'}); },40);
+  }
 });
 /* The countdowns and stand-aside states of the News view, and the release note in the line above the chart,
    follow the clock and not the price feed: they keep running when no price tick arrives. */
 setInterval(()=>{ try{
-  /* The calendar is read again while the News view or the chart stays open: a page left open over a
-     week-end must not go on showing last week's releases, and a read that failed is tried again. */
-  if((state.view==='news'||state.view==='trade')&&calendarDue())loadCalendar().then(()=>{ if(state.view==='news')paintNewsCal(); }).catch(()=>{}); /* the chart's line is redrawn by the next round, a second later */
-  if(state.view==='news')updateNewsTimeline(); else if(state.view==='trade'){ updateChartLevels(); msTick(); } else if(state.view==='state')msTick();
+  /* Keep the shared calendar current while the app is open so scheduled alerts do not depend on which view is selected. */
+  if(calendarDue())loadCalendar().then(()=>{ if(state.view==='news')paintNewsCal(); }).catch(()=>{});
+  checkScheduledNewsAlerts();
+  if(state.view==='news')updateNewsTimeline(); else if(state.view==='trade'){ updateChartLevels();msTick();if(chartDisplayMode==='signal'&&Date.now()-chartSignalPlotAt>45000)refreshChartSignalPlot();if(Date.now()-shortOutlookViewCheck.trade>10000){shortOutlookViewCheck.trade=Date.now();refreshChartOutlook();} } else if(state.view==='gold'){if(Date.now()-shortOutlookViewCheck.gold>10000){shortOutlookViewCheck.gold=Date.now();refreshGoldOutlook();}} else if(state.view==='watch'){if(Date.now()-shortOutlookViewCheck.watch>15000){shortOutlookViewCheck.watch=Date.now();refreshWatchOutlooks();}} else if(state.view==='signals')tickForexAnalystAutomation(); else if(state.view==='state')msTick();
 }catch(e){} },1000);
 /* News view: a market named beside a headline or a release opens its chart. */
 document.addEventListener('click',e=>{
@@ -471,7 +492,7 @@ function showApp(name,mode){
   const sub=state.mode==='deriv'?(state.broker?.mode==='cloud_readonly'?'Deriv · read-only':'Deriv account'):{mt5:'Exness via bridge',live:'Live markets · no trading'}[state.mode];
   $('#sideSub').textContent=sub;
   const h=new Date().getHours();
-  $('#ovGreeting').textContent=(h<12?'Good morning':h<18?'Good afternoon':'Good evening')+', '+name.charAt(0).toUpperCase()+name.slice(1);
+  const greeting=$('#ovGreeting'); if(greeting)greeting.textContent=(h<12?'Good morning':h<18?'Good afternoon':'Good evening')+', '+name.charAt(0).toUpperCase()+name.slice(1);
   updateSessionInfo();
   boot();
 }
@@ -793,7 +814,7 @@ async function connectMt5(url,login,password,server,token){
       exposure, so P/L is identical at any leverage — leverage only changes
       how much margin is locked. Show the real numbers where you connect. */
     const lv=account&&account.leverage;
-    if(lv)toast(account?.demo===true?'Exness demo account verified':'Exness connected read-only','MT5 reports leverage 1:'+lv+'; leverage never multiplies your P/L in this app.'+(account?.demo===true?' Demo-only manual orders require a fresh preview and confirmation.':' Live accounts remain read-only.'),'ok');
+    if(lv)toast(account?.environment==='demo'?'Exness DEMO account verified':account?.environment==='real'?'Exness REAL account verified':'Exness account mode unverified','MT5 reports leverage 1:'+lv+'; leverage never multiplies your P/L in this app. Only a broker-verified REAL/DEMO mode can reach the manual order preview; every order requires strict local risk checks and explicit confirmation. Automation and app-side closes remain disabled.','ok');
   }
   state.balance=account.balance!=null?Number(account.balance):null;
   state.connections.mt5=true; save();
@@ -813,7 +834,7 @@ async function refreshMt5Snapshot(showToast=false){
     state.broker.account=Object.assign({},a,{
       balance:acct.balance,equity:acct.equity,margin_free:acct.margin_free,
       currency:acct.currency||a.currency,leverage:acct.leverage||a.leverage||null,
-      demo:acct.demo===true,tradeMode:acct.trade_mode??a.tradeMode??null
+      environment:acct.environment||null,demo:acct.environment==='demo'?true:acct.environment==='real'?false:null,tradeMode:acct.trade_mode??a.tradeMode??null
     });
     state.balance=acct.balance!=null&&Number.isFinite(Number(acct.balance))?Number(acct.balance):null;
     state.mt5LivePositions=Array.isArray(positions.list)?positions.list:null;
@@ -954,7 +975,7 @@ $('#exnessForm').onsubmit=async e=>{
     const connectedAccount=await connectMt5(($('#mt5Url')||{}).value||bridge.localBridgeWs(),login,password,server,($('#mt5Token')||{}).value||'');
     err.style.display='none';
     showApp('Exness','mt5');
-    notify(connectedAccount?.demo===true?'Exness demo account verified':'Exness connected read-only',connectedAccount?.demo===true?'This account may use the demo-only manual order path with per-order confirmation and local risk checks.':'Live-account orders remain disabled.','ok');
+    notify(connectedAccount?.environment==='demo'?'Exness DEMO account verified':connectedAccount?.environment==='real'?'Exness REAL account verified':'Exness account mode unverified',connectedAccount?.environment==='demo'?'DEMO orders are manual only and require a fresh bridge preview, strict local risk checks and explicit confirmation.':connectedAccount?.environment==='real'?'REAL orders are manual only and require a fresh bridge preview, strict local risk checks and explicit confirmation. Automation and app-side closes remain disabled.':'MT5 did not verify REAL or DEMO mode; app order entry remains blocked.','ok');
   }catch(ex){
     const m=String(ex.message||ex);
     const onPc=/localhost|127\.0\.0\.1/.test(location.hostname);
@@ -962,7 +983,7 @@ $('#exnessForm').onsubmit=async e=>{
     const httpsLead=(location.protocol==='https:'&&!onPc)?'<b>This HTTPS app is blocked by the browser from opening the PC\'s local bridge socket — the bridge itself is fine.</b> Guaranteed path: on the PC open <span class=\'mono\'>http://127.0.0.1:8788/app</span> — or double-click the <b>“Fredrick TRADING (local app)”</b> desktop icon that SETUP_AND_RUN.bat creates — and connect there. ':'';
     err.innerHTML=httpsLead+(/unreachable|timeout|refused|closed|blocked/i.test(m)
       ? '<b>Bridge not reachable.</b> 1) On the trading PC run <b>SETUP_AND_RUN.bat</b> and keep Exness MT5 open — the bridge window prints its address; the local token is in bridge_token.txt. 2) '+(onPc?'Open this app on the PC (<span class=\'mono\'>http://127.0.0.1:8788/app</span>).':'You are on another device (phone/tablet): set <b>Bridge URL</b> to the address the bridge window prints (e.g. <span class=\'mono\'>ws://192.168.1.10:8787</span>) and copy the <b>bridge token</b> locally from <span class=\'mono\'>bridge_token.txt</span> — <span class=\'mono\'>127.0.0.1</span> from a phone is the phone itself, not your PC. Easiest: open <span class=\'mono\'>http://PC-IP:8788/app</span> exactly as printed by the bridge window (same wifi).')+' 3) If a padlock warning appears on the https app: padlock → Site settings → Insecure content → Allow, reload (the http://PC-IP:8788/app route has no such warning).'
-      : '<b>'+escHtml(m)+'</b>')+' <div class="tiny faint" style="margin-top:6px">The account number and MT5 server must MATCH: use the exact Exness server shown in the Exness Personal Area. A trading password is required for demo orders; an investor/read-only password can connect for viewing only. Keep passwords local.</div>';
+      : '<b>'+escHtml(m)+'</b>')+' <div class="tiny faint" style="margin-top:6px">The account number and MT5 server must MATCH: use the exact Exness server shown in the Exness Personal Area. A trading password is required for manual orders on either account mode; an investor/read-only password can connect for viewing only. Keep passwords local.</div>';
     err.style.display='block';
   }finally{ btn.disabled=false; btn.textContent='Connect Exness locally'; }
 };
@@ -1020,6 +1041,12 @@ function updateFeedPill(s){
     if(s==='unavailable')pill.title='This browser could not open the public Deriv price feed'+(feedStatusDetail?' ('+feedStatusDetail.slice(0,140)+')':'')+'. Prices show “—”; nothing is estimated.';
     else if(s==='stale')pill.title='The public Deriv price feed is not delivering ticks'+(feedStatusDetail?' ('+feedStatusDetail.slice(0,140)+')':'')+'. Prices on screen may be old; nothing is estimated.';
     else pill.removeAttribute('title');
+  }
+  const stamp=$('#marketStatusUpdated'); if(stamp)stamp.textContent='Status checked '+timeStr(Date.now());
+  const details=$('#connectionDetails');
+  if(details){
+    const proxy=state.derivHealth?.state||'unknown';
+    details.textContent='Market feed: '+label+'. Broker proxy: '+proxy+'. Credentials are server-side and are not displayed. Manage connections here in Settings.';
   }
 }
 function wireFeed(){
@@ -1150,7 +1177,7 @@ function checkStops(){
 /* ---------- ticker ---------- */
 const tickerRefs=[];
 function buildTicker(){
-  const track=$('#tickerTrack'); track.innerHTML='';
+  const track=$('#tickerTrack'); if(!track)return; track.innerHTML='';
   const picks=INSTR.slice(0,14);
   tickerRefs.length=0;
   for(let copy=0;copy<2;copy++){
@@ -1222,6 +1249,7 @@ async function refreshBestPick(){
   try{ results=await scanSignalsPreferred(syms); }catch(e){}
   const pick=splitBestPick(results,BEST_PICK_INDICES);
   bestPick.item=pick.live; bestPick.daily=pick.daily; bestPick.dailyRead=pick.dailyRead;
+  bestPick.incomplete=pick.liveSide.filter(r=>r.analysis_status==='INCOMPLETE').length;
   /* Cloud viewer: a market that could not be read (stale, no data, unavailable) is not a market
      without a setup. Each line reports its own unread markets when it has nothing to show.
      Readings of the PC app carry no such state, so the wording of its first line stays as it was. */
@@ -1272,27 +1300,32 @@ function bestPickDailyHtml(){
   if(d)return open+'<span class="tiny faint">'+label(dailyBarText(d))+'</span> <b>'+escHtml(d.symbol)+'</b> <span class="badge '+(d.signal==='BUY'?'buy':'sell')+'">'+escHtml(d.signal)+'</span> <b>'+(Number(d.confidence)||0)+'%</b>'
     +INDEX_BADGE
     +' <span class="tiny faint">votes '+escHtml(d.votes||'\u2014')+' \u00b7 source: '+escHtml(d.data_source||d.source||'unavailable')+'</span></div>';
-  if(read.length)return open+'<span class="tiny faint">'+label(sharedDailyBarText(read))+': no direction on '+escHtml(read.map(r=>r.symbol).join(', '))+'.'+(unread?' Not read: '+escHtml(unread)+'.':'')+'</span></div>';
+  if(read.length){
+    const representative=read.find(r=>r.bias&&r.bias!=='neutral')||read[0];
+    const otherContext=read.filter(r=>r!==representative).map(r=>escHtml(r.symbol)+(r.bias&&r.bias!=='neutral'?' · '+escHtml(r.bias)+' trend context':'' )).join(', ');
+    const trend=representative.bias&&representative.bias!=='neutral'?escHtml(representative.bias)+' trend context':'trend direction unavailable';
+    return open+'<span class="tiny faint">'+label(sharedDailyBarText(read))+' · daily context only</span> <b>'+escHtml(representative.symbol)+'</b>'
+      +' <span class="tiny faint">'+trend+(otherContext?'; other indices: '+otherContext:'')+'. No validated trade signal or trade-confidence score; entry, stop and targets are unavailable.'+(unread?' Not read: '+escHtml(unread)+'.':'')+'</span></div>';
+  }
   if(unread)return open+'<span class="tiny faint">Daily index trend: not read right now ('+escHtml(unread)+'). Nothing is estimated.</span></div>';
   return '';
 }
 function renderBestPick(){
   for(const id of ['authBestBody','ovBest']){
     const el=document.getElementById(id); if(!el)continue;
-    /* Only the very first scan shows a placeholder: a later one keeps the previous lines on
-       screen until its own result replaces them. */
-    if(bestPick.busy&&!bestPick.at){ el.innerHTML='<span class="tiny faint">Scanning live markets\u2026</span>'; continue; }
+    if(bestPick.busy&&!bestPick.at){ el.innerHTML='<span class="tiny faint">Scanning verified market readings…</span>'; continue; }
     el.innerHTML='<div class="bp-live">'+bestPickLiveHtml()+'</div>'+bestPickDailyHtml();
+  }
+  const meta=document.getElementById('analysisSummaryMeta');
+  if(meta){
+    const complete=bestPick.item?1:0;
+    const incomplete=(bestPick.incomplete||0);
+    meta.textContent=bestPick.at?'Scan '+timeStr(bestPick.at)+' · '+(complete?'1 complete directional setup':'No complete directional setup')+(incomplete?' · '+incomplete+' incomplete signal'+(incomplete===1?'':'s')+' excluded from ranking':''):'No current analysis scan.';
   }
 }
 function renderOvDaily(){
-  const ov=document.getElementById('view-overview'); if(!ov)return;
-  let d=document.getElementById('ovDaily');
-  if(!d){ d=document.createElement('div'); d.id='ovDaily'; d.className='card'; d.style.cssText='padding:12px 16px;margin-bottom:14px';
-    d.innerHTML='<div id="ovMotivation" class="tiny"></div><div id="ovBest" style="margin-top:6px"></div>';
-    ov.prepend(d); }
-  const om=document.getElementById('ovMotivation');
-  if(om)om.innerHTML=quoteHtml();
+  const w=document.getElementById('authWelcome'); if(w)w.textContent=welcomeText();
+  const m=document.getElementById('authMotivation'); if(m)m.innerHTML=quoteHtml();
 }
 /* ================================================================
    SIGNAL SCANNER (real technical scan on live candles, $0 AI)
@@ -1325,7 +1358,7 @@ async function scanSignals(){
     const results=await scanSignalsPreferred(useSyms);
     const data={results};
     emitSignalAlerts(results);
-    state.signals=(data.results||[]).filter(r=>!r.error);
+    state.signals=(data.results||[]).filter(r=>!r.error).map(validateTradePlan);
     state.scanStatus=state.signals.length?'ready':'empty';
     state.scanIssues=scanIssuesText(summarizeReadings(results.filter(r=>r&&r.error&&signalState(r))));
     $('#sigStamp').textContent='Updated '+timeStr(Date.now())+' · technical · live candles'+(state.scanIssues?' · '+state.scanIssues:'');
@@ -1352,7 +1385,9 @@ function renderSignals(){
   g.innerHTML='';
   state.signals.forEach(sig=>{
     const I=bySym[sig.symbol]||{n:sig.symbol,d:4};
-    const cls=sig.signal==='BUY'?'buy':sig.signal==='SELL'?'sell':'neutral';
+    const contextOnly=sig.analysis_status==='CONTEXT_ONLY'||(isDailyReading(sig)&&!hasLevels(sig));
+    const incomplete=sig.analysis_status==='INCOMPLETE'||(['BUY','SELL'].includes(sig.signal)&&!hasCompleteTradePlan(sig));
+    const cls=incomplete?'gray':sig.signal==='BUY'?'buy':sig.signal==='SELL'?'sell':'neutral';
     const card=document.createElement('div');
     card.className='sig-card';
     card.innerHTML=
@@ -1375,22 +1410,40 @@ function renderSignals(){
     card.querySelector('.sym-avatar').textContent=sig.symbol.replace(/[^A-Z0-9]/g,'').slice(0,3);
     card.querySelector('.sym-name').textContent=sig.symbol;
     card.querySelector('.sym-full').textContent=I.n;
-    card.querySelector('.badge').textContent=sig.signal;
+    card.querySelector('.badge').textContent=incomplete?'INCOMPLETE':sig.signal;
     const score=liveScore(sig);
-    const cb=card.querySelector('.conf-bar i'); cb.style.width=score+'%'; setLiveData(cb,sig,'Bar');
-    const cv=card.querySelector('.row.between b'); cv.textContent=score+'%'; setLiveData(cv,sig,'Conf');
-    const cn=card.querySelector('.sig-live'); cn.textContent=liveNoteFor(sig); setLiveData(cn,sig,'Note');
-    card.querySelector('.sig-measured').textContent=measuredText(sig);
-    card.querySelector('[data-l="e"]').textContent=fmtPx(sig.entry,I.d);
-    card.querySelector('[data-l="s"]').textContent=fmtPx(sig.stop_loss,I.d);
-    card.querySelector('[data-l="t"]').textContent=fmtPx(sig.tp1,I.d);
-    card.querySelector('.sig-why').textContent=String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase()+' · '+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
+    const confidenceLabel=card.querySelector('.row.between span');
+    const confidenceValue=card.querySelector('.row.between b');
+    const confidenceBar=card.querySelector('.conf-bar');
+    const cn=card.querySelector('.sig-live');
+    if(contextOnly||incomplete){
+      confidenceLabel.textContent='Trade confidence'; confidenceValue.textContent='Unavailable';
+      confidenceBar.hidden=true;
+      cn.textContent=contextOnly?(sig.wait_detail||DAILY_NOTE):'INCOMPLETE · '+(sig.incomplete_reasons||[]).join(', ')+'. Excluded from complete-analysis ranking.';
+      card.querySelector('.sig-measured').textContent='No validated trade plan; outcomes are not measured.'+(incomplete?' Incomplete readings are excluded from complete-analysis ranking.':'');
+      const showLevel=value=>Number.isFinite(Number(value))&&Number(value)>0?fmtPx(Number(value),I.d):'Unavailable';
+      card.querySelector('[data-l="e"]').textContent=showLevel(sig.entry);
+      card.querySelector('[data-l="s"]').textContent=showLevel(sig.stop_loss);
+      card.querySelector('[data-l="t"]').textContent=showLevel(sig.tp1??sig.take_profit);
+    }else{
+      const cb=card.querySelector('.conf-bar i'); cb.style.width=(score??0)+'%'; setLiveData(cb,sig,'Bar');
+      confidenceValue.textContent=score==null?'—':score+'%';
+      if(score!=null)setLiveData(confidenceValue,sig,'Conf');
+      cn.textContent=liveNoteFor(sig); if(sig.confidence!=null)setLiveData(cn,sig,'Note');
+      card.querySelector('.sig-measured').textContent=measuredText(sig);
+      card.querySelector('[data-l="e"]').textContent=fmtPx(sig.entry,I.d);
+      card.querySelector('[data-l="s"]').textContent=fmtPx(sig.stop_loss,I.d);
+      card.querySelector('[data-l="t"]').textContent=fmtPx(sig.tp1,I.d);
+    }
+    card.querySelector('.sig-why').textContent=(contextOnly?(sig.bias?('Daily trend context: '+sig.bias+'. '):'Daily trend context only. '):String(sig.mtf_signal||'').replace(/_/g,' ').toLowerCase()+' · ')+sig.tf+' · source: '+String(sig.data_source||sig.source||'unavailable')+(closeText(sig)?' · read at the '+closeText(sig)+' candle close':'');
     card.querySelector('.sig-chart').onclick=()=>openSignalSymbol(sig.symbol);
-    card.querySelector('.sig-use').onclick=()=>{
+    const useButton=card.querySelector('.sig-use');
+    if(contextOnly||incomplete){useButton.disabled=true;useButton.textContent=contextOnly?'No trade plan':'INCOMPLETE';useButton.title=contextOnly?'Daily context has no validated entry, stop or target.':'Missing or invalid entry, stop-loss, or take-profit; this analysis cannot be used as a complete plan.';}
+    else useButton.onclick=()=>{
       state.side=sig.signal==='SELL'?'SELL':'BUY';
-      $('#orderSL').value=sig.stop_loss!=null?Number(sig.stop_loss).toFixed(I.d):'';
-      $('#orderTP').value=sig.tp1!=null?Number(sig.tp1).toFixed(I.d):'';
-      $('#orderTP2').value=sig.tp2!=null?Number(sig.tp2).toFixed(I.d):'';
+      $('#orderSL').value=sig.stop_loss!=null&&Number(sig.stop_loss)>0?Number(sig.stop_loss).toFixed(I.d):'';
+      $('#orderTP').value=sig.tp1!=null&&Number(sig.tp1)>0?Number(sig.tp1).toFixed(I.d):'';
+      $('#orderTP2').value=sig.tp2!=null&&Number(sig.tp2)>0?Number(sig.tp2).toFixed(I.d):'';
       openSignalSymbol(sig.symbol); if(INSTRUMENT_MAP[sig.symbol])syncSide();
       toast('Setup loaded','Levels for '+sig.symbol+' applied to the ticket.','ok');
     };
@@ -1582,7 +1635,7 @@ async function scanSignalsPreferred(symbols){
     }
   }
   const all=new Map([...exness.entries(),...fallback.map(r=>[r.symbol,r])]);
-  const out=unique.map(symbol=>all.get(symbol)||{symbol,error:'FEED_ERROR',detail:'No verified signal data.',data_source:'unavailable'});
+  const out=unique.map(symbol=>contextOnlyDailyReading(all.get(symbol)||{symbol,error:'FEED_ERROR',detail:'No verified signal data.',data_source:'unavailable'}));
   out.forEach(r=>signalRuns.observe(r)); /* live confidence: a BUY/SELL reading is followed from here on */
   return out;
 }
@@ -2007,13 +2060,13 @@ function openSignalSymbol(sym){
   if(INSTRUMENT_MAP[sym]){
     setChartSymbol(sym); goto('trade');
     if(INSTRUMENT_MAP[sym].c==='indices'){
-      toast('Index CFD · Exness demo orders only',state.broker?.type==='mt5'?'Exness orders are available only on a verified DEMO account after manual risk preview and confirmation.':'Connect the local Exness MT5 bridge; only broker-verified DEMO orders can be sent manually. Live accounts stay read-only.',{kind:'warn'});
+      toast('Index CFD · Exness manual orders',state.broker?.type==='mt5'?'The verified Exness '+String(state.broker.account?.environment||'unknown').toUpperCase()+' account can use manual orders only, after a fresh bridge preview and explicit confirmation.':'Connect the local Exness MT5 bridge; REAL and DEMO orders require broker-verified account mode, strict risk checks and per-order confirmation. Automation stays disabled.',{kind:'warn'});
     }
     return;
   }
   const tv=INDEX_TV[sym];
   if(tv)window.open('https://www.tradingview.com/chart/?symbol='+encodeURIComponent(tv),'_blank','noopener');
-  toast('Index — no Deriv order route','This index is not orderable through Deriv. Exness orders are possible only for instruments the local MT5 bridge resolves as tradable on a verified DEMO account, with manual confirmation; live and automated orders remain disabled.',{kind:'warn'});
+  toast('Index — no Deriv order route','This index is not orderable through Deriv. Exness manual orders are possible only for instruments the local MT5 bridge resolves as tradable on a verified REAL or DEMO account. Every order requires a fresh preview and explicit confirmation; automation and app-side closes remain disabled.',{kind:'warn'});
 }
 function setChartSymbol(sym,keepLevels){
   if(!bySym[sym])return;
@@ -2021,7 +2074,7 @@ function setChartSymbol(sym,keepLevels){
   state.chart.sym=sym;
   $('#chartSymbol').value=sym;
   updateTradeHeader();
-  tv.switchChartSymbol(sym);
+  if(chartDisplayMode==='tv')tv.switchChartSymbol(sym);else if(state.view==='trade')refreshChartSignalPlot(true);
   if(!keepLevels&&previousSym!==sym){
     /* Never leave another instrument's prices beside the newly selected chart. */
     levelsForSym=null;
@@ -2036,6 +2089,7 @@ function setChartSymbol(sym,keepLevels){
   if(previousSym!==sym&&state.broker?.type==='mt5'){renderSizePlan();refreshMt5SizePlan();}
   if(state.view==='trade'&&DERIV_CODE_MAP[sym])msInit({followChart:true});
   else if(state.view==='trade')updateChartMarketState();
+  if(state.view==='trade')refreshChartOutlook(true);
 }
 /* auto-fill SL/TP in the order ticket from the LIVE analysis of the selected
    market (scan result levels — entry/stop/tp1/tp2 from the 1m/5m/1h engine).
@@ -2108,9 +2162,79 @@ async function autofillLevels(sym){
     updateRisk();
   }catch(e){ if(!isCurrent())return; if(note)note.textContent='Live levels unavailable for '+sym+' right now.'; }
 }
+function setChartDisplayMode(mode,refresh=true){
+  const nextMode=mode==='tv'?'tv':'signal';
+  if(nextMode!==chartDisplayMode&&chartSignalPlotPending){chartSignalPlotSeq++;chartSignalPlotPending=false;}
+  chartDisplayMode=nextMode;
+  store.set('chartDisplayMode',chartDisplayMode);
+  const tvHost=$('#tvChart'),signalView=$('#chartSignalView');
+  if(tvHost)tvHost.hidden=chartDisplayMode!=='tv';
+  if(signalView)signalView.hidden=chartDisplayMode!=='signal';
+  $$('#chartModeSwitch [data-chart-mode]').forEach(button=>{
+    const active=button.dataset.chartMode===chartDisplayMode;
+    button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));
+  });
+  const signalOverlay=$('#chartSignalOverlay');if(signalOverlay)signalOverlay.hidden=true;
+  if(!refresh||state.view!=='trade')return;
+  if(chartDisplayMode==='tv')tv.mountChart(tvHost,state.chart.sym);
+  else refreshChartSignalPlot(true);
+  updateChartLevels();
+}
+async function refreshChartSignalPlot(force=false){
+  if(chartDisplayMode!=='signal'||state.view!=='trade')return;
+  if(chartSignalPlotPending){
+    if(chartSignalPlotSymbol===state.chart.sym)return;
+    chartSignalPlotSeq++;chartSignalPlotPending=false;
+  }
+  const now=Date.now();if(!force&&now-chartSignalPlotAt<45000)return;
+  chartSignalPlotAt=now;chartSignalPlotPending=true;
+  const seq=++chartSignalPlotSeq,symbol=state.chart.sym,I=bySym[symbol],canvas=$('#chartSignalCanvas'),status=$('#chartSignalStatus');
+  chartSignalPlotSymbol=symbol;
+  const current=()=>seq===chartSignalPlotSeq&&state.chart.sym===symbol&&chartDisplayMode==='signal';
+  if(status)status.textContent='Reading verified '+symbol+' M5 candles and its current signal…';
+  try{
+    if(!I)throw new Error('Select a supported market to show its signal chart.');
+    let reading=state.mktScan[symbol];
+    if(!reading||reading.error||!marketCandleFresh(reading.latest_candle_time,5*60000))reading=await localMarketScan(I);
+    if(!current())return;
+    if(!reading||reading.error)throw new Error(reading&&reading.detail||'No verified signal reading is available for '+symbol+'.');
+    state.mktScan[symbol]=reading;updateChartLevels();
+    const source=String(reading.data_source||reading.source||'');
+    const isExness=/^Exness MT5 local candles/i.test(source);
+    const isDeriv=/^Deriv public (candles|candle)/i.test(source);
+    if(isExness){
+      const reply=await bridge.bridgeHistory(symbol,'M5',160);
+      if(!reply||reply.type==='error'||!Array.isArray(reply.candles))throw new Error(reply&&reply.message||'Exness M5 candle history is unavailable.');
+      var candles=reply.candles;
+    }else if(isDeriv&&DERIV_CODE_MAP[symbol]){
+      candles=await candleHistory.fetchCandles(symbol,300,160,{acrossClosures:true});
+    }else{
+      throw new Error(source.includes('Yahoo')?'This is a daily index fallback; no M5 chart is available from that source.':'No matching intraday candle source for this signal ('+(source||'unknown source')+').');
+    }
+    if(!current())return;
+    if(!Array.isArray(candles)||candles.length<20)throw new Error('Only '+(candles&&candles.length||0)+' verified M5 candles are available; at least 20 are needed to plot this chart.');
+    const candle=candles.at(-1),signal=String(reading.signal||'WAIT'),entry=Number(reading.entry),sl=Number(reading.stop_loss),tp=Number(reading.tp1);
+    const plotFresh=!!candle&&marketCandleFresh(candle.time,15*60000);
+    const fresh=plotFresh&&marketCandleFresh(reading.latest_candle_time,5*60000)&&!isDailyReading(reading)&&(!signalState(reading)||signalState(reading)==='live');
+    const directional=signal==='BUY'||signal==='SELL';
+    const confirmed=reading.mtf_signal===(signal+'_CONFIRMED');
+    const ordered=signal==='BUY'?sl<entry&&entry<tp:tp<entry&&entry<sl;
+    const complete=fresh&&directional&&confirmed&&Number.isFinite(entry)&&entry>0&&Number.isFinite(sl)&&sl>0&&Number.isFinite(tp)&&tp>0&&ordered;
+    const frame={candles,overlays:{signal:complete?signal:'WAIT',entry:complete?entry:null,sl:complete?sl:null,tp1:complete?tp:null,tp2:complete?reading.tp2:null}};
+    const drawn=renderAnnotatedCandlestickChart(canvas,frame,{symbol,timeframe:'M5',showTradeMarkers:true});
+    const markerNote=complete?'Fresh confirmed '+signal+' · Entry / SL / TP1 shown on-chart.':!plotFresh?'M5 chart candles are stale · trade markers withheld.':'No fresh confirmed BUY/SELL setup · Entry / SL / TP markers withheld.';
+    if(status)status.textContent='Source: '+source+' · M5 verified candles · '+markerNote;
+    if(!drawn.drawn&&status)status.textContent=drawn.reason||'Verified M5 chart unavailable.';
+  }catch(error){
+    if(current()){
+      if(canvas){const ctx=canvas.getContext('2d');if(ctx){canvas.width=Math.max(320,canvas.clientWidth||640);canvas.height=378;ctx.clearRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#98a3b6';ctx.font='14px system-ui';ctx.fillText('Signal chart unavailable',18,30);}}
+      if(status)status.textContent=String(error&&error.message||'Verified signal chart unavailable.');
+    }
+  }finally{if(seq===chartSignalPlotSeq)chartSignalPlotPending=false;}
+}
 function updateChartLevels(){
   const el=document.getElementById('chartLevels'); if(!el)return;
-  const I=bySym[state.chart.sym]; if(!I){ el.innerHTML=''; return; }
+  const I=bySym[state.chart.sym];updateChartSignalOverlay(I);if(!I){ el.innerHTML=''; return; }
   const r=state.mktScan[I.s];
   let out;
   if(!r||r.error){
@@ -2132,7 +2256,30 @@ function updateChartLevels(){
   out+=chartEventHtml(I.s);
   if(el.dataset.h!==out){ el.innerHTML=out; el.dataset.h=out; }
 }
-/* The line above the chart: a high-impact release that concerns this market, now or within three hours.
+function updateChartSignalOverlay(I){
+  const overlay=$('#chartSignalOverlay');if(!overlay)return;
+  if(chartDisplayMode==='signal'||!I){overlay.hidden=true;return;}
+  const r=state.mktScan[I.s],source=String(r&&(r.data_source||r.source)||'');
+  const set=(kind,title,levels='',note='')=>{
+    overlay.hidden=false;overlay.className='chart-signal-overlay '+kind;
+    overlay.innerHTML='<div class="chart-signal-title">'+escHtml(title)+'</div>'+(levels?'<div class="chart-signal-levels">'+levels+'</div>':'')+(note?'<span class="chart-signal-note">'+escHtml(note)+'</span>':'');
+  };
+  if(!r||r.error){set('wait','WAIT · no fresh verified signal');return;}
+  if(!/deriv/i.test(source)||/exness|yahoo/i.test(source)||!marketCandleFresh(r.latest_candle_time,5*60000)){
+    set('wait','WAIT · signal source is stale or does not match the chart','',source||'No verified source timestamp');return;
+  }
+  if(r.signal!=='BUY'&&r.signal!=='SELL'){
+    set('wait','WAIT · no confirmed BUY / SELL entry');return;
+  }
+  const entry=Number(r.entry),stop=Number(r.stop_loss),target=Number(r.tp1),buy=r.signal==='BUY';
+  if(!(entry>0&&stop>0&&target>0&&(buy?stop<entry&&entry<target:target<entry&&entry<stop))){
+    set('wait','WAIT · validated entry / stop / target unavailable');return;
+  }
+  const price=value=>fmtPx(value,I.d==null?5:I.d),kind=buy?'buy':'sell';
+  const levels='<span>ENTRY '+price(entry)+'</span><span>SL '+price(stop)+'</span><span>TP1 '+price(target)+'</span>';
+  set(kind,r.signal+' · CONFIRMED DIRECTION',levels,'Fresh Deriv candle analysis · corner label, not a TradingView price-axis line · '+Number(r.confidence||0)+'/100 confluence, not probability');
+}
+/* The line above the chart: a high-impact release that concerns this market that concerns this market, now or within three hours.
    Without a calendar the line says so: an unknown calendar is not an empty one. */
 function chartEventHtml(sym){
   if(!currenciesOf(sym).length)return '';
@@ -2161,7 +2308,7 @@ function updateTradeHeader(){
     const demo=/demo|virtual/i.test(state.broker.account?.account_type||'');
     mode.textContent='Deriv · '+(demo?'DEMO':'REAL'); mode.className='badge '+(demo?'demo':'buy');
   }
-  else if(state.broker?.type==='mt5'){ const demo=state.broker.account?.demo===true; mode.textContent=demo?'Exness · DEMO':'Exness · LIVE · read-only'; mode.className='badge '+(demo?'demo':'gray'); }
+  else if(state.broker?.type==='mt5'){ const env=state.broker.account?.environment;mode.textContent=env==='demo'?'Exness · DEMO · manual':env==='real'?'Exness · REAL · manual':'Exness · mode unverified';mode.className='badge '+(env==='demo'?'demo':env==='real'?'buy':'gray'); }
   else { mode.textContent='No broker'; mode.className='badge gray'; }
   renderResaleNote(I);
   const info=$('#instrInfo');
@@ -2285,45 +2432,52 @@ function beWinRateText(stake,payout){
     lg.addEventListener('change',()=>{ let v=Number(lg.value); if(!Number.isFinite(v)||v<0)v=25; state.settings.lossGuard=v; save(); lg.value=v;
       toast('Daily loss guard',v>0?('Orders stand down at \u2212'+fmtMoney(v)+' closed losses in a day.'):'Guard disabled \u2014 server-side caps remain the only backstop.','ok'); }); } }
 
-async function placeMt5DemoOrder({I,amt,sl,tp}){
-  if(state.broker?.type!=='mt5'||state.broker?.account?.demo!==true){
-    toast('Demo account required','Exness app orders are allowed only after MT5 verifies a DEMO account. Live accounts remain read-only.','warn');
+async function placeMt5ManualOrder({I,amt,sl,tp}){
+  const acct=state.broker?.account;
+  if(state.broker?.type!=="mt5"||!acct||!['demo','real'].includes(acct.environment)||acct.demo!==(acct.environment==='demo')){
+    toast('Verified Exness account required','MT5 must explicitly verify whether the connected account is REAL or DEMO before app orders are available.','warn');
     return;
   }
+  const demo=acct.demo,environment=demo?'demo':'real',environmentLabel=demo?'DEMO':'REAL';
   if(!Number.isFinite(sl)||sl<=0||!Number.isFinite(tp)||tp<=0){
-    toast('Stop and target required','Demo orders require both a valid stop-loss and take-profit; no order was sent.','warn');
+    toast('Stop and target required',environmentLabel+' orders require both a valid stop-loss and take-profit; no order was sent.','warn');
     return;
   }
   const btn=$('#placeOrderBtn');
   const old=btn?btn.textContent:'';
-  if(btn){btn.disabled=true;btn.textContent='Checking demo risk…';}
+  if(btn){btn.disabled=true;btn.textContent='Checking '+environmentLabel.toLowerCase()+' risk…';}
   try{
-    const preview=await bridge.previewBridgeOrder({symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp});
+    const preview=await bridge.previewBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp});
+    if(preview.environment!==environment||preview.demo!==demo||preview.manual_only!==true)throw new Error('The MT5 preview does not match the verified account mode; no order was sent. Reconnect and inspect the terminal account.');
     const risk=fmtAcctMoney(preview.risk_amount,preview.currency);
     const reward=fmtAcctMoney(preview.reward_amount,preview.currency);
     const margin=fmtAcctMoney(preview.margin,preview.currency);
-    const details='DEMO ONLY — this sends a market order to the verified Exness DEMO account.\n\n'
-      +preview.side+' '+preview.symbol+' · notional request '+fmtMoney(preview.requested_usd)+' · estimated '+preview.lots+' lots\n'
-      +'Live entry '+fmtPx(preview.price,I.d)+' · stop '+fmtPx(preview.sl,I.d)+' · target '+fmtPx(preview.tp,I.d)+'\n'
+    const accountLabel=(acct.login||'••••')+' · '+(acct.server||'verified Exness server');
+    const accountWarning=demo?'DEMO funds — this order goes to the verified Exness DEMO account.':'REAL MONEY — this sends a market order to the verified Exness REAL account. Losses affect your real balance; check every value below and cancel if anything is unexpected.';
+    const details=accountWarning+'\n\n'
+      +'Account '+accountLabel+'\n'
+      +preview.side+' '+preview.symbol+' · requested notional '+fmtMoney(preview.requested_usd)+' · estimated '+preview.lots+' lots\n'
+      +'Current '+(preview.side==='BUY'?'ask':'bid')+' '+fmtPx(preview.price,I.d)+' · stop '+fmtPx(preview.sl,I.d)+' · target '+fmtPx(preview.tp,I.d)+'\n'
       +'Buffered estimated stop risk '+risk+' ('+Number(preview.risk_pct).toFixed(2)+'% of equity) · target estimate '+reward+' · R:R '+Number(preview.rr).toFixed(2)+' · margin '+margin+'\n\n'
-      +'Bridge caps: 0.5% risk per order, 2% daily loss, one open position. Every value is rechecked locally before send. Live accounts, app closes and automation remain disabled. Close/manage this demo position in MT5.';
-    if(btn)btn.textContent='Waiting for confirmation…';
-    const confirmed=await askConfirm('Confirm demo order',details,'Place demo order');
-    if(!confirmed){toast('Cancelled','No demo order was sent.');return;}
-    if(btn)btn.textContent='Sending demo order…';
+      +'Bridge hard limits (REAL and DEMO): maximum 0.5% buffered stop-risk per order, 2% account daily loss, one open position, minimum 1.2 reward:risk, and 80% free-margin ceiling. Quote and limits are rechecked by the local MT5 bridge at send time. Preview expires in 30 seconds.\n'
+      +'This app never opens an order automatically and cannot close it. Manage/close the position in MetaTrader 5. Market orders may slip and a stop does not guarantee the final loss.';
+    if(btn)btn.textContent='Waiting for '+environmentLabel+' confirmation…';
+    const confirmed=await askConfirm('Confirm Exness '+environmentLabel+' order',details,'Place '+environmentLabel+' order');
+    if(!confirmed){toast('Cancelled','No Exness order was sent.');return;}
+    if(btn)btn.textContent='Sending '+environmentLabel+' order…';
     const intentId=Date.now().toString(36)+Math.random().toString(36).slice(2,16);
-    const result=await bridge.placeBridgeOrder({symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp,
+    const result=await bridge.placeBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp,
       previewId:preview.preview_id,intentId,manualConfirmed:true});
-    if(result.type!=='filled'||result.demo!==true)throw new Error('Bridge did not verify a confirmed demo fill. Check MT5 positions before trying again.');
-    toast('Demo order filled',result.side?result.side+' ':state.side+' '+I.s+' · ticket '+result.ticket+' · '+result.lots+' lots · buffered risk '+fmtAcctMoney(result.estimated_buffered_risk,result.currency),'ok');
-    notify('Demo order filled',state.side+' '+I.s+' · MT5 demo ticket '+result.ticket+' · '+result.lots+' lots. Manage or close it directly in MT5.',{tag:'demo-trade',kind:'ok'});
+    if(result.type!=='filled'||result.demo!==demo||result.environment!==environment)throw new Error('The bridge did not verify a fill on the expected '+environmentLabel+' account. Inspect MT5 positions/history before retrying.');
+    toast(environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots · buffered risk '+fmtAcctMoney(result.estimated_buffered_risk,result.currency),'ok');
+    notify('Exness '+environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots. Manage or close it directly in MT5.',{tag:'mt5-manual-order',kind:'ok'});
     await refreshMt5Snapshot(false);
   }catch(e){
     const message=String(e.message||e);
     const uncertain=/uncertain|partial or pending/i.test(message);
-    const title=uncertain?'Demo order outcome uncertain':'Demo order not sent';
+    const title=uncertain?environmentLabel+' order outcome uncertain':environmentLabel+' order not sent';
     toast(title,message,'err');
-    notify(title,message,{tag:'demo-trade',kind:'err'});
+    notify(title,message,{tag:'mt5-manual-order',kind:'err'});
   }finally{if(btn){btn.disabled=false;btn.textContent=old;}}
 }
 
@@ -2334,15 +2488,22 @@ async function placeOrder(){
   }
   if(guardStopIfTripped())return;
   const I=bySym[state.chart.sym];
+  if(!I){toast('Market unavailable','Select a supported chart symbol before requesting an order preview.','warn');return;}
   const amt=parseFloat($('#orderAmount').value);
   if(!amt||amt<1){ toast('Invalid amount','Enter at least $1 to place an order.','err'); return; }
+  const sl=parseFloat($('#orderSL').value), tp=parseFloat($('#orderTP').value), tp2=parseFloat($('#orderTP2').value);
+  if(state.broker?.type==='mt5'){
+    if(!['demo','real'].includes(state.broker.account?.environment)||state.broker.account?.demo!==(state.broker.account?.environment==='demo')){
+      toast('Verified account mode required','MT5 has not verified whether this is a REAL or DEMO account. Refresh/reconnect before placing any order.','warn');return;
+    }
+    await placeMt5ManualOrder({I,amt,sl,tp});return;
+  }
   const px=I.p;
   if(px==null){ toast('No live price',I.s+' has no live quote yet — wait for the feed or pick another symbol.','err'); return; }
-  const sl=parseFloat($('#orderSL').value), tp=parseFloat($('#orderTP').value), tp2=parseFloat($('#orderTP2').value);
   if(!isNaN(sl)&&state.side==='BUY'&&sl>=px){ toast('Invalid stop','Stop-loss must be below the entry for a BUY.','err'); return; }
   if(!isNaN(sl)&&state.side==='SELL'&&sl<=px){ toast('Invalid stop','Stop-loss must be above the entry for a SELL.','err'); return; }
 
-  /* Broker gate: Deriv confirmation or the verified Exness demo-only manual path. */
+  /* Broker gate: Deriv confirmation or a mode-matched, manually confirmed Exness path. */
   const dh=state.derivHealth;
   const proxyReady=!!(dh&&dh.authorized&&dh.tradingEnabled);
   if(!proxyReady&&!state.broker){
@@ -2372,15 +2533,7 @@ async function placeOrder(){
     toast('Index CFDs need Exness','Connect your Exness/MT5 bridge first (Automation → MT5 bridge). Index CFDs are not orderable on Deriv — probe-verified.','err');
     return;
   }
-  if(state.broker?.type==='mt5'){
-    if(state.broker.account?.demo!==true){
-      toast('Demo account required','This local app can place only manually confirmed orders on a broker-verified DEMO account. Live Exness accounts remain read-only.','warn');
-      return;
-    }
-    await placeMt5DemoOrder({I,amt,sl,tp});
-    return;
-  }
-  toast('Trading locked','No supported broker execution path is available. Exness orders are demo-only and require the verified manual confirmation flow.','warn');
+  toast('Trading locked','No supported broker execution path is available. Exness orders require a verified MT5 account, fresh bridge preview and explicit per-order confirmation.','warn');
   return;
 }
 
@@ -3083,7 +3236,7 @@ function updatePortfolioLive(){
   const mt5Pl=mt5Pos?mt5Pos.reduce((sum,p)=>sum+(Number.isFinite(Number(p.profit))?Number(p.profit):0),0):null;
   const binSum=state.positions.filter(isBinaryPos).reduce((acc,p)=>acc+((p.liveProfit!=null&&Number.isFinite(Number(p.liveProfit)))?Number(p.liveProfit):0),0);
   const appPl=(openPl()==null&&binSum)?binSum:(openPl()!=null?openPl()+binSum:null);
-  const pl=isMt5?mt5Pl:appPl;
+  const pl=isMt5?mt5Pl:(connected?appPl:(state.positions.length?appPl:null));
   setText('#pfBalance',connected?(isMt5?fmtAcctMoney(bal,acct.currency):fmtMoney(bal)):'Not connected');
   const equity=isMt5?acct.equity:(bal!=null?bal+(pl||0):null);
   setText('#pfEquity',connected?(isMt5?fmtAcctMoney(equity,acct.currency):fmtMoney(equity)):'Not connected');
@@ -3152,56 +3305,46 @@ function updateKpis(){
 }
 
 /* ================================================================
-   OVERVIEW
+   READ-ONLY COMMAND CENTRE
    ================================================================ */
+function renderCommandMarkets(){
+  const host=$('#commandMarkets'); if(!host)return;
+  host.replaceChildren();
+  INSTR.slice(0,6).forEach(I=>{
+    const hasPrice=I.p!=null&&Number.isFinite(Number(I.p));
+    const tick=Number(I.t)||0, tickMs=tick>1e12?tick:(tick>1e9?tick*1000:0);
+    const age=tickMs?Math.max(0,Date.now()-tickMs):Infinity;
+    const freshness=!hasPrice?'unavailable':age<=30000?'live':'stale';
+    const card=document.createElement('button'); card.type='button'; card.className='command-market';
+    const head=document.createElement('div'); head.className='command-market-head';
+    const symbol=document.createElement('span'); symbol.className='command-market-symbol'; symbol.textContent=I.s;
+    const badge=document.createElement('span'); badge.className='fresh-badge '+freshness; badge.textContent=freshness;
+    head.append(symbol,badge);
+    const name=document.createElement('span'); name.className='command-market-name'; name.textContent=I.n;
+    const price=document.createElement('span'); price.className='command-market-price'; price.textContent=hasPrice?fmtPx(Number(I.p),I.d):'Unavailable';
+    const foot=document.createElement('div'); foot.className='command-market-foot';
+    const change=document.createElement('span'); const ch=chgOf(I); change.className='command-market-change '+(ch==null?'':ch>=0?'up':'down');
+    change.textContent=ch==null?'Change unavailable':fmtPct(ch,true);
+    const info=document.createElement('span'); info.className='command-market-meta';
+    const source=document.createElement('span'); source.textContent='Source: Deriv public feed';
+    const stamp=document.createElement('span'); stamp.textContent=tickMs?'Updated '+timeStr(tickMs):'Timestamp unavailable';
+    info.append(source,stamp); foot.append(change,info); card.append(head,name,price,foot);
+    card.title='Open specialist market view'; card.addEventListener('click',()=>goto('markets')); host.appendChild(card);
+  });
+  if(!INSTR.length){const msg=document.createElement('p');msg.className='hint';msg.textContent='No market instruments are configured.';host.appendChild(msg);}
+}
+function renderConnectionSummary(){
+  const feedState=feed.feedStatus();
+  const feedLabel=$('#feedText')?.textContent||('Deriv feed · '+feedState);
+  const proxy=state.derivHealth?.state||'unknown';
+  const el=$('#connectionDetails'); if(el)el.textContent='Market feed: '+feedLabel+'. Broker proxy: '+proxy+'. Credentials are server-side and are not displayed. Manage connections in this existing Settings section.';
+  const stamp=$('#marketStatusUpdated'); if(stamp)stamp.textContent='Status checked '+timeStr(Date.now());
+}
 function renderOverview(){
-  updateKpis();
-  renderOvDaily(); renderBestPick();
-  const posEl=$('#ovPositions');
-  if(posEl){
-    if(state.broker?.type==='mt5'&&Array.isArray(state.mt5LivePositions)){
-      posEl.innerHTML=state.mt5LivePositions.length
-        ? '<div class="hint"><b>MT5 reports '+state.mt5LivePositions.length+' open position(s).</b> See Portfolio → Live MT5 positions for the broker snapshot.</div>'
-        : '<div class="hint"><b>MT5 reports no open positions.</b> Last confirmed from the connected terminal.</div>';
-    }else if(state.broker?.type==='mt5'){
-      posEl.innerHTML='<div class="hint">Waiting for a live MT5 positions snapshot. Use Refresh MT5 in Portfolio.</div>';
-    }else{
-      posEl.innerHTML=state.positions.length
-        ? '<div class="hint">'+state.positions.length+' app-recorded position(s). See Portfolio for details.</div>'
-        : '<div class="hint"><b>No app-recorded open positions</b> — live Exness positions appear separately when the bridge is connected.</div>';
-    }
-  }
-  const movers=INSTR.filter(I=>chgOf(I)!=null).sort((a,b)=>Math.abs(chgOf(b))-Math.abs(chgOf(a))).slice(0,6);
-  const mv=$('#ovMovers'); mv.innerHTML='';
-  if(!movers.length){
-    mv.innerHTML='<div class="hint">Waiting for the first live ticks from the Deriv feed…</div>';
-  }
-  movers.forEach(I=>{
-    const ch=chgOf(I);
-    const d=document.createElement('div');
-    d.className='mover';
-    d.innerHTML='<div class="sym-avatar">'+I.s.replace(/[^A-Z0-9]/g,'').slice(0,3)+'</div>'+
-      '<div><div class="sym-name">'+I.s+'</div><div class="sym-full">'+I.n+'</div></div>'+
-      sparkSvg(I)+
-      '<div class="right" style="min-width:96px"><div class="mono" style="font-weight:650" data-px="'+I.s+'">'+fmtPx(I.p,I.d)+'</div>'+
-      '<div class="mono tiny '+(ch==null?'':(ch>=0?'up':'down'))+'" data-chg="'+I.s+'">'+fmtPct(ch,true)+'</div></div>';
-    d.onclick=()=>{ setChartSymbol(I.s); goto('trade'); };
-    mv.appendChild(d);
-  });
-  /* signals */
-  const sv=$('#ovSignals'); sv.innerHTML='';
-  if(!state.signals.length){
-    sv.innerHTML='<div class="hint">No scan results yet — open AI Signals to run a live technical scan.</div>';
-  }
-  state.signals.slice(0,3).forEach(sig=>{
-    const I=bySym[sig.symbol]||{d:4};
-    const d=document.createElement('div');
-    d.className='mini-signal';
-    d.innerHTML='<div class="top"><b>'+sig.symbol+'</b><span class="badge '+(sig.signal==='BUY'?'buy':sig.signal==='SELL'?'sell':'neutral')+'">'+sig.signal+' · '+liveScoreHtml(sig,'span')+'</span></div>'+
-      '<div class="meta">entry '+fmtPx(sig.entry,I.d)+' · SL '+fmtPx(sig.stop_loss,I.d)+' · TP '+fmtPx(sig.tp1,I.d)+' · technical</div>';
-    d.onclick=()=>goto('signals');
-    sv.appendChild(d);
-  });
+  updatePortfolioLive();
+  renderCommandMarkets();
+  renderBestPick();
+  renderConnectionSummary();
 }
 
 /* ================================================================
@@ -3294,9 +3437,9 @@ $$('.conn-btn').forEach(btn=>btn.onclick=async()=>{
       if(!server)throw new Error('Enter the exact Exness MT5 server shown in the Exness Personal Area.');
       const bridgeToken=($('#mt5Token')&&$('#mt5Token').value.trim())||'';
       await connectMt5(url,login,password,server,bridgeToken);
-      const demoOnly=state.broker?.account?.demo===true;
-      toast(demoOnly?'Exness demo connected':'Exness connected read-only',demoOnly?'Local MT5 verified a demo account. Orders require manual confirmation and strict bridge risk checks.':'Local MT5 data linked. Live-account order sending remains disabled.','ok');
-      notify(demoOnly?'Exness demo connected':'Exness connected read-only',demoOnly?'Local MT5 verified a demo account; manual orders only.':'Local MT5 data linked; live-account order sending is disabled.',{tag:'connect',kind:'ok'});
+      const env=state.broker?.account?.environment,verifiedEnv=env==='demo'||env==='real';
+      toast(verifiedEnv?'Exness '+env.toUpperCase()+' connected':'Exness mode unverified',verifiedEnv?`Local MT5 verified the ${env.toUpperCase()} account. Orders are manual only and require a fresh preview, strict bridge risk checks and explicit per-order confirmation. App automation and closes remain disabled.`:'MT5 did not verify REAL or DEMO mode; app order entry remains blocked.','ok');
+      notify(verifiedEnv?'Exness '+env.toUpperCase()+' connected':'Exness mode unverified',verifiedEnv?'Verified MT5 account; manual orders only with per-order confirmation and local risk checks. App automation and closes remain disabled.':'MT5 did not verify REAL or DEMO mode; app order entry remains blocked.',{tag:'connect',kind:'ok'});
     }
     connUI(); updateSessionInfo(); updateTradeHeader(); updateKpis();
   }catch(e){
@@ -3376,7 +3519,7 @@ if(waInput&&!waInput.__wired){ waInput.__wired=true;
 const waAutoChk=$('#waAuto');
 if(waAutoChk&&!waAutoChk.__wired){ waAutoChk.__wired=true;
   waAutoChk.checked=state.settings.waAuto!==false;
-  waAutoChk.addEventListener('change',()=>{ state.settings.waAuto=waAutoChk.checked; save(); toast('WhatsApp auto-send',waAutoChk.checked?'Signals, briefs and trade results will push automatically while the app is open (and always, once the server Cloud API is configured).':'Automatic sending is OFF — you are back to one-tap shares.','ok'); });
+  waAutoChk.addEventListener('change',()=>{ state.settings.waAuto=waAutoChk.checked; save(); toast('WhatsApp auto-send',waAutoChk.checked?'Scheduled news alerts, signals, briefs and trade results will push while the app is open when the server Cloud API is configured.':'Automatic sending is OFF — you are back to one-tap shares.','ok'); });
   waServerStatus().then((st)=>{
     const el=document.getElementById('waAutoStatus'); if(!el)return;
     el.textContent=st.configured?('Server Cloud API: CONNECTED · auto feed '+(st.auto?'ON':'OFF')+' · to '+st.to_masked):'Server auto-push: not configured — add WA_PHONE_NUMBER_ID, WA_TOKEN, WA_TO (+ WA_AUTO_SHARE=true) on Railway to share even when the app is closed. One-tap WA buttons always work.';
@@ -3465,7 +3608,7 @@ function refreshNotifBtn(){
 $('#notifBtn').onclick=async()=>{
   const s=await enableNotifications();
   refreshNotifBtn();
-  if(s==='granted')notify('Notifications on','You will get news, trade and SL/TP alerts.',{tag:'notif',kind:'ok'});
+  if(s==='granted')notify('Notifications on','Upcoming high/medium scheduled releases will alert while AURUM is open, with affected markets. News itself does not predict BUY or SELL; any separate direction comes from price-based analysis.',{tag:'notif',kind:'ok'});
   else if(s==='denied')toast('Blocked','Notifications are blocked in browser settings for this site.','err');
   else toast('Unsupported','This browser does not support notifications.');
 };
@@ -3512,9 +3655,125 @@ function fxAnalystSave(pair,result){
   try{localStorage.setItem(FX_ANALYST_STORAGE_KEY,JSON.stringify(fxAnalystPrevious));}catch(_e){}
   const update=$('#fxaUpdate');if(update)update.disabled=false;
 }
+const FXA_CHART_TIMEFRAMES=['4h','3h','2h','1h','30m','5m','1m'];
+function fxChartRows(candles,seconds,now=Date.now()){
+  if(!Array.isArray(candles))return[];
+  return candles.map(c=>{
+    let time=Number(c&& (c.time??c.epoch));if(time>1e12)time/=1000;
+    return{time,open:Number(c&&c.open),high:Number(c&&c.high),low:Number(c&&c.low),close:Number(c&&c.close)};
+  }).filter(c=>Number.isFinite(c.time)&&c.time>0&&[c.open,c.high,c.low,c.close].every(Number.isFinite)&&c.low>0&&c.high>=Math.max(c.open,c.close)&&c.low<=Math.min(c.open,c.close)&&c.time+seconds<=now/1000);
+}
+function aggregateFxCandles(hourly,hours){
+  const width=hours*3600,groups=new Map();
+  for(const c of hourly){const start=Math.floor(c.time/width)*width;const list=groups.get(start)||[];list.push(c);groups.set(start,list);}
+  return [...groups.entries()].sort((a,b)=>a[0]-b[0]).flatMap(([time,items])=>{
+    items.sort((a,b)=>a.time-b.time);
+    if(items.length!==hours||items.some((c,i)=>c.time!==time+i*3600))return[];
+    return[{time,open:items[0].open,high:Math.max(...items.map(c=>c.high)),low:Math.min(...items.map(c=>c.low)),close:items.at(-1).close}];
+  });
+}
+function buildFxChartFrame(candles,timeframe,seconds,overlays,now=Date.now()){
+  const rows=fxChartRows(candles,seconds,now);if(rows.length<3)return{timeframe,candles:[],ema9:[],ema21:[],support_resistance:{support:[],resistance:[]},support_resistance_zones:{support:[],resistance:[]},trendlines:{highs:[],lows:[]},overlays};
+  const closes=rows.map(c=>c.close),emaPoints=(period)=>{
+    const values=emaSeries(closes,period)||[];
+    return Array(period-1).fill(null).concat(values).map((value,i)=>value==null?null:{time:rows[i].time,value}).filter(Boolean);
+  };
+  const levels=findLevels(rows,Math.min(50,rows.length),5),pivots=side=>{
+    const out=[];
+    for(let i=Math.max(2,rows.length-40);i<rows.length-2;i++){
+      const c=rows[i],slice=rows.slice(i-2,i+3),key=side==='high'?'high':'low';
+      if(side==='high'?c.high>=Math.max(...slice.map(x=>x.high)):c.low<=Math.min(...slice.map(x=>x.low)))out.push({time:c.time,value:c[key]});
+    }
+    return out.slice(-2);
+  };
+  const zone=(level,side)=>{
+    const bar=rows.reduce((best,c)=>Math.abs((side==='support'?c.low:c.high)-level)<Math.abs((side==='support'?best.low:best.high)-level)?c:best,rows[0]);
+    return side==='support'?{price:level,low:bar.low,high:Math.max(bar.open,bar.close)}:{price:level,low:Math.min(bar.open,bar.close),high:bar.high};
+  };
+  const highs=pivots('high'),lows=pivots('low'),segment=points=>points.length===2?[{from:points[0],to:points[1]}]:[];
+  return{timeframe,candles:rows,ema9:emaPoints(9),ema21:emaPoints(21),support_resistance:levels,
+    support_resistance_zones:{support:levels.support.slice(0,3).map(v=>zone(v,'support')),resistance:levels.resistance.slice(0,3).map(v=>zone(v,'resistance'))},
+    trendlines:{highs:segment(highs),lows:segment(lows)},overlays};
+}
+let fxAnalystRenderedResult=null,fxaChartResizeBound=false,fxaAutoCloseSeen=0;
+function updateForexAnalystLiveConfidence(){
+  const result=fxAnalystRenderedResult,scoreEl=$('#fxaLiveConfidence'),noteEl=$('#fxaLiveConfidenceNote');if(!result||!scoreEl||!noteEl)return;
+  const base=Number.isFinite(Number(result.confidence_as_read))?Number(result.confidence_as_read):Number(result.confidence)||0;
+  if(result.signal!=='BUY'&&result.signal!=='SELL'){
+    scoreEl.textContent=String(base)+'/100';noteEl.textContent='No validated directional levels · score as read, not probability';return;
+  }
+  const instrument=bySym[result.pair],source=String(result.data_source||'');
+  if(!/Deriv/i.test(source)){
+    scoreEl.textContent=String(base)+'/100';noteEl.textContent='No matching live-price source · showing score as read';return;
+  }
+  if(!instrument||!(Number(instrument.p)>0)||!goldFreshTimestamp(instrument.t,120000)){
+    scoreEl.textContent=String(base)+'/100';noteEl.textContent='Waiting for a fresh Deriv quote · showing score as read';return;
+  }
+  const live=liveConfidence({symbol:result.pair,signal:result.signal,entry:result.entry,stop_loss:result.sl,tp1:result.tp,base},instrument.p);
+  scoreEl.textContent=live.confidence+'/100';
+  const details=describeLive({...live,symbol:result.pair,signal:result.signal,entry:result.entry,startedAt:Date.parse(result.analyzed_at)||Date.now(),endedAt:Date.now()},
+    {time:ms=>new Date(ms).toLocaleTimeString(),price:value=>Number(value).toLocaleString('en-US',{minimumFractionDigits:bySym[result.pair]?.d||5,maximumFractionDigits:bySym[result.pair]?.d||5})});
+  noteEl.textContent=(details||'Live score follows the same-source quote')+' · quality score, not probability';
+}
+function tickForexAnalystAutomation(){
+  updateForexAnalystLiveConfidence();
+  const result=fxAnalystRenderedResult;if(state.view!=='signals'||!result||fxAnalystBusy)return;
+  const pair=$('#fxaPair');if(pair&&pair.value!==result.pair)return;
+  const seconds=FX_ANALYST_TIMEFRAMES[result.timeframe],last=Number(result.latest_closed_candle&&result.latest_closed_candle.time);
+  if(!seconds||!Number.isFinite(last)||last<=0)return;
+  const nextCloseMs=(last+2*seconds)*1000;
+  if(Date.now()>=nextCloseMs+5000&&nextCloseMs>fxaAutoCloseSeen){
+    fxaAutoCloseSeen=nextCloseMs;
+    runForexAnalyst('UPDATE');
+  }
+}
+function drawForexAnalystCharts(){
+
+  const summary=$('#fxaSummary');if(!summary||!fxAnalystRenderedResult)return;
+  $$('.fxaChart',summary).forEach(canvas=>{
+    const timeframe=canvas.dataset.timeframe,chartData=fxAnalystRenderedResult.chart_data||{},frame=timeframe==='15m'?chartData.requested_context:chartData[timeframe];
+    const drawn=renderAnnotatedCandlestickChart(canvas,frame,{symbol:fxAnalystRenderedResult.pair,timeframe});
+    const note=$('[data-markers="'+timeframe+'"]',summary);
+    if(note){
+      const markers=(drawn.patterns||[]).length?'Candle markers: '+drawn.patterns.join(', '):'No pin-bar / engulfing markers identified in recent candles.';
+      const source=fxAnalystRenderedResult.chart_data_sources&&fxAnalystRenderedResult.chart_data_sources[timeframe];
+      note.textContent=[source?'Source: '+source:'Verified provider candles',markers,...(drawn.notes||[])].join(' · ');
+    }
+  });
+}
+function renderForexAnalystResult(result){
+  const summary=$('#fxaSummary'),details=$('#fxaRawDetails');if(!summary||!result)return;
+  const prior=fxAnalystRenderedResult,tfSeconds=FX_ANALYST_TIMEFRAMES[result.timeframe],latestTime=Number(result.latest_closed_candle&&result.latest_closed_candle.time),priorTime=Number(prior&&prior.latest_closed_candle&&prior.latest_closed_candle.time);
+  if(tfSeconds&&Number.isFinite(latestTime)&&latestTime>0&&(!prior||prior.pair!==result.pair||prior.timeframe!==result.timeframe||latestTime>priorTime))fxaAutoCloseSeen=(latestTime+tfSeconds)*1000;
+  fxAnalystRenderedResult=result;
+  const signal=String(result.signal||'WAIT'),signalClass=signal==='BUY'?'buy':signal==='SELL'?'sell':'wait';
+  const timeframe=String(result.timeframe||''),pair=String(result.pair||''),instrument=bySym[pair],digits=instrument&&Number.isInteger(instrument.d)?instrument.d:5;
+  const price=value=>value==null||!Number.isFinite(Number(value))?'—':Number(value).toLocaleString('en-US',{minimumFractionDigits:digits,maximumFractionDigits:digits});
+  const e=value=>escHtml(value==null?'—':String(value));
+  const alignment=result.mtf_alignment&&typeof result.mtf_alignment==='object'?result.mtf_alignment:{};
+  const frames=['1m','5m','10m'].map(tf=>'<div class="fxa-frame"><b>'+e(tf.toUpperCase())+'</b><span class="badge '+(alignment[tf]==='BUY'?'buy':alignment[tf]==='SELL'?'sell':'gray')+'">'+e(alignment[tf]||'UNAVAILABLE')+'</span></div>').join('');
+  const levels=result.indicators&&result.indicators[timeframe]&&result.indicators[timeframe].support_resistance||{};
+  const support=Array.isArray(levels.support)?levels.support.filter(Number.isFinite):[],resistance=Array.isArray(levels.resistance)?levels.resistance.filter(Number.isFinite):[];
+  const current=result.current_quote&&Number(result.current_quote.price);
+  const nearestSupport=current>0?support.filter(value=>value<current).sort((a,b)=>b-a)[0]:null;
+  const nearestResistance=current>0?resistance.filter(value=>value>current).sort((a,b)=>a-b)[0]:null;
+  const chart=result.chart_data&&(result.chart_data[timeframe]||result.chart_data.requested_context);
+  const candleCount=chart&&Array.isArray(chart.candles)?chart.candles.length:0;
+  const sevenOutlook=renderShortOutlook(result.seven_timeframe_outlook||null,{symbol:pair,source:result.seven_timeframe_source||''});
+  const action=result.action&&result.action!=='NONE'? '<span class="badge neutral">'+e(result.action)+' · '+e(result.previous_signal_check||'analysis')+'</span>':'';
+  summary.innerHTML='<div class="fxa-result-card"><div class="row between wrap"><div><div class="tiny faint">'+e(pair)+' · '+e(timeframe)+' analysis</div><div class="row" style="margin-top:5px"><span class="badge '+signalClass+'">'+e(signal)+'</span>'+action+'</div></div><div class="right"><span class="tiny faint">LIVE CONFLUENCE SCORE</span><br><b id="fxaLiveConfidence" class="mono">'+(Number.isFinite(Number(result.confidence))?e(Number(result.confidence)):'0')+'/100</b><div id="fxaLiveConfidenceNote" class="tiny faint">Updating from the latest same-source quote · not probability</div><div class="tiny faint">As-read base: '+(Number.isFinite(Number(result.confidence_as_read))?e(Number(result.confidence_as_read)):'0')+'/100</div></div></div>'+
+    '<div class="fxa-frames">'+frames+'</div>'+
+    '<div class="fxa-levels"><div><span class="tiny faint">LIVE PRICE</span><b class="mono">'+price(result.current_quote&&result.current_quote.price)+'</b></div><div><span class="tiny faint">ENTRY</span><b class="mono">'+price(result.entry)+'</b></div><div><span class="tiny faint">STOP / INVALIDATION</span><b class="mono">'+price(result.sl)+'</b></div><div><span class="tiny faint">TARGET</span><b class="mono">'+price(result.tp)+'</b></div><div><span class="tiny faint">NEAREST SUPPORT</span><b class="mono">'+price(nearestSupport)+'</b></div><div><span class="tiny faint">NEAREST RESISTANCE</span><b class="mono">'+price(nearestResistance)+'</b></div></div>'+
+    '<div style="margin-top:14px">'+sevenOutlook+'</div>'+
+    '<div class="fxa-chart-section"><b>Annotated provider charts · 4H to 1M</b><div class="tiny faint">Verified candles are shown for each timeframe. BUY/SELL and Entry markers are not drawn on the chart; validated SL/TP levels may be shown separately. Supply/demand candidates are candle-pattern heuristics, not proof of institutional orders; no priced 5m/10m path is invented.</div><div class="fxa-chart-grid">'+[...FXA_CHART_TIMEFRAMES,...(timeframe==='10m'?['10m']:[]),...(timeframe==='15m'?['15m']:[])].map(tf=>'<div class="fxa-chart-card"><div class="tiny faint">'+e(tf.toUpperCase())+' candles · EMA / swings / levels</div><canvas class="fxaChart" data-timeframe="'+e(tf)+'" data-height="250" aria-label="Annotated '+e(tf)+' candlestick chart for '+e(pair)+'"></canvas><div class="tiny faint fxa-chart-markers" data-markers="'+e(tf)+'">Verified provider prices only; missing levels are not plotted.</div></div>').join('')+'</div></div>'+
+    '<div class="fxa-reason"><b>Analysis</b><div>'+e(result.reason||'No additional explanation was returned.')+'</div><div class="tiny faint" style="margin-top:6px">'+e(result.data_source||'Source unavailable')+' · '+(result.latest_closed_candle?('last closed '+e(new Date(Number(result.latest_closed_candle.time)*1000).toLocaleString())):'no verified closed candle')+' · '+candleCount+' chart candles · analysis only, no order sent.</div></div></div>';
+  summary.classList.remove('hidden');if(details)details.classList.remove('hidden');
+  updateForexAnalystLiveConfidence();
+  if(typeof requestAnimationFrame==='function')requestAnimationFrame(drawForexAnalystCharts);else setTimeout(drawForexAnalystCharts,0);
+}
 async function runForexAnalyst(mode='ANALYZE'){
   if(fxAnalystBusy)return;
-  const pairEl=$('#fxaPair'),tfEl=$('#fxaTimeframe'),output=$('#fxaOutput'),status=$('#fxaStatus');
+  const pairEl=$('#fxaPair'),tfEl=$('#fxaTimeframe'),output=$('#fxaOutput'),status=$('#fxaStatus'),summary=$('#fxaSummary'),details=$('#fxaRawDetails');
   if(!pairEl||!tfEl||!output||!status)return;
   const pair=pairEl.value,previous=fxAnalystPrevious[pair]||null;
   const timeframe=mode==='UPDATE'&&previous?.timeframe?previous.timeframe:tfEl.value;
@@ -3523,29 +3782,52 @@ async function runForexAnalyst(mode='ANALYZE'){
   }
   fxAnalystBusy=true;
   const analyze=$('#fxaAnalyze'),update=$('#fxaUpdate');if(analyze)analyze.disabled=true;if(update)update.disabled=true;
-  status.textContent='Fetching 50+ completed candles for 1m / 5m / 10m'+(timeframe==='15m'?' / 15m':'')+' and validating the live quote…';
-  output.classList.remove('hidden');output.textContent='';
+  status.textContent='Fetching verified candles for 1m / 5m / 30m / 1h / 4h, building complete 2h / 3h bars'+(timeframe==='10m'||timeframe==='15m'?' and requested '+timeframe+' context':'')+'; validating live quote…';
+  if(summary)summary.classList.add('hidden');if(details)details.classList.add('hidden');output.textContent='';
   try{
-    const timeframes=[...new Set(['1m','5m','10m',timeframe])],candlesByTimeframe={},errorsByTimeframe={},dataSources={};
-    await Promise.all(timeframes.map(async tf=>{
-      try{
-        const history=await historyCandles(pair,FX_ANALYST_TIMEFRAMES[tf],100,{acrossClosures:true});
-        candlesByTimeframe[tf]=history&&history.candles;
-        dataSources[tf]=history&&history.source||'Deriv public candle history';
-      }catch(error){errorsByTimeframe[tf]=String(error&&error.message||'Candle history unavailable');}
-    }));
+    const timeframes=[...new Set(['1m','5m','10m',timeframe])],candlesByTimeframe={},errorsByTimeframe={},dataSources={},visualCandles={},visualSources={};
+    const visualRequests=[['m1Long',60,300],['30m',1800,100],['1h',3600,300],['4h',14400,100]];
+    await Promise.all([
+      ...timeframes.map(async tf=>{
+        try{
+          const history=await historyCandles(pair,FX_ANALYST_TIMEFRAMES[tf],100,{acrossClosures:true});
+          candlesByTimeframe[tf]=history&&history.candles;
+          dataSources[tf]=history&&history.source||'Deriv public candle history';
+        }catch(error){errorsByTimeframe[tf]=String(error&&error.message||'Candle history unavailable');}
+      }),
+      ...visualRequests.map(async([key,granularity,count])=>{
+        try{const history=await historyCandles(pair,granularity,count,{acrossClosures:true});visualCandles[key]=history&&history.candles;visualSources[key]=history&&history.source||'Deriv public candle history';}
+        catch(error){visualCandles[key]=null;visualSources[key]=String(error&&error.message||'Verified candle history unavailable');}
+      })
+    ]);
     const instrument=bySym[pair],quoteFresh=instrument&&instrument.p>0&&goldFreshTimestamp(instrument.t,120000);
     const result=analyzeForex({
       pair,timeframe,candlesByTimeframe,errorsByTimeframe,
       currentPrice:quoteFresh?instrument.p:null,currentTime:quoteFresh?instrument.t:null,
       dataSources,mode,previous:mode==='UPDATE'?previous:null,now:Date.now()
     });
+    const analysisTime=Date.now(),tradeOverlays=result.chart_data&&result.chart_data['1m']&&result.chart_data['1m'].overlays||{signal:'WAIT'};
+    if(result.chart_data){
+      const hourly=fxChartRows(visualCandles['1h'],3600,analysisTime);
+      result.chart_data['1m']=buildFxChartFrame(visualCandles.m1Long,'1m',60,tradeOverlays,analysisTime);
+      result.chart_data['30m']=buildFxChartFrame(visualCandles['30m'],'30m',1800,tradeOverlays,analysisTime);
+      result.chart_data['1h']=buildFxChartFrame(visualCandles['1h'],'1h',3600,tradeOverlays,analysisTime);
+      result.chart_data['2h']=buildFxChartFrame(aggregateFxCandles(hourly,2),'2h',7200,tradeOverlays,analysisTime);
+      result.chart_data['3h']=buildFxChartFrame(aggregateFxCandles(hourly,3),'3h',10800,tradeOverlays,analysisTime);
+      result.chart_data['4h']=buildFxChartFrame(visualCandles['4h'],'4h',14400,tradeOverlays,analysisTime);
+      result.chart_data_sources={'1m':visualSources.m1Long||'unavailable','30m':visualSources['30m']||'unavailable','1h':visualSources['1h']||'unavailable','2h':'Aggregated only from complete closed 1h candles','3h':'Aggregated only from complete closed 1h candles','4h':visualSources['4h']||'unavailable'};
+    }
+    result.seven_timeframe_outlook=analyzeShortOutlook(visualCandles.m1Long,{granularity:60,now:analysisTime,maxAgeSeconds:180});
+    result.seven_timeframe_source=visualSources.m1Long||'unavailable';
+    result.confidence_as_read=Number(result.confidence)||0;
     output.textContent=JSON.stringify(result,null,2);
+    renderForexAnalystResult(result);
     fxAnalystSave(pair,result);
     status.textContent=(result.signal==='WAIT'?'WAIT · ':'')+result.data_source+' · '+(result.latest_closed_candle?'latest closed candle '+new Date(result.latest_closed_candle.time*1000).toLocaleString():'no valid closed candle')+' · analysis only; no order sent.';
   }catch(error){
-    const failure={mode,pair,timeframe,mtf_alignment:{'1m':'NEUTRAL','5m':'NEUTRAL','10m':'NEUTRAL'},signal:'WAIT',action:'NONE',entry:null,sl:null,tp:null,risk_reward:null,confidence:0,reason:String(error&&error.message||'Analysis unavailable'),previous_signal_check:'none',data_source:'unavailable',chart_data:null};
+    const failure={mode,pair,timeframe,mtf_alignment:{'1m':'NEUTRAL','5m':'NEUTRAL','10m':'NEUTRAL'},signal:'WAIT',action:'NONE',entry:null,sl:null,tp:null,risk_reward:null,confidence:0,confidence_as_read:0,reason:String(error&&error.message||'Analysis unavailable'),previous_signal_check:'none',data_source:'unavailable',chart_data:null};
     output.textContent=JSON.stringify(failure,null,2);
+    renderForexAnalystResult(failure);
     status.textContent='Analysis unavailable; no signal or chart data was fabricated.';
   }finally{
     fxAnalystBusy=false;if(analyze)analyze.disabled=false;
@@ -3554,6 +3836,7 @@ async function runForexAnalyst(mode='ANALYZE'){
 }
 function wireForexAnalyst(){
   fxAnalystPopulate();
+  if(!fxaChartResizeBound&&typeof window!=='undefined'){window.addEventListener('resize',drawForexAnalystCharts);fxaChartResizeBound=true;}
   const pair=$('#fxaPair'),analyze=$('#fxaAnalyze'),update=$('#fxaUpdate');
   if(pair)pair.onchange=()=>{if(update)update.disabled=!fxAnalystPrevious[pair.value];};
   if(analyze)analyze.onclick=()=>runForexAnalyst('ANALYZE');
@@ -3788,6 +4071,8 @@ let learnWired=false;
 function learnInit(){
   const sel=$('#ddSym');
   if(sel&&!sel.options.length) INSTR.forEach(I=>sel.insertAdjacentHTML('beforeend','<option value="'+I.s+'">'+I.s+'</option>'));
+  if(sel&&!sel.dataset.outlookBound){sel.dataset.outlookBound='1';sel.addEventListener('change',()=>refreshDrawdownOutlook(true));}
+  if(sel&&sel.value)refreshDrawdownOutlook();
   const pick=$('#volPick');
   if(pick&&!pick.dataset.built){
     pick.dataset.built='1';
@@ -3911,6 +4196,75 @@ async function historyCandles(sym,granularity,count,{acrossClosures=false}={}){
   const j=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(j.detail||j.error||'history unavailable');
   return j;
+}
+
+const SHORT_OUTLOOK_REFRESH_MS=60000;
+const shortOutlookCache=new Map(),shortOutlookPending=new Map(),shortOutlookQueue=[];
+let shortOutlookActive=0,shortOutlookViewCheck={trade:0,gold:0,watch:0};
+function queueShortOutlook(task){
+  return new Promise((resolve,reject)=>{
+    shortOutlookQueue.push({task,resolve,reject});
+    const pump=()=>{
+      while(shortOutlookActive<4&&shortOutlookQueue.length){
+        const job=shortOutlookQueue.shift();shortOutlookActive++;
+        Promise.resolve().then(job.task).then(job.resolve,job.reject).finally(()=>{shortOutlookActive--;pump();});
+      }
+    };
+    pump();
+  });
+}
+function shortOutlookProvider(symbol){
+  if(symbol===GOLD_SYMBOL)return goldUsingExnessResult()?'mt5':'deriv';
+  const reading=state.mktScan&&state.mktScan[symbol],source=String(reading&&(reading.data_source||reading.source)||'');
+  if(/^Exness MT5 local candles/i.test(source))return 'mt5';
+  if(/^Deriv public candles/i.test(source))return 'deriv';
+  return state.broker?.type==='mt5'?'mt5':'deriv';
+}
+async function loadShortOutlook(symbol,provider){
+  const key=symbol+'|'+provider,cached=shortOutlookCache.get(key);
+  if(cached&&Date.now()-cached.at<SHORT_OUTLOOK_REFRESH_MS)return cached.value;
+  if(shortOutlookPending.has(key))return shortOutlookPending.get(key);
+  const pending=queueShortOutlook(async()=>{
+    let candles,source;
+    if(provider==='mt5'){
+      const mt5Symbol=symbol===GOLD_SYMBOL?await resolveGoldMt5Symbol():symbol;
+      const reply=await bridge.bridgeHistory(mt5Symbol,'M1',300);
+      if(!reply||!Array.isArray(reply.candles))throw new Error(reply&&reply.message||'The connected MT5 bridge returned no M1 candle history.');
+      candles=reply.candles;source='Exness MT5 local bridge';
+    }else if(DERIV_CODE_MAP[symbol]&&await isCloudflareHostedApp()){
+      candles=await candleHistory.fetchCandles(symbol,60,300,{acrossClosures:true});source='Deriv public feed, read by this browser';
+    }else{
+      const history=await historyCandles(symbol,60,300,{acrossClosures:true});
+      candles=history&&history.candles;source=history&&history.source||'Deriv public candle history';
+    }
+    const result=analyzeShortOutlook(candles,{granularity:60,now:Date.now(),maxAgeSeconds:180});
+    const value={result,source,provider};shortOutlookCache.set(key,{at:Date.now(),value});return value;
+  }).catch(error=>{
+    const value={result:{status:'unavailable',reason:String(error&&error.message||'Verified M1 history unavailable').slice(0,240),observations:[],forecasts:{}},source:'',provider};
+    shortOutlookCache.set(key,{at:Date.now(),value});return value;
+  }).finally(()=>shortOutlookPending.delete(key));
+  shortOutlookPending.set(key,pending);return pending;
+}
+function requestShortOutlook(element,symbol,{compact=false,force=false}={}){
+  if(!element||!symbol)return;
+  const provider=shortOutlookProvider(symbol),key=symbol+'|'+provider,at=Number(element.dataset.shortOutlookAt)||0;
+  if(!force&&element.dataset.shortOutlookKey===key&&(element.dataset.shortOutlookLoading==='1'||Date.now()-at<SHORT_OUTLOOK_REFRESH_MS))return;
+  element.dataset.shortOutlookKey=key;element.dataset.shortOutlookLoading='1';
+  element.innerHTML=renderShortOutlook(null,{symbol,compact,loading:true});
+  loadShortOutlook(symbol,provider).then(({result,source})=>{
+    if(element.dataset.shortOutlookKey!==key)return;
+    element.dataset.shortOutlookLoading='0';element.dataset.shortOutlookAt=String(Date.now());
+    element.innerHTML=renderShortOutlook(result,{symbol,source,compact});
+  });
+}
+function refreshChartOutlook(force=false){requestShortOutlook($('#chartOutlook'),state.chart.sym,{force});}
+function refreshGoldOutlook(force=false){requestShortOutlook($('#goldOutlook'),GOLD_SYMBOL,{force});}
+function refreshWatchOutlooks(force=false){
+  $$('[data-short-outlook]').forEach(el=>requestShortOutlook(el,el.dataset.shortOutlook,{compact:true,force}));
+}
+function refreshDrawdownOutlook(force=false){
+  const symbol=$('#ddSym')&&$('#ddSym').value;
+  if(symbol)requestShortOutlook($('#ddOutlook'),symbol,{force});
 }
 const volCache={};
 function learnVolatility(){
@@ -4421,7 +4775,7 @@ let goldQuotePollAt=0;
    A headline names markets; it does not say which way they will go. The Buy / Sell / Wait beside a
    market is that market's own price reading (the one the Markets view shows), and the period around a
    high-impact release is one in which no new trade is opened (src/newsimpact.js). */
-const NEWS_READING_NOTE='The Buy, Sell or Wait beside a market is that market’s own price reading at this moment (the 1m/5m/1h rule; for an index, the daily reading). It is not a forecast of what the news will do to the price: a headline does not tell the direction.';
+const NEWS_READING_NOTE='A Buy, Sell or Wait beside a live market is that market’s own 1m/5m/1h price reading; an index may show daily trend context only, not a validated trade setup or trade-confidence score. Neither is a forecast of what the news will do to the price: a headline does not tell the direction.';
 const NEWS_CHIPS=4;
 const safeHref=(link)=>/^https?:\/\//i.test(String(link||''))?String(link):'#';
 /* What the price reading of one market says now, as a badge. kind: trade (Buy or Sell), wait, none. */
@@ -4430,7 +4784,11 @@ function readingChip(sym){
   if(!r)return {kind:'none',html:'<span class="badge gray" title="No reading of this market has been made yet.">no reading yet</span>'};
   if(r.error)return {kind:'none',html:'<span class="badge gray" title="'+escHtml(r.detail||'No reading is available for this market right now.')+'">no reading</span>'};
   const daily=isDailyReading(r);
-  const tip=escHtml((daily?'Daily reading from daily closing prices. ':'Reading of the 1m/5m/1h rule'+(closeText(r)?' at the '+closeText(r)+' candle close. ':'. '))+(r.votes?'Timeframes: '+r.votes+'. ':'')+'The percentage is how strongly the timeframes agree, not a chance of profit.');
+  const tip=escHtml((daily?'Daily index trend context from daily closing prices; it is not a validated trade setup or trade-confidence score. ':'Reading of the 1m/5m/1h rule'+(closeText(r)?' at the '+closeText(r)+' candle close. ':'. '))+(r.votes?'Evidence: '+r.votes+'. ':'')+(daily?'A market reading, not a direction derived from news.':'The percentage is technical agreement, not a chance of profit.'));
+  if(daily&&r.analysis_status==='CONTEXT_ONLY'){
+    const context=r.bias==='bullish'?'bullish trend':r.bias==='bearish'?'bearish trend':'neutral trend';
+    return {kind:'wait',html:'<span class="badge wait" title="'+tip+'">Daily context · '+context+'</span>'};
+  }
   if(r.signal==='BUY'||r.signal==='SELL')return {kind:'trade',html:'<span class="badge '+(r.signal==='BUY'?'buy':'sell')+'" title="'+tip+'">'+(r.signal==='BUY'?'Buy ':'Sell ')+liveScoreHtml(r,'span')+(daily?' · daily':'')+'</span>'};
   if(r.bias==='bullish')return {kind:'wait',html:'<span class="badge lean lean-up" title="'+tip+'">Wait · leans up</span>'};
   if(r.bias==='bearish')return {kind:'wait',html:'<span class="badge lean lean-dn" title="'+tip+'">Wait · leans down</span>'};
@@ -4637,6 +4995,39 @@ function calendarEntries(){
   if(!state.calAt||state.calError)return null;
   return (state.calWeek||state.calEvents||[]).map((e)=>Object.assign({},e,{t:eventTime(e,state.calDay)}));
 }
+const NEWS_ALERT_SEEN_KEY='aurum_scheduled_news_alerts_v1';
+let newsAlertCheckAt=0;
+const newsAlertMemory=new Set();
+function loadNewsAlertMemory(){
+  try{const seen=JSON.parse(localStorage.getItem(NEWS_ALERT_SEEN_KEY)||'[]');if(Array.isArray(seen))seen.forEach(key=>newsAlertMemory.add(key));}catch(_e){}
+  return newsAlertMemory;
+}
+function markNewsAlertSeen(key){
+  newsAlertMemory.add(key);
+  try{const seen=JSON.parse(localStorage.getItem(NEWS_ALERT_SEEN_KEY)||'[]'),list=Array.isArray(seen)?seen:[];list.push(key);localStorage.setItem(NEWS_ALERT_SEEN_KEY,JSON.stringify(list.slice(-300)));}catch(_e){}
+}
+function freshNewsTechnicalReadings(markets){
+  return markets.map(symbol=>{
+    const r=state.mktScan[symbol];
+    if(!r||r.error||isDailyReading(r)||signalState(r)==='stale'||!marketCandleFresh(r.latest_candle_time,5*60000))return null;
+    if(r.signal!=='BUY'&&r.signal!=='SELL'&&r.signal!=='WAIT')return null;
+    return symbol+' '+r.signal;
+  }).filter(Boolean);
+}
+function checkScheduledNewsAlerts(now=Date.now()){
+  if(now-newsAlertCheckAt<15000)return;
+  newsAlertCheckAt=now;
+  const entries=calendarEntries();if(!entries)return;
+  const alerts=buildScheduledNewsAlerts(entries,now,loadNewsAlertMemory());
+  for(const alert of alerts){
+    markNewsAlertSeen(alert.key);
+    const readings=freshNewsTechnicalReadings(alert.markets).slice(0,4);
+    const direction=readings.length?' Current technical readings (not news direction): '+readings.join(', ')+'.':' No fresh technical BUY/SELL/WAIT reading is available for these markets right now.';
+    const message=alert.body+direction;
+    notify(alert.title,message,{tag:'scheduled-news-'+alert.key,kind:'warn'});
+    pushWA('🗓 Upcoming scheduled-news alert\n'+message+'\nAURUM analysis only — no order sent.');
+  }
+}
 async function renderNewsCal(){
   if(!$('#newsCal'))return;
   await loadCalendar(true);
@@ -4769,6 +5160,7 @@ function renderWatch(){
       return '<div class="watch-tile"><div class="watch-tile-head" title="Open the full chart"><b>'+I.s+'</b><span class="watch-tile-name">'+lbl+'</span></div>'
         +'<div class="row between" style="padding:6px 10px 0"><span class="mono" data-wpx="'+I.s+'">'+fmtPx(I.p,I.d)+'</span><span class="mono tiny" data-wch="'+I.s+'">'+fmtPct(chgOf(I),true)+'</span></div>'
         +'<div class="watch-tile-body"><canvas class="watchCanvas" data-wcv="'+I.s+'" height="120" style="width:100%;height:120px;display:block"></canvas></div>'
+        +'<div data-short-outlook="'+escHtml(I.s)+'"><div class="short-outlook"><span class="faint">Loading verified short-horizon history…</span></div></div>'
         +'<div class="row" style="gap:6px;padding:8px 10px">'
         +'<button class="btn sm primary watch-trade" data-sym="'+I.s+'">Trade</button>'
         +'<button class="btn sm ghost watch-del" data-id="'+I.s+'">Remove</button></div></div>';
@@ -4777,7 +5169,9 @@ function renderWatch(){
     $$('#watchLiveGrid .watch-del').forEach(b=>b.onclick=()=>{ state.watchlist=state.watchlist.filter(w=>w.id!==b.dataset.id); saveWatchlist(); });
   }
   if(idx.length)tv.mountWatchlist($('#watchWidget'),idx);
+  const tvOutlooks=$('#watchTvOutlooks');if(tvOutlooks)tvOutlooks.innerHTML=idx.map(w=>'<div data-short-outlook="'+escHtml(w.id)+'"></div>').join('');
   renderWatchLive();
+  refreshWatchOutlooks();
 }
 function renderWatchLive(){
   $$('#watchLiveGrid .watchCanvas').forEach((cv)=>{
@@ -5006,11 +5400,39 @@ function msRender(){
   grid.innerHTML=MS_SHOWN.map(tf=>msCard(tf,msView.readings[tf.key],ctx)).join('');
   updateChartMarketState();
 }
+let chartMsExpandedTf='',chartMsExpandBound=false,chartMsPreviousFocus=null;
+function wireChartMsExpansion(grid){
+  if(chartMsExpandBound||!grid)return;
+  chartMsExpandBound=true;
+  const modal=$('#chartMsModal');if(modal&&modal.parentElement!==document.body)document.body.appendChild(modal);
+  grid.addEventListener('click',event=>{
+    const button=event.target.closest('[data-chart-ms-expand]');if(!button)return;
+    chartMsPreviousFocus=button;chartMsExpandedTf=button.dataset.chartMsExpand;
+    const modal=$('#chartMsModal');if(!modal)return;
+    modal.hidden=false;renderChartMsModal();$('#chartMsModalClose')?.focus();
+  });
+  const close=()=>{const modal=$('#chartMsModal');if(!modal||modal.hidden)return;modal.hidden=true;chartMsExpandedTf='';if(chartMsPreviousFocus?.isConnected)chartMsPreviousFocus.focus();};
+  $('#chartMsModalClose')?.addEventListener('click',close);
+  $('#chartMsModal')?.addEventListener('click',event=>{if(event.target.id==='chartMsModal')close();});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape')close();});
+}
+function renderChartMsModal(){
+  const modal=$('#chartMsModal'),body=$('#chartMsModalBody'),title=$('#chartMsModalTitle');
+  if(!modal||modal.hidden||!body||!title||!chartMsExpandedTf)return;
+  const tf=STATE_TIMEFRAMES.find(item=>item.key===chartMsExpandedTf),reading=msView.readings[chartMsExpandedTf];
+  if(!tf||!reading?.ok){body.innerHTML='<div class="empty">No verified chart is available for this timeframe.</div>';return;}
+  const dec=bySym[state.chart.sym]&&bySym[state.chart.sym].d!=null?bySym[state.chart.sym].d:2;
+  const ctx={px:value=>fmtPx(value,dec),when:sec=>escHtml(eatMoment(sec,msNowSec()))};
+  title.textContent=state.chart.sym+' · '+tf.label+' · '+tf.name;
+  body.innerHTML=chartMsTile(tf,reading,ctx);
+}
 function updateChartMarketState(){
   const grid=$('#chartMsGrid'), biasEl=$('#chartMsBias'), note=$('#chartMsNote');
   if(!grid||!biasEl||!note)return;
+  wireChartMsExpansion(grid);
   const chartSym=state.chart&&state.chart.sym;
   if(!DERIV_CODE_MAP[chartSym]){
+    const modal=$('#chartMsModal');if(modal)modal.hidden=true;chartMsExpandedTf='';
     biasEl.innerHTML='<span class="badge gray">WAIT</span><span>Four-timeframe candles are not available for '+escHtml(chartSym||'this market')+'.</span>';
     grid.innerHTML='<div class="empty" style="grid-column:1/-1">Market State is available for Deriv markets with intraday candle history; this chart remains unchanged.</div>';
     note.textContent='No four-timeframe reading is shown for this market.';
@@ -5018,6 +5440,7 @@ function updateChartMarketState(){
     return;
   }
   if(msView.sym!==chartSym){
+    const modal=$('#chartMsModal');if(modal)modal.hidden=true;chartMsExpandedTf='';
     biasEl.innerHTML='<span class="badge gray">WAIT</span><span>Loading '+escHtml(chartSym)+' readings…</span>';
     grid.innerHTML=''; note.textContent='Waiting for the chart market’s candle history.'; updateChartSmc(); return;
   }
@@ -5033,6 +5456,7 @@ function updateChartMarketState(){
   const dec=bySym[chartSym]&&bySym[chartSym].d!=null?bySym[chartSym].d:2;
   const ctx={px:(v)=>fmtPx(v,dec),when:(sec)=>escHtml(eatMoment(sec,msNowSec()))};
   grid.innerHTML=MS_SHOWN.map(tf=>chartMsTile(tf,msView.readings[tf.key]||null,ctx)).join('');
+  renderChartMsModal();
   const tickAge=msView.lastTickAt?Date.now()-msView.lastTickAt:Infinity;
   note.textContent=tickAge<15000
     ?'Deriv tick received '+eatClock(msView.lastTickSec*1000)+' EAT · cards mark LIVE only when that tick belongs to the timeframe’s forming candle. Readings can change before close. Alignment is not probability of profit.'
@@ -5081,6 +5505,7 @@ function updateChartSmc(){
 }
 function chartMsTile(tf,r,ctx){
   const title='<div class="chart-ms-tile-head"><b>'+tf.label+' · '+tf.name+'</b>';
+  const expand='<button class="chart-ms-expand" type="button" data-chart-ms-expand="'+tf.key+'" aria-label="Maximize '+tf.label+' graph" title="Maximize graph">⛶</button>';
   if(!r)return '<article class="chart-ms-tile" data-chart-ms-tf="'+tf.key+'">'+title+'<span class="badge gray">Waiting</span></div><div class="chart-ms-asof">No reading yet</div></article>';
   if(!r.ok){
     const why=UNAVAILABLE_WORDS[r.reason]||UNAVAILABLE_WORDS.FEED;
@@ -5093,7 +5518,7 @@ function chartMsTile(tf,r,ctx){
   const structBadge=s.state==='UP'?['ms-up','▲ '+structureWords(s)]:s.state==='DOWN'?['ms-down','▼ '+structureWords(s)]:['ms-flat',structureWords(s)];
   const volClass={QUIET:'ms-flat',NORMAL:'ms-flat',HIGH:'ms-warn',EXTREME:'ms-hot',UNKNOWN:'ms-flat'}[v.state];
   const asOf=r.forming?(live?'LIVE tick at ':'last tick at ')+ctx.when(r.asOf)+' EAT':'as of '+ctx.when(r.asOf)+' EAT';
-  return '<article class="chart-ms-tile" data-chart-ms-tf="'+tf.key+'" data-chart-ms-live="'+(live?'true':'false')+'">'+title+(live?'<span class="badge buy">LIVE</span>':'<span class="badge gray">'+(r.forming?'Provisional':'Closed')+'</span>')+'</div>'
+  return '<article class="chart-ms-tile" data-chart-ms-tf="'+tf.key+'" data-chart-ms-live="'+(live?'true':'false')+'">'+title+expand+(live?'<span class="badge buy">LIVE</span>':'<span class="badge gray">'+(r.forming?'Provisional':'Closed')+'</span>')+'</div>'
     +msSketch(tf,r,ctx.px,'-chart')
     +'<div class="chart-ms-state"><span class="badge '+trendBadge[0]+'">'+trendBadge[1]+'</span><span class="badge '+structBadge[0]+'">'+escHtml(structBadge[1])+'</span><span class="badge '+volClass+'">'+VOLATILITY_WORDS[v.state]+'</span></div>'
     +'<div class="chart-ms-asof">'+asOf+' · close '+ctx.px(r.price)+'</div></article>';
@@ -5344,6 +5769,8 @@ function boot(){
   sel.innerHTML=INSTR.map(I=>'<option value="'+I.s+'">'+I.s+' — '+I.n+'</option>').join('');
   sel.value=state.chart.sym;
   sel.onchange=()=>setChartSymbol(sel.value);
+  $$('#chartModeSwitch [data-chart-mode]').forEach(button=>button.onclick=()=>setChartDisplayMode(button.dataset.chartMode));
+  setChartDisplayMode(chartDisplayMode,false);
   syncSide(); updateTradeHeader();
   scanSignals();
   azPopulateSymbols();

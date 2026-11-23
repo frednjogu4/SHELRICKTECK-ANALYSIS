@@ -64,6 +64,21 @@ test('full analysis carries indicators, levels, trend and 20 context candles', (
 /* ---------- MTF confirmation (the draft's core bug) ---------- */
 const tf = (signal, extra = {}) => ({ signal, error: undefined, ...extra });
 
+test('malformed or unordered candles abstain instead of feeding indicators or MTF votes', () => {
+  const valid = mk(accelUp(60));
+  const malformed = valid.map((c) => ({ ...c }));
+  malformed[20].high = malformed[20].close - 1;
+  const result = analyzeTimeframe('TEST', malformed, '5m');
+  assert.match(result.error, /candle integrity/);
+  assert.equal(result.signal, null);
+  const unordered = valid.map((c) => ({ ...c }));
+  [unordered[10].time, unordered[11].time] = [unordered[11].time, unordered[10].time];
+  assert.match(analyzeTimeframe('TEST', unordered, '5m').error, /candle integrity/);
+  const invalidVolume = valid.map((c) => ({ ...c }));
+  invalidVolume[10].volume = -1;
+  assert.match(analyzeTimeframe('TEST', invalidVolume, '5m').error, /candle integrity/);
+});
+
 test('2-of-3 majority confirms BUY / SELL', () => {
   assert.equal(confirmMultiTimeframe({ m1: tf('BUY'), m5: tf('BUY'), h1: tf('SELL') }), 'BUY_CONFIRMED');
   assert.equal(confirmMultiTimeframe({ m1: tf('SELL'), m5: tf('SELL'), h1: tf('BUY') }), 'SELL_CONFIRMED');

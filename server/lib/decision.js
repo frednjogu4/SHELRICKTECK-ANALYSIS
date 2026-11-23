@@ -47,14 +47,42 @@ export function sanitizeDecision(raw, det, sentiment) {
   const base = localDecision(det);
   if (!raw || typeof raw !== 'object') return base;
   const d = Object.assign({}, base);
-  if (['BUY', 'SELL', 'WAIT'].includes(raw.signal)) d.signal = raw.signal;
+  /* AI is commentary, not an independent signal authority. A directional AI
+     answer is usable only when it agrees with the deterministic 2-of-3 MTF
+     decision. Disagreement and malformed decisions fail closed to WAIT. */
+  const directionAccepted = ['BUY', 'SELL'].includes(raw.signal) && raw.signal === base.signal;
+  const signalMismatch = raw.signal !== 'WAIT' && !directionAccepted;
+  d.signal = raw.signal === 'WAIT' ? 'WAIT' : (directionAccepted ? raw.signal : 'WAIT');
   const conf = num(raw.confidence);
   if (conf !== null) d.confidence = Math.round(clamp(conf, 0, 100));
   const tp = (v, fb) => { const n = num(v); return n !== null && n > 0 ? n : fb; };
-  d.entry = tp(raw.entry, base.entry);
-  d.stop_loss = tp(raw.stop_loss, base.stop_loss);
-  d.tp1 = tp(raw.tp1, base.tp1);
-  d.tp2 = tp(raw.tp2, base.tp2);
+  const candidate = {
+    entry: tp(raw.entry, base.entry),
+    stop_loss: tp(raw.stop_loss, base.stop_loss),
+    tp1: tp(raw.tp1, base.tp1),
+    tp2: tp(raw.tp2, base.tp2)
+  };
+  const directionalPlanValid = (signal, plan) => {
+    if (!['BUY', 'SELL'].includes(signal)) return false;
+    const { entry, stop_loss: stop, tp1, tp2 } = plan;
+    if (![entry, stop, tp1, tp2].every((value) => Number.isFinite(value) && value > 0)) return false;
+    const long = signal === 'BUY';
+    const geometry = long ? stop < entry && tp1 > entry && tp2 > tp1
+      : stop > entry && tp1 < entry && tp2 < tp1;
+    const risk = Math.abs(entry - stop);
+    const rr = risk > 0 ? Math.abs(tp1 - entry) / risk : 0;
+    return geometry && Number.isFinite(rr) && rr >= 1.5;
+  };
+  /* Preserve independently derived local levels if the model proposes
+     malformed geometry or violates the advertised minimum 1.5:1 RR policy. */
+  const candidatePlanAccepted = directionalPlanValid(d.signal, candidate);
+  const plan = candidatePlanAccepted ? candidate : {
+    entry: base.entry, stop_loss: base.stop_loss, tp1: base.tp1, tp2: base.tp2
+  };
+  d.entry = plan.entry;
+  d.stop_loss = plan.stop_loss;
+  d.tp1 = plan.tp1;
+  d.tp2 = plan.tp2;
   const risk = Math.abs(d.entry - d.stop_loss);
   d.rrr = risk > 0 ? Math.round((Math.abs(d.tp1 - d.entry) / risk) * 100) / 100 : null;
   if (typeof raw.rationale === 'string' && raw.rationale.trim()) d.rationale = raw.rationale.trim().slice(0, 600);
@@ -64,6 +92,27 @@ export function sanitizeDecision(raw, det, sentiment) {
     const risks = raw.risks.filter((r) => typeof r === 'string' && r.trim()).map((r) => r.trim().slice(0, 240)).slice(0, 5);
     if (risks.length) d.risks = risks;
   }
+  const validationReasons = [];
+  if (signalMismatch) {
+    validationReasons.push('ai_signal_disagrees_with_deterministic_mtf');
+    d.confidence = Math.min(d.confidence, base.confidence);
+    d.rationale = `AI proposed ${String(raw.signal || 'an invalid direction')}, but the independent deterministic MTF decision is ${base.signal}; directional call withheld.`;
+    d.risks = ['AI direction did not pass the independent MTF agreement gate.', ...(d.risks || [])].slice(0, 5);
+  }
+  if (!candidatePlanAccepted) {
+    validationReasons.push('ai_plan_rejected_or_not_applicable');
+    if (d.signal === 'BUY' || d.signal === 'SELL') {
+      d.rationale = (d.rationale || '') + ' AI price geometry failed direction/RR validation; deterministic levels retained.';
+      d.risks = ['AI price plan failed direction or minimum 1.5:1 RR validation; deterministic levels retained.', ...(d.risks || [])].slice(0, 5);
+    }
+  }
+  d.decision_validation = {
+    deterministic_signal: base.signal,
+    proposed_signal: ['BUY', 'SELL', 'WAIT'].includes(raw.signal) ? raw.signal : null,
+    directional_agreement: directionAccepted,
+    accepted_plan: candidatePlanAccepted,
+    rejected_reasons: validationReasons
+  };
   return d;
 }
 

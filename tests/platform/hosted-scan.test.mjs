@@ -617,6 +617,26 @@ test('index CFDs: read by the cloud, reused for a minute, and "unavailable" with
   assert.equal(yahooDown.requests.length, 2, 'a failure is never reused');
 });
 
+test('daily index BUY with 74 and zero levels becomes WAIT with unavailable trade confidence', async () => {
+  const scanner = createHostedScanner({
+    fetchCandles: browserFeed().fetchCandles,
+    cloudScan: async () => new Map([['US30', {
+      symbol: 'US30', signal: 'BUY', bias: 'bullish', confidence: 74,
+      entry: 0, stop_loss: 0, tp1: 0, tp2: 0,
+      tf: 'DAILY (index)', model: 'technical-daily', source: YAHOO_SOURCE
+    }]])
+  });
+  const [reading] = await scanner.scan(['US30']);
+  assert.equal(signalState(reading), 'daily');
+  assert.equal(reading.signal, 'WAIT');
+  assert.equal(reading.context_signal, 'BUY');
+  assert.equal(reading.analysis_status, 'CONTEXT_ONLY');
+  assert.equal(reading.confidence, null);
+  assert.equal(reading.tradeable, false);
+  for (const level of ['entry', 'stop_loss', 'tp1', 'tp2']) assert.equal(reading[level], null, level);
+  assert.match(reading.wait_detail, /not a validated setup/);
+});
+
 test('index CFDs: the day a daily reading is from reaches the page as the cloud sent it', async () => {
   const barTime = Math.floor(Date.UTC(2026, 10, 11, 14, 30) / 1000);
   const fromCloud = (symbol, final) => ({

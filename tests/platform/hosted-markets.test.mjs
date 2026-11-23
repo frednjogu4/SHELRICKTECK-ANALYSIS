@@ -225,6 +225,8 @@ async function bootApp({ origin = HOSTED_ORIGIN, world = {}, pcApi = null, pcSer
       window.matchMedia = (query) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
       window.Element.prototype.scrollIntoView = function () {};
       window.scrollTo = function () {};
+      /* This suite tests browser state, not canvas rendering; preserve the app's no-canvas fallback in jsdom. */
+      window.HTMLCanvasElement.prototype.getContext = function () { return null; };
       window.localStorage.setItem('aurum_aikeys', JSON.stringify(TEST_KEYS));
       /* The page's clock can be moved forward by the test, and its repeating timers are
          recorded so a test can run one now instead of waiting for it. */
@@ -469,6 +471,32 @@ test('entering the workspace: its first scan is already read in this browser —
   } finally { await app.close(); }
 });
 
+test('daily index card: legacy BUY 74 with zero levels is context-only and cannot load an order', async () => {
+  const rewriteScan = (results) => results.map((reading) => reading.symbol === 'US30'
+    ? { ...reading, signal: 'BUY', bias: 'bullish', confidence: 74, entry: 0, stop_loss: 0, tp1: 0, tp2: 0 }
+    : reading);
+  const app = await bootApp({ world: { rewriteScan } });
+  try {
+    await app.enter();
+    await app.open('signals');
+    const findCard = () => [...app.doc.querySelectorAll('#sigGrid .sig-card')]
+      .find((el) => el.querySelector('.sym-name')?.textContent === 'US30');
+    await app.waitFor(findCard, 'the US30 daily context card');
+    const card = findCard();
+    assert.equal(card.querySelector('.badge').textContent, 'WAIT');
+    assert.equal(card.querySelector('.row.between span').textContent, 'Trade confidence');
+    assert.equal(card.querySelector('.row.between b').textContent, 'Unavailable');
+    assert.equal(card.querySelector('.conf-bar').hidden, true);
+    for (const key of ['e', 's', 't']) assert.equal(card.querySelector(`[data-l="${key}"]`).textContent, 'Unavailable');
+    assert.match(card.querySelector('.sig-live').textContent, /not a validated setup/);
+    assert.match(card.querySelector('.sig-why').textContent, /Daily trend context: bullish/);
+    const use = card.querySelector('.sig-use');
+    assert.equal(use.disabled, true);
+    assert.equal(use.textContent, 'No trade plan');
+    assert.deepEqual(app.problems, []);
+  } finally { await app.close(); }
+});
+
 test('one candle connection serves the whole table: the browser opens two sockets in all, not one per market', async () => {
   const app = await bootApp({ world: { cloudDeriv: 'down' } });
   try {
@@ -686,9 +714,10 @@ test('best-market panel: the daily index reading has a line of its own, dated by
       /* Second line: the index, with the day of its data instead of a clock time. */
       assert.ok(panel.hasDaily, `${where}: the daily line is shown`);
       assert.ok(PICK_INDICES.includes(panel.daily.symbol), `${where}: one of the three indices`);
-      assert.equal(panel.daily.direction, 'BUY', where);
-      assert.match(panel.daily.text, new RegExp('^Daily index trend · daily close of ' + tradingDayText(barAt) + ' ' + panel.daily.symbol
-        + ' BUY \\d+% index CFD · analysis only votes .+ · source: Yahoo Finance public daily data · AURUM cloud analysis$'), where);
+      assert.equal(panel.daily.direction, '', where);
+      assert.match(panel.daily.text, new RegExp('^Daily index trend · daily close of ' + tradingDayText(barAt) + ' · daily context only ' + panel.daily.symbol
+        + ' .*No validated trade signal or trade-confidence score; entry, stop and targets are unavailable\\.$'), where);
+      assert.doesNotMatch(panel.daily.text, /\\b(?:BUY|SELL) \\d+%/);
       assert.ok(!/\d\d:\d\d:\d\d/.test(panel.daily.text), `${where}: no clock time on the daily line`);
       assert.match(panel.daily.title, /^A once-a-day reading from daily closing prices\./, `${where}: the line explains itself on hover`);
     };
@@ -714,7 +743,7 @@ test('best-market panel, the reported case: an index that scores higher than eve
      directional daily reading — at 74 or more. Before the change the pick was the index. */
   const rewriteScan = (results) => results.map((reading) => {
     if (reading.error || INDEX_SYMBOLS.includes(reading.symbol)) return reading;
-    if (reading.symbol === 'GBP/USD') return { ...reading, signal: 'SELL', bias: 'bearish', confidence: 61, votes: 'written by the test' };
+    if (reading.symbol === 'GBP/USD') return { ...reading, signal: 'SELL', bias: 'bearish', confidence: 61, entry:1.2, stop_loss:1.21, tp1:1.18, tp2:1.17, votes: 'written by the test' };
     return { ...reading, signal: 'WAIT', bias: 'neutral', confidence: 30, votes: 'written by the test' };
   });
   const app = await bootApp({ world: { rewriteScan } });
@@ -726,10 +755,10 @@ test('best-market panel, the reported case: an index that scores higher than eve
     assert.match(panel.live.text, /^GBP\/USD SELL 61% votes written by the test · source: Deriv public candles · AURUM cloud analysis · \d\d:\d\d:\d\d$/);
 
     assert.ok(PICK_INDICES.includes(panel.daily.symbol));
-    assert.equal(panel.daily.direction, 'BUY');
-    const indexScore = Number(/ BUY (\d+)% /.exec(panel.daily.text)[1]);
-    assert.ok(indexScore > 61, `the index scores ${indexScore}, more than the pick, and is still not the pick`);
-    assert.match(panel.daily.text, /^Daily index trend /);
+    assert.equal(panel.daily.direction, '', 'a daily trend is context, not an approved BUY/SELL');
+    assert.match(panel.daily.text, /daily context only/);
+    assert.match(panel.daily.text, /trade-confidence score; entry, stop and targets are unavailable/);
+    assert.doesNotMatch(panel.daily.text, /\b(?:BUY|SELL) \d+%/);
 
     /* The panel's read still raises the signal alerts it always did: the new direction is
        remembered per market, so that it is announced once and not at every read. */
@@ -751,7 +780,9 @@ test('best-market panel: while the index session is open the line says the bar i
     try {
       await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
       const { daily } = app.panel('authBestBody');
-      assert.ok(daily.text.startsWith('Daily index trend · ' + day + ' ' + daily.symbol + ' BUY '), `"${day}" in: ${daily.text}`);
+      assert.ok(daily.text.startsWith('Daily index trend · ' + day + ' · daily context only ' + daily.symbol + ' '), `"${day}" in: ${daily.text}`);
+      assert.match(daily.text, /No validated trade signal or trade-confidence score; entry, stop and targets are unavailable\./);
+      assert.doesNotMatch(daily.text, /\b(?:BUY|SELL) \d+%/);
       assert.ok(!daily.text.includes('daily close of'), 'a bar that is not known to be final is not called a close');
       assert.deepEqual(app.problems, []);
     } finally { await app.close(); }
@@ -823,7 +854,7 @@ test('best-market panel: nothing to name on either line — each says what was r
     await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
     const panel = app.panel('authBestBody');
     assert.equal(panel.live.text, 'No directional setup in the live markets that could be read. Not read: 2 unavailable.' + NOT_ESTIMATED + READ_INSIDE);
-    assert.equal(panel.daily.text, 'Daily index trend \u00b7 daily close of ' + tradingDayText(barAt) + ': no direction on NAS100, US30. Not read: 1 unavailable.');
+    assert.match(panel.daily.text, new RegExp('^Daily index trend \u00b7 daily close of ' + tradingDayText(barAt) + ' \u00b7 daily context only NAS100 .*No validated trade signal or trade-confidence score; entry, stop and targets are unavailable\\. Not read: 1 unavailable\\.$'));
     assert.equal(panel.live.direction + panel.daily.direction, '', 'no BUY or SELL badge anywhere');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
@@ -842,7 +873,7 @@ test('best-market panel: indices read from different days — the "no direction"
   const app = await bootApp({ world: { rewriteScan, yahooBars: { newestBarAt: barAt, session: { start: barAt, end: barAt + 6.5 * 3600 } } } });
   try {
     await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
-    assert.equal(app.panel('authBestBody').daily.text, 'Daily index trend: no direction on NAS100, US30, SPX500.');
+    assert.match(app.panel('authBestBody').daily.text, /^Daily index trend · daily context only NAS100 .*No validated trade signal or trade-confidence score; entry, stop and targets are unavailable\.$/);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -884,7 +915,7 @@ test('best-market panel: a repeated read keeps the previous lines, with their ti
   /* Readings written by the test, so that the first line has a pick and a time to watch. */
   const written = (pick, direction, score) => (results) => results.map((reading) => {
     if (reading.error || INDEX_SYMBOLS.includes(reading.symbol)) return reading;
-    if (reading.symbol === pick) return { ...reading, signal: direction, bias: direction === 'BUY' ? 'bullish' : 'bearish', confidence: score, votes: 'written by the test' };
+    if (reading.symbol === pick) return { ...reading, signal: direction, bias: direction === 'BUY' ? 'bullish' : 'bearish', confidence: score, entry:1.2, stop_loss:direction==='BUY'?1.19:1.21, tp1:direction==='BUY'?1.22:1.18, tp2:direction==='BUY'?1.23:1.17, votes: 'written by the test' };
     return { ...reading, signal: 'WAIT', bias: 'neutral', confidence: 30, votes: 'written by the test' };
   });
   const app = await bootApp({ world: { rewriteScan: written('GBP/USD', 'SELL', 61) } });
@@ -931,7 +962,7 @@ test('best-market panel: before the very first result it says that it is reading
   try {
     await app.waitFor(() => app.requests.some((r) => r.path === '/api/signals/scan'), 'the first read is under way');
     const panel = app.panel('authBestBody');
-    assert.equal(panel.text, 'Scanning live markets\u2026');
+    assert.equal(panel.text, 'Scanning verified market readings…');
     assert.equal(panel.ready, false);
     assert.equal(panel.hasDaily, false);
   } finally { await app.close(); }
@@ -1118,7 +1149,7 @@ test('PC app: scans go to the local API as before — no candle connection from 
        failed: the local API said WAIT for the others. The three indices are labelled as the
        daily fallback they are in the PC app, and stand on the second line. */
     assert.equal(app.panel('authBestBody').live.text, NO_SETUP);
-    assert.equal(app.panel('authBestBody').daily.text, 'Daily index trend: no direction on NAS100, US30, SPX500.');
+    assert.match(app.panel('authBestBody').daily.text, /^Daily index trend · daily context only NAS100 .*No validated trade signal or trade-confidence score; entry, stop and targets are unavailable\.$/);
     assert.deepEqual(app.warnings.filter((line) => line.startsWith('[aurum]')), []);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
@@ -1129,7 +1160,7 @@ test('PC app, best-market panel: the pick is a live market; a daily index readin
      90 on the daily scale; the strongest live market is GBP/USD at 61. */
   const mtf = (symbol, signal, confidence) => ({
     symbol, signal, bias: signal === 'BUY' ? 'bullish' : signal === 'SELL' ? 'bearish' : 'neutral', confidence, votes: 'live reading written by the test',
-    data_ok: true, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv public candles',
+    data_ok: true, entry:signal==='WAIT'?null:1.2, stop_loss:signal==='BUY'?1.19:signal==='SELL'?1.21:null, tp1:signal==='BUY'?1.22:signal==='SELL'?1.18:null, tp2:signal==='BUY'?1.23:signal==='SELL'?1.17:null, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv public candles',
     wait_reason: signal === 'WAIT' ? 'MTF_NO_ALIGNMENT' : null, wait_detail: signal === 'WAIT' ? 'written by the test' : null
   });
   const daily = (symbol, signal, confidence) => ({
@@ -1158,9 +1189,9 @@ test('PC app, best-market panel: the pick is a live market; a daily index readin
     assert.match(panel.live.text, / · \d\d:\d\d:\d\d$/);
 
     /* The local API does not send the day of its daily bar: the line names no day, and no clock time either. */
-    assert.equal(panel.daily.text, 'Daily index trend US30 BUY 90% index CFD · analysis only votes daily reading written by the test · source: Yahoo Finance public daily data' + fallback);
+    assert.match(panel.daily.text, /^Daily index trend · daily context only US30 .*No validated trade signal or trade-confidence score; entry, stop and targets are unavailable\.$/);
     assert.equal(panel.daily.symbol, 'US30');
-    assert.equal(panel.daily.direction, 'BUY');
+    assert.equal(panel.daily.direction, '');
 
     assert.equal(app.sockets.length, 0, 'the sign-in screen opens no socket in the PC app either');
     assert.deepEqual(app.warnings.filter((line) => line.startsWith('[aurum]')), []);
@@ -1177,8 +1208,8 @@ test('best-market panel: text from a reading is shown as text — markup in it i
         status: 200,
         body: {
           results: body.symbols.map((symbol) => (PICK_INDICES.includes(symbol)
-            ? { symbol, signal: 'BUY', bias: 'bullish', confidence: '<i id="injected-by-score">90</i>', votes, data_ok: true, tf: 'DAILY (index)', model: 'technical-daily', source: 'Yahoo <u id="injected-by-source">Finance</u>' }
-            : { symbol, signal: 'SELL', bias: 'bearish', confidence: '<i id="injected-by-score-2">61</i>', votes, data_ok: true, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv <u id="injected-by-source-2">candles</u>' }))
+            ? { symbol, signal: 'BUY', bias: 'bullish', confidence: '<i id="injected-by-score">90</i>', entry:null, stop_loss:null, tp1:null, tp2:null, votes, data_ok: true, tf: 'DAILY (index)', model: 'technical-daily', source: 'Yahoo <u id="injected-by-source">Finance</u>' }
+            : { symbol, signal: 'SELL', bias: 'bearish', confidence: '<i id="injected-by-score-2">61</i>', entry:100, stop_loss:101, tp1:98, tp2:97, votes, data_ok: true, tf: 'MTF 1m/5m/1h', model: 'technical', source: 'Deriv <u id="injected-by-source-2">candles</u>' }))
         }
       };
     }
@@ -1188,7 +1219,8 @@ test('best-market panel: text from a reading is shown as text — markup in it i
   try {
     await app.waitFor(() => app.panel('authBestBody').ready, 'the sign-in screen panel');
     const panel = app.panel('authBestBody');
-    assert.ok(panel.live.direction && panel.daily.direction, 'both lines show a reading');
+    assert.ok(panel.live.direction, 'the live line retains its directional reading');
+    assert.equal(panel.daily.direction, '', 'daily context has no trade direction badge');
     for (const id of ['injected-by-votes', 'injected-by-score', 'injected-by-score-2', 'injected-by-source', 'injected-by-source-2']) {
       assert.equal(app.doc.getElementById(id), null, `${id}: no element was created from a reading`);
     }
@@ -1197,9 +1229,10 @@ test('best-market panel: text from a reading is shown as text — markup in it i
     }
     assert.equal(app.window.__injected, undefined, 'no handler from a reading ran');
     assert.ok(panel.live.text.includes(votes), 'the text itself is shown, tags and all');
-    assert.ok(panel.daily.text.includes(votes));
+    assert.doesNotMatch(panel.daily.text, /injected-by-votes|injected-by-source/, 'daily context does not publish untrusted votes or sources as trade approval');
     assert.match(panel.live.text, / SELL 0% /, 'a score that is not a number is shown as 0, not inserted');
-    assert.match(panel.daily.text, / BUY 0% /);
+    assert.match(panel.daily.text, /No validated trade signal or trade-confidence score; entry, stop and targets are unavailable/);
+    assert.doesNotMatch(panel.daily.text, / BUY 0% /);
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -1212,7 +1245,7 @@ test('PC app, best-market panel: an index the local API could not read is said s
   });
   const failed = (symbol) => ({ symbol, error: 'FEED_ERROR', detail: 'written by the test', source: 'unavailable', data_source: 'unavailable' });
   const cases = [
-    [['SPX500'], 'Daily index trend: no direction on NAS100, US30. Not read: 1 unavailable.'],
+    [['SPX500'], /^Daily index trend · daily context only NAS100 .*No validated trade signal or trade-confidence score; entry, stop and targets are unavailable\. Not read: 1 unavailable\.$/],
     [PICK_INDICES, 'Daily index trend: not read right now (3 unavailable). Nothing is estimated.']
   ];
   for (const [unreadable, dailyLine] of cases) {
@@ -1227,7 +1260,8 @@ test('PC app, best-market panel: an index the local API could not read is said s
       const panel = app.panel('authBestBody');
       /* USD/JPY failed as well: the PC app's first line does not count unread markets, as before. */
       assert.equal(panel.live.text, NO_SETUP);
-      assert.equal(panel.daily.text, dailyLine);
+      if (dailyLine instanceof RegExp) assert.match(panel.daily.text, dailyLine);
+      else assert.equal(panel.daily.text, dailyLine);
       assert.deepEqual(app.problems, []);
     } finally { await app.close(); }
   }
@@ -1283,7 +1317,9 @@ test('live confidence, scanner cards: the score moves with the price since the r
     const card = (symbol) => [...app.doc.querySelectorAll('#sigGrid .sig-card')].find((el) => el.querySelector('.sym-name').textContent === symbol);
     const shown = (symbol) => {
       const el = card(symbol);
-      return el ? { score: el.querySelector('[data-live-conf]').textContent, bar: el.querySelector('.conf-bar i').style.width, note: el.querySelector('.sig-live').textContent } : null;
+      if (!el) return null;
+      const bar = el.querySelector('.conf-bar');
+      return { score: el.querySelector('.row.between b').textContent, bar: bar.hidden ? 'hidden' : el.querySelector('.conf-bar i').style.width, note: el.querySelector('.sig-live').textContent };
     };
     /* The reading says 70. The feed ticks 6 pips above its entry, a third of the way to the target: 70 + 5. */
     await app.waitFor(() => shown('EUR/USD') && shown('EUR/USD').score === '75%', 'the card to show the score at the live price');
@@ -1291,11 +1327,11 @@ test('live confidence, scanner cards: the score moves with the price since the r
     const measured = (symbol) => card(symbol).querySelector('.sig-measured').textContent;
     assert.equal(measured('EUR/USD'), EUR_MEASURED_MINUTE);
     assert.equal(measured('GBP/USD'), '');
-    assert.equal(measured('US30'), '');
+    assert.equal(measured('US30'), 'No validated trade plan; outcomes are not measured.');
     /* The alert of the same reading ends with that figure; the alert of a daily reading says that it has none. */
     const alertBody = (title) => { const el = [...app.doc.querySelectorAll('#toasts .toast')].find((toast) => toast.querySelector('b').textContent === title); return el ? el.querySelector('span').textContent : null; };
     assert.match(alertBody('Signal update \u00b7 EUR/USD'), /\nMeasured in a replay on EUR\/USD: 39\.9% of such signals reached TP1 before the SL \(break-even 40% before the spread\)\. Not a forecast\.$/);
-    assert.match(alertBody('Signal update \u00b7 US30'), /\nNot measured: a daily reading has no stop or target\.$/);
+    assert.equal(alertBody('Signal update \u00b7 US30'), null, 'context-only daily data does not announce a BUY/SELL signal');
     assert.equal(shown('EUR/USD').bar, '75%');
     assert.match(shown('EUR/USD').note, new RegExp('^6\\.0 pips with this BUY \u00b7 33% of the way to target 1 \u00b7 first read at 49\\.99940, ' + CLOCK + ' \u00b7 score as read 70%$'));
 
@@ -1321,18 +1357,18 @@ test('live confidence, scanner cards: the score moves with the price since the r
     assert.match(shown('EUR/USD').note, /^6\.0 pips with this BUY /);
 
     /* A daily index reading has no levels: its score is the reading's own, and the card says why it stands still. */
-    assert.deepEqual(shown('US30'), { score: '90%', bar: '90%', note: NO_LEVELS });
+    assert.deepEqual(shown('US30'), { score: 'Unavailable', bar: 'hidden', note: 'Daily index trend is context only. Entry, stop, target, and trade-confidence values are unavailable; this is not a validated setup.' });
     /* WAIT has nothing to follow. */
     assert.deepEqual(shown('GBP/USD'), { score: '20%', bar: '20%', note: '' });
     /* Both are left as they are when the next tick repaints the page. */
     pushTick(app, 'frxEURUSD', EUR_TICK);
-    assert.deepEqual(shown('US30'), { score: '90%', bar: '90%', note: NO_LEVELS });
+    assert.deepEqual(shown('US30'), { score: 'Unavailable', bar: 'hidden', note: 'Daily index trend is context only. Entry, stop, target, and trade-confidence values are unavailable; this is not a validated setup.' });
     assert.deepEqual(shown('GBP/USD'), { score: '20%', bar: '20%', note: '' });
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
 
-test('live confidence, Markets and Overview: the same reading shows the same score everywhere', async () => {
+test('live confidence, Markets and Signal Analyzer: the specialist views remain authoritative', async () => {
   const app = await bootApp({ origin: PC_ORIGIN, pcApi: liveScanApi, world: { ticks: true } });
   try {
     await app.openMarkets();
@@ -1345,8 +1381,8 @@ test('live confidence, Markets and Overview: the same reading shows the same sco
     await app.waitFor(() => app.doc.querySelector('#sigGrid .sig-card [data-live-conf="EUR/USD"]'), 'the scanner card');
     assert.equal(app.doc.querySelector('#sigGrid .sig-card [data-live-conf="EUR/USD"]').textContent, '55%');
     await app.open('overview');
-    await app.waitFor(() => app.doc.querySelector('#ovSignals [data-live-conf="EUR/USD"]'), 'the Overview signal list');
-    assert.equal(app.doc.querySelector('#ovSignals [data-live-conf="EUR/USD"]').textContent, '55%');
+    assert.equal(app.doc.querySelector('#ovSignals'), null, 'the overview does not repeat the specialist signal list');
+    assert.ok(app.doc.getElementById('analysisSummaryTitle'), 'the unified overview keeps its Analysis Summary heading');
     assert.deepEqual(app.problems, []);
   } finally { await app.close(); }
 });
@@ -1383,24 +1419,24 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     assert.equal(cells('EUR/USD').length, headers(watchTable).length, 'one cell under every header');
     assert.equal(cells('GBP/USD')[3], '20%', 'a WAIT shows the score as read, with nothing to follow');
     assert.equal(cells('AUD/USD')[3], '\u2014', 'a reading without a score shows a dash, not 0%');
-    assert.equal(cells('US30')[3], '90%not measured', 'a daily reading shows its score as read: there is no level to measure from');
+    assert.equal(cells('US30')[3], '—', 'daily trend context has no trade-confidence value');
 
     /* The setups table lists the BUYs and the SELL, not the WAIT. */
     const setups = () => doc.querySelector('#sniperSignalList table');
     assert.deepEqual(headers(setups()), ['Market', 'Signal', 'Confidence', 'Timeframe', 'Entry', 'SL', 'TP1', 'Source']);
     const setupCells = (symbol) => { const tr = [...setups().querySelectorAll('tbody tr')].find((el) => el.children[0].textContent === symbol); return tr ? [...tr.children].map((td) => td.textContent) : null; };
-    assert.equal(setups().querySelectorAll('tbody tr').length, 3);
+    assert.equal(setups().querySelectorAll('tbody tr').length, 2, 'daily context is not a directional setup');
     assert.equal(setupCells('EUR/USD').length, 8);
     assert.equal(setupCells('EUR/USD')[2], '75%6.0 pips withmeasured 39.9%');
     assert.equal(setupCells('AUD/USD')[2], '\u2014');
-    assert.equal(setupCells('US30')[2], '90%not measured');
+    assert.equal(setupCells('US30'), null, 'daily context is excluded from trade setups');
     assert.equal(setupCells('GBP/USD'), null);
 
     /* Under each score: what the replay measured for that market. The full sentence is the tooltip.
        These readings come from the PC's server, which still looks every minute: the figure is the one of that timing. */
     const measuredIn = (tr) => { const el = tr.querySelector('[data-measured]'); return el ? { text: el.textContent, title: el.getAttribute('title') } : null; };
     assert.deepEqual(measuredIn(rowOf('EUR/USD')), { text: 'measured 39.9%', title: EUR_MEASURED_MINUTE });
-    assert.deepEqual(measuredIn(rowOf('US30')), { text: 'not measured', title: NO_LEVELS });
+    assert.equal(measuredIn(rowOf('US30')), null, 'daily context has no measured-trade row');
     assert.equal(measuredIn(rowOf('GBP/USD')), null, 'a WAIT of the 1m/5m/1h rule is not a signal to measure');
     assert.equal(measuredIn(rowOf('AUD/USD')), null);
 
@@ -1419,8 +1455,8 @@ test('live confidence, Sniper alerts: both tables carry a Confidence column, and
     assert.equal(setupCells('EUR/USD')[2], '55%6.0 pips againstmeasured 39.9%');
     assert.match(detail.textContent, /Confidence: 55% \u00b7 Source: /);
     assert.match(detail.querySelector('[data-live-note]').textContent, /^6\.0 pips against this BUY \u00b7 50% of the way to the stop /);
-    assert.equal(cells('US30')[3], '90%not measured', 'the daily reading is left as it was');
-    assert.equal(setupCells('US30')[2], '90%not measured');
+    assert.equal(cells('US30')[3], '—', 'daily context still has no trade-confidence value');
+    assert.equal(setupCells('US30'), null, 'daily context is excluded from trade setups');
     assert.equal(cells('GBP/USD')[3], '20%');
 
     /* The scanner reads EUR/USD again, as WAIT. These tables still hold the BUY of the last market scan:
@@ -1548,7 +1584,14 @@ test('live confidence, Gold monitor: a gold price that has gone stale no longer 
 /* The scanner cards are a snapshot until Refresh; other views analyse the same markets again in the meantime. */
 const liveCard = (app, symbol) => {
   const el = [...app.doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === symbol);
-  return el ? { direction: el.querySelector('.badge').textContent, score: el.querySelector('[data-live-conf]').textContent, bar: el.querySelector('.conf-bar i').style.width, note: el.querySelector('.sig-live').textContent } : null;
+  if (!el) return null;
+  const confidenceBar = el.querySelector('.conf-bar');
+  return {
+    direction: el.querySelector('.badge').textContent,
+    score: el.querySelector('.row.between b').textContent,
+    bar: confidenceBar.hidden ? 'hidden' : el.querySelector('.conf-bar i').style.width,
+    note: el.querySelector('.sig-live').textContent
+  };
 };
 /* The local API stand-in, with the EUR/USD reading chosen by the test at each moment. */
 const liveApiWith = (eurusd) => (path, body) => {
@@ -1862,8 +1905,8 @@ test('live confidence, Gold monitor on Exness: the score follows the Exness gold
 
 /* ---------------------------------------------------------------- the questions of 13 November 2026 */
 
-test('index cards on the cloud: a daily reading says on the card why it has no entry, stop or target, whether it reads BUY or WAIT', async () => {
-  /* As on the screenshot: NAS100 WAIT 66%, US30 BUY 82%, SPX500 WAIT 66%, three empty boxes each. */
+test('index cards on the cloud: daily directional context has no trade confidence or usable levels', async () => {
+  /* Legacy-shaped responses: all index trade fields must be removed from the rendered card. */
   const as = { NAS100: { signal: 'WAIT', bias: 'bearish', confidence: 66 }, US30: { signal: 'BUY', bias: 'bullish', confidence: 82 }, SPX500: { signal: 'WAIT', bias: 'bearish', confidence: 66 } };
   const app = await bootApp({ world: { ticks: true, rewriteScan: (results) => results.map((reading) => (as[reading.symbol] ? { ...reading, ...as[reading.symbol] } : reading)) } });
   try {
@@ -1873,10 +1916,14 @@ test('index cards on the cloud: a daily reading says on the card why it has no e
     const cardEl = (symbol) => [...app.doc.querySelectorAll('#sigGrid .sig-card')].find((card) => card.querySelector('.sym-name').textContent === symbol);
     const check = () => {
       for (const [symbol, reading] of Object.entries(as)) {
-        assert.deepEqual(liveCard(app, symbol), { direction: reading.signal, score: reading.confidence + '%', bar: reading.confidence + '%', note: NO_LEVELS }, symbol);
-        assert.deepEqual(['e', 's', 't'].map((key) => cardEl(symbol).querySelector('[data-l="' + key + '"]').textContent), ['\u2014', '\u2014', '\u2014'], symbol + ': the three boxes stay empty');
-        assert.equal(cardEl(symbol).querySelector('.sig-measured').textContent, '', symbol + ': the sentence above already says that nothing was measured');
-        assert.match(cardEl(symbol).querySelector('.sig-why').textContent, / \u00b7 DAILY \(index\) \u00b7 source: Yahoo Finance public daily data \u00b7 AURUM cloud analysis$/);
+        assert.equal(liveCard(app, symbol).direction, 'WAIT', symbol + ': trend is not a trade direction');
+        assert.equal(liveCard(app, symbol).score, 'Unavailable', symbol + ': confidence is not supplied');
+        assert.equal(liveCard(app, symbol).bar, 'hidden', symbol + ': no confidence bar is drawn');
+        assert.match(liveCard(app, symbol).note, /not a validated setup/);
+        assert.deepEqual(['e', 's', 't'].map((key) => cardEl(symbol).querySelector('[data-l="' + key + '"]').textContent), ['Unavailable', 'Unavailable', 'Unavailable'], symbol + ': absent levels stay unavailable');
+        assert.match(cardEl(symbol).querySelector('.sig-measured').textContent, /No validated trade plan/);
+        assert.match(cardEl(symbol).querySelector('.sig-why').textContent, /Daily trend context:/);
+        assert.equal(cardEl(symbol).querySelector('.sig-use').disabled, true, symbol + ': no order ticket action');
       }
     };
     check();
@@ -2229,8 +2276,9 @@ test('News on the Cloudflare site: a headline names its markets and shows their 
     await app.waitFor(() => feedRow(app, 'Nvidia') && /Sell \d+%/.test(flat(feedRow(app, 'Gold steadies'))), 'headlines with the readings of their markets');
 
     const nvidia = flat(feedRow(app, 'Nvidia').querySelector('.news-concern'));
-    assert.match(nvidia, /^Concerns Nvidia → NAS100 Buy 82% · daily /, nvidia);
-    assert.match(nvidia, /SPX500 .*US100 /, 'the three index markets Nvidia is part of');
+    assert.match(nvidia, /^Concerns Nvidia → NAS100 Daily context · bullish trend /, nvidia);
+    assert.match(nvidia, /SPX500 Daily context · bullish trend .*US100 Daily context · bullish trend/, 'the three index markets Nvidia is part of');
+    assert.doesNotMatch(nvidia, /\b(?:Buy|Sell) \d+%/, 'daily context is not presented as a trade signal or confidence');
     assert.ok(nvidia.endsWith('Nvidia is one of the largest companies in the Nasdaq-100 and the S&P 500, so news about it concerns those indices.'), nvidia);
     assert.equal(flat(feedRow(app, 'Gold steadies').querySelector('.news-concern')), 'Concerns Gold → XAU/USD Sell 71%');
     assert.equal(feedRow(app, 'Gold steadies').querySelector('[data-news-markets]').dataset.newsNamed, 'XAU/USD');
@@ -2243,7 +2291,7 @@ test('News on the Cloudflare site: a headline names its markets and shows their 
     assert.doesNotMatch(flat(feed), /heuristic|sniper|Execute/i);
     for (const row of feed.querySelectorAll('tbody tr')) assert.equal(row.cells.length, 2, 'a headline and its buttons: no chip column on the cloud');
     assert.match(flat(app.doc.getElementById('newsSources')), /^Sources: FXStreet — 2 headlines · Investing\.com — not available \(unreachable\) · CNBC — 1 headline · read at (\w{3} )?\d\d:\d\d EAT$/);
-    assert.match(flat(feed), /No direction is derived from a headline.*It is not a forecast of what the news will do to the price: a headline does not tell the direction\.$/);
+    assert.match(flat(feed), /No direction is derived from a headline.*index may show daily trend context only, not a validated trade setup or trade-confidence score\./);
     assert.equal(feedRow(app, 'Nvidia').querySelector('a[target="_blank"]').getAttribute('href'), 'https://cnbc.example/nvidia');
 
     /* The name of a market opens its chart. */
@@ -3136,7 +3184,7 @@ test('the main live chart includes the four timeframe market-state view and foll
     assert.deepEqual([...app.doc.querySelectorAll('#chartMsGrid [data-chart-ms-tf]')].map((tile) => tile.dataset.chartMsTf), ['h4', 'h1', 'm15', 'm5']);
     assert.match(app.doc.getElementById('chartMsBias').textContent, /WAIT|BUY|SELL/);
     assert.match(panel.textContent, /not profit probability/);
-    assert.equal(panel.querySelectorAll('.btn.buy, .btn.sell, button').length, 0, 'bias is informational and is not an order control');
+    assert.equal(panel.querySelectorAll('.btn.buy, .btn.sell, [data-order-action], #placeOrderBtn, #orderAmount').length, 0, 'bias is informational and contains no order controls; expand buttons only show timeframe detail');
     assert.equal(app.doc.getElementById('msSym').value, symbol, 'the chart market is the panel market');
     const smc = app.doc.getElementById('chartSmc');
     await app.waitFor(() => smc.querySelectorAll('[data-smc-setup]').length === 3, 'the three SMC checklist cards');

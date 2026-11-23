@@ -61,6 +61,9 @@ test('POST /api/patterns/analyze — 200 with candles + detections array', async
   assert.equal(j.symbol, 'EUR/USD');
   assert.equal(j.granularity, 300);
   assert.ok(Array.isArray(j.candles) && j.candles.length === 120, 'candles ' + (j.candles || []).length);
+  assert.equal(j.candle_close_confirmed, true);
+  assert.ok(j.candles.at(-1).time + j.granularity <= 1700000000 + 120 * j.granularity,
+    'pattern evaluation ends on a proven closed candle');
   assert.ok(Array.isArray(j.patterns));
   assert.equal(j.source, 'deriv-candles');
   for (const d of j.patterns) {

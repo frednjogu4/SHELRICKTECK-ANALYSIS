@@ -17,6 +17,7 @@
     "verify:dist": "node scripts/verify-dist.mjs",
     "verify": "npm run build && npm test && npm run test:worker && wrangler deploy --dry-run --config wrangler.jsonc",
     "cf:dev": "npm run build && wrangler dev --config wrangler.jsonc --port 8790",
+    "cf:preview": "npm run build && wrangler preview --config ./wrangler.jsonc",
     "cf:dry-run": "npm run build && wrangler deploy --dry-run --config wrangler.jsonc",
     "cf:deploy:staging": "npm run build && wrangler deploy --config wrangler.jsonc",
     "start": "node server/server.js"

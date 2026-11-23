@@ -71,6 +71,9 @@ test('Cloudflare index scan uses Yahoo daily data and does not invent order leve
   assert.equal(res.status, 200);
   assert.equal(data.results[0].data_source, 'Yahoo Finance public daily data');
   assert.equal(data.results[0].tf, 'DAILY (index)');
+  assert.equal(data.results[0].signal, 'WAIT', 'daily trend is not an approved directional setup');
+  assert.equal(data.results[0].analysis_status, 'CONTEXT_ONLY');
+  assert.equal(data.results[0].confidence, null, 'no trade confidence without a validated plan');
   assert.equal(data.results[0].entry, null);
   assert.equal(data.results[0].stop_loss, null);
   assert.equal(data.results[0].tp1, null);
