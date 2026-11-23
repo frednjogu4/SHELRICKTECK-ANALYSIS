@@ -114,6 +114,18 @@ test('Exness remains read-only: the ticket cannot request a preview or order in 
   assert.match(page, /broker order previews and placement are disabled for both REAL and DEMO accounts/);
 });
 
+test('live MT5 positions refresh periodically and refresh immediately when the app becomes active', () => {
+  const entry = readFileSync(join(root, 'src', 'main.js'), 'utf8');
+  assert.match(entry, /const MT5_SNAPSHOT_REFRESH_MS\s*=\s*15000/);
+  assert.match(entry, /setInterval\(scheduleMt5SnapshotRefresh,MT5_SNAPSHOT_REFRESH_MS\)/);
+  assert.match(entry, /window\.addEventListener\('focus',scheduleMt5SnapshotRefresh\)/);
+  assert.match(entry, /window\.addEventListener\('pageshow',scheduleMt5SnapshotRefresh\)/);
+  assert.match(entry, /document\.addEventListener\('visibilitychange',[\s\S]*?visibilityState==='visible'[\s\S]*?scheduleMt5SnapshotRefresh/);
+  assert.match(entry, /case 'portfolio': renderPortfolio\(\); scheduleMt5SnapshotRefresh\(\); break/);
+  assert.match(entry, /epoch!==mt5SnapshotEpoch/);
+  assert.match(entry, /auto-refresh every '\+Math\.round\(MT5_SNAPSHOT_REFRESH_MS\/1000\)/);
+});
+
 test('index.html keeps one valid manifest link, a <noscript> notice and the module entry', () => {
   assert.equal((indexHtml.match(/<link rel="manifest"/g) || []).length, 1);
   assert.doesNotMatch(indexHtml, /<meta name="manifest"/, 'a <meta> element cannot link a manifest');
