@@ -51,7 +51,7 @@ npm --version
 echo.
 
 echo [1/5] Checking local build dependencies...
-node --input-type=module -e "await import('vite'); await import('wrangler/bin/wrangler.js')" >nul 2>&1
+node -e "require.resolve('vite')" >nul 2>&1
 if errorlevel 1 (
   echo [INFO] Dependencies are missing or incomplete. Running npm ci...
   call npm ci --no-audit --no-fund
