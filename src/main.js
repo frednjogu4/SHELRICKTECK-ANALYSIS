@@ -40,6 +40,11 @@ import { emaSeries, findLevels } from '../server/lib/indicators.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText, contextOnlyDailyReading } from './bestpick.js';
 import { headlineConcerns, eventConcerns, eventTime, currenciesOf, marketsForCurrency, eatClock, eatDay, eatDayBounds, eatStamp, standAside, exposureFor, exposureForCurrency, releaseMeasuredText, trendWords, STAND_ASIDE } from './newsimpact.js';
 import { buildScheduledNewsAlerts } from './schedulednews.js';
+import { initCommandCentre } from './commandcentre.js';
+
+/* The new unified Overview has its own structure; the legacy initializer safely no-ops without its old KPI anchor. */
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => initCommandCentre(), { once: true });
+else initCommandCentre();
 
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));
