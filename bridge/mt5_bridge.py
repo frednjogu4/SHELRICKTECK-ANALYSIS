@@ -50,10 +50,10 @@ from localapiauth import api_proxy_authorized
 HOST = os.environ.get("AURUM_BRIDGE_HOST", "0.0.0.0")
 PORT = 8787
 MAGIC = 234000  # our orders' magic number
-# Read-only Exness integration. Broker order placement is disabled in this
-# release, for both demo and real accounts. Do not enable without separate,
-# explicit approval and a reviewed execution-safety plan.
-MT5_MANUAL_ORDER_EXECUTION_ENABLED = False
+# Exness real/demo manual-only execution. Automation and app-side closes remain
+# blocked. The local bridge independently verifies the selected account mode,
+# quote, SL/TP, volume, equity, daily loss and open positions before each send.
+MT5_MANUAL_ORDER_EXECUTION_ENABLED = True
 MT5_MAX_OPEN_POSITIONS = 1
 MT5_MAX_RISK_PCT = 0.5
 MT5_MAX_DAILY_LOSS_PCT = 2.0
@@ -349,7 +349,7 @@ def handle_login(msg):
     password = msg.get("password") or ""
     server = (msg.get("server") or "").strip()
     if not password:
-        return {**err("MT5 password required to verify the local account identity for read-only data access.")}
+        return {**err("MT5 password required; an investor/read-only password permits viewing only, while manual order sending requires MT5 trade permission.")}
     if not login:
         return {**err("account number required")}
     if not server:
@@ -762,9 +762,7 @@ def _mt5_order_plan(msg):
 
 
 def handle_order_preview(msg):
-    """Broker order previews are disabled along with order placement."""
-    if not MT5_MANUAL_ORDER_EXECUTION_ENABLED:
-        return {**err("Exness broker order placement is disabled in this release.")}
+    """Create a 30-second, no-send preview for one explicitly selected account mode."""
     plan, problem = _mt5_order_plan(msg)
     if problem:
         return {**err(problem)}

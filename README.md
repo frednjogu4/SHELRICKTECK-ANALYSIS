@@ -1,6 +1,6 @@
 # AURUM Trading Workspace
 
-Real-data analysis workspace: **Deriv live prices** (public WebSocket, no key), **TradingView** official widgets (charts, news, calendar), **read-only Exness MT5 local connection**, and **AI guidance** behind a shared **$5/day** budget. Exness account and market data may be read locally, but broker order previews and placement are disabled in this release for both REAL and DEMO accounts. Cloudflare staging remains analysis-only. No simulated prices or fake market data — unavailable data is stated honestly.
+Real-data-only trading workspace: **Deriv live prices** (public WebSocket, no key), **TradingView** official widgets (charts, news, calendar), **Deriv's existing gated execution path**, **Exness MT5 local connection with manually confirmed REAL/DEMO orders**, and **AI guidance** behind a shared **$5/day** budget. Exness orders require a fresh local MT5 risk preview and explicit confirmation for each order. Automated entries and app-side closes remain disabled; REAL orders can lose real funds and are not guaranteed safe by stops or risk estimates. No simulated prices or fake content — unavailable data is stated honestly.
 
 ## Quick start
 
@@ -1387,14 +1387,14 @@ browser ── /api ──> Express :4100 ── Deriv candles              anal
                       └── /api/deriv (WS relay + REST proxy) ── Deriv WS  [env token, server-side only]
                            proposal → confirm → buy  (trading OFF by default, server-side limits)
                       └── /api/backtest ── walk-forward over real Deriv candles (same indicator engine)
-browser ── local/LAN only ──> bridge/mt5_bridge.py ──> Exness MT5 terminal [Windows PC; read-only]
+browser ── local/LAN only ──> bridge/mt5_bridge.py ──> Exness MT5 terminal [Windows PC; manual REAL/DEMO orders]
 ```
 
 - **Instrument universe**: `server/lib/symbols.js` — single source of truth for supported instruments and verified TradingView symbols; index CFDs are Exness MT5-only, never Deriv-orderable, and remain excluded from automation.
 - **AI budget**: device-wide ledger under `local` (`server/lib/store.js` usage rows) — switching sessions never resets the $5/day cap. Keys come from Settings vault (`x-ai-*` headers) or server env (`.env.example`).
-- **Broker access**: this release exposes Exness account, position, quote, symbol and candle-history reads through the local bridge. MT5 order previews, order placement and app-side closes are disabled for both REAL and DEMO accounts. Cloudflare staging remains analysis-only. Deriv's existing gated execution routes are separate; this repair does not authorize or initiate trades. Exact Exness server and identity are verified locally, and the bridge pins one account/server for connected PC/phone clients.
+- **Trading**: Deriv orders relay through `/api/deriv/*` with the existing gated auth flow. Exness account/position/quote/symbol/history reads use the local bridge. Manually confirmed orders are supported on MT5-verified USD REAL or DEMO accounts after a 30-second local preview and explicit per-order confirmation. Bridge hard limits are one open position, 0.5% buffered estimated stop risk per order, at least 1.2 reward/risk, up to 80% free margin, and a 2% UTC-day realized-loss threshold; all required state is rechecked immediately before send. These checks and stop estimates cannot guarantee maximum losses. App automation and closes remain disabled; manage positions in MT5. Exact server and Exness identity are verified locally; the bridge pins one account/server for connected PC/phone clients. The real-account route has not been end-to-end tested against a live Exness account.
 - **Notifications**: `src/notify.js` — browser Notification + toasts for feed, analysis, news briefs, trade lifecycle, TP1 guidance / TP2 / SL crossings (`src/main.js` level watcher).
-- **Honesty rules** (tests enforce): live feed down → `502 live_data_unavailable` (never simulated candles); no keys → `technical` mode label (never fake AI); missing broker data is stated explicitly. Exness data access is read-only; this release has no MT5 order preview or order-placement path enabled.
+- **Honesty rules** (tests enforce): live feed down → `502 live_data_unavailable` (never simulated candles); no keys → `technical` mode label (never fake AI); no broker → orders blocked. Exness demo execution is a real broker demo account, never a local simulated fill.
 
 ## Key files
 
@@ -1409,10 +1409,10 @@ src/smcplaybook.js    Closed-candle SMC checklist: break/retest, sweep/MSS, FVG 
 src/tradingview.js    Advanced Chart / timeline / calendar mounts
 src/notify.js         notifications engine
 src/vault.js          AI key vault (localStorage, x-ai-* headers)
-src/bridge.js         Exness MT5 local bridge client (read-only account and market data)
+src/bridge.js         Exness MT5 local bridge client (verified REAL/DEMO manual orders)
 server/app.js         Express routes: analyze, scan, news, usage, health, deriv/*
 server/lib/           analyzer, decision (Claude/OpenAI/Perplexity), derivfeed, tradederiv, store
-bridge/               Exness MT5 local bridge (Python, MetaTrader5; order execution disabled) — see bridge/README.md
+bridge/               Exness MT5 local bridge (Python, MetaTrader5; manual REAL/DEMO execution) — see bridge/README.md
 server/lib/derivconn.js persistent Deriv connection manager (authorize-first, ping 30s, backoff+re-subscribe)
 server/derivproxy.js    /api/deriv REST + WS relay — token never reaches the browser
 server/lib/backtest.js  walk-forward backtest on real candles (no simulated data anywhere)

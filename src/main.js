@@ -816,7 +816,7 @@ async function connectMt5(url,login,password,server,token){
       exposure, so P/L is identical at any leverage — leverage only changes
       how much margin is locked. Show the real numbers where you connect. */
     const lv=account&&account.leverage;
-    if(lv)toast(account?.environment==='demo'?'Exness DEMO account verified':account?.environment==='real'?'Exness REAL account verified':'Exness account mode unverified','MT5 reports leverage 1:'+lv+'; leverage never multiplies your P/L in this app. The MT5 connection is read-only in this release; broker order previews and placement are disabled.','ok');
+    if(lv)toast(account?.environment==='demo'?'Exness DEMO account verified':account?.environment==='real'?'Exness REAL account verified':'Exness account mode unverified','MT5 reports leverage 1:'+lv+'; leverage never multiplies your P/L in this app. Only a broker-verified REAL/DEMO mode can reach the manual order preview; every order requires strict local risk checks and explicit confirmation. Automation and app-side closes remain disabled.','ok');
   }
   state.balance=account.balance!=null?Number(account.balance):null;
   state.connections.mt5=true; save();
@@ -988,7 +988,7 @@ $('#exnessForm').onsubmit=async e=>{
     const connectedAccount=await connectMt5(($('#mt5Url')||{}).value||bridge.localBridgeWs(),login,password,server,($('#mt5Token')||{}).value||'');
     err.style.display='none';
     showApp('Exness','mt5');
-    notify(connectedAccount?.environment==='demo'?'Exness DEMO account verified':connectedAccount?.environment==='real'?'Exness REAL account verified':'Exness account mode unverified','MT5 account metrics and market data are read-only. Exness broker order previews and placement are disabled in this release.','ok');
+    notify(connectedAccount?.environment==='demo'?'Exness DEMO account verified':connectedAccount?.environment==='real'?'Exness REAL account verified':'Exness account mode unverified',connectedAccount?.environment==='demo'?'DEMO orders are manual only and require a fresh bridge preview, strict local risk checks and explicit confirmation.':connectedAccount?.environment==='real'?'REAL orders are manual only and require a fresh bridge preview, strict local risk checks and explicit confirmation. Automation and app-side closes remain disabled.':'MT5 did not verify REAL or DEMO mode; app order entry remains blocked.','ok');
   }catch(ex){
     const m=String(ex.message||ex);
     const onPc=/localhost|127\.0\.0\.1/.test(location.hostname);
@@ -996,7 +996,7 @@ $('#exnessForm').onsubmit=async e=>{
     const httpsLead=(location.protocol==='https:'&&!onPc)?'<b>This HTTPS app is blocked by the browser from opening the PC\'s local bridge socket — the bridge itself is fine.</b> Guaranteed path: on the PC open <span class=\'mono\'>http://127.0.0.1:8788/app</span> — or double-click the <b>“Fredrick TRADING (local app)”</b> desktop icon that SETUP_AND_RUN.bat creates — and connect there. ':'';
     err.innerHTML=httpsLead+(/unreachable|timeout|refused|closed|blocked/i.test(m)
       ? '<b>Bridge not reachable.</b> 1) On the trading PC run <b>SETUP_AND_RUN.bat</b> and keep Exness MT5 open — the bridge window prints its address; the local token is in bridge_token.txt. 2) '+(onPc?'Open this app on the PC (<span class=\'mono\'>http://127.0.0.1:8788/app</span>).':'You are on another device (phone/tablet): set <b>Bridge URL</b> to the address the bridge window prints (e.g. <span class=\'mono\'>ws://192.168.1.10:8787</span>) and copy the <b>bridge token</b> locally from <span class=\'mono\'>bridge_token.txt</span> — <span class=\'mono\'>127.0.0.1</span> from a phone is the phone itself, not your PC. Easiest: open <span class=\'mono\'>http://PC-IP:8788/app</span> exactly as printed by the bridge window (same wifi).')+' 3) If a padlock warning appears on the https app: padlock → Site settings → Insecure content → Allow, reload (the http://PC-IP:8788/app route has no such warning).'
-      : '<b>'+escHtml(m)+'</b>')+' <div class="tiny faint" style="margin-top:6px">The account number and MT5 server must MATCH: use the exact Exness server shown in the Exness Personal Area. This release uses MT5 read-only for account and market data; broker order previews and placement are disabled. Keep passwords local.</div>';
+      : '<b>'+escHtml(m)+'</b>')+' <div class="tiny faint" style="margin-top:6px">The account number and MT5 server must MATCH: use the exact Exness server shown in the Exness Personal Area. A trading password is required for manual orders on either account mode; an investor/read-only password can connect for viewing only. Keep passwords local.</div>';
     err.style.display='block';
   }finally{ btn.disabled=false; btn.textContent='Connect Exness locally'; }
 };
@@ -2074,13 +2074,13 @@ function openSignalSymbol(sym){
   if(INSTRUMENT_MAP[sym]){
     setChartSymbol(sym); goto('trade');
     if(INSTRUMENT_MAP[sym].c==='indices'){
-      toast('Index CFD · read-only Exness data',state.broker?.type==='mt5'?'Exness quotes and candles are read-only in this release; broker order previews and placement are disabled.':'Connect the local Exness MT5 bridge for read-only quotes and candle history. Broker order placement is disabled.',{kind:'warn'});
+      toast('Index CFD · Exness manual orders',state.broker?.type==='mt5'?'The verified Exness '+String(state.broker.account?.environment||'unknown').toUpperCase()+' account can use manual orders only, after a fresh bridge preview and explicit confirmation.':'Connect the local Exness MT5 bridge; REAL and DEMO orders require broker-verified account mode, strict risk checks and per-order confirmation. Automation stays disabled.',{kind:'warn'});
     }
     return;
   }
   const tv=INDEX_TV[sym];
   if(tv)window.open('https://www.tradingview.com/chart/?symbol='+encodeURIComponent(tv),'_blank','noopener');
-  toast('Index — analysis only','This index is not orderable through Deriv. The local Exness MT5 connection is read-only in this release; broker order previews and placement are disabled.',{kind:'warn'});
+  toast('Index — no Deriv order route','This index is not orderable through Deriv. Exness manual orders are possible only for instruments the local MT5 bridge resolves as tradable on a verified REAL or DEMO account. Every order requires a fresh preview and explicit confirmation; automation and app-side closes remain disabled.',{kind:'warn'});
 }
 function setChartSymbol(sym,keepLevels){
   if(!bySym[sym])return;
@@ -2356,10 +2356,7 @@ function syncSide(){
   $('#sideBuy').classList.toggle('sel-buy',buy);
   $('#sideSell').classList.toggle('sel-sell',!buy);
   const btn=$('#placeOrderBtn');
-  const mt5ReadOnly=state.broker?.type==='mt5';
-  btn.disabled=mt5ReadOnly;
-  btn.textContent=mt5ReadOnly?'Broker orders disabled':'Place '+state.side+' order';
-  btn.title=mt5ReadOnly?'Exness MT5 is read-only in this release.':'Place an order through the selected broker.';
+  btn.textContent='Place '+state.side+' order';
   btn.classList.toggle('buy',buy); btn.classList.toggle('sell',!buy);
 }
 $('#sideBuy').onclick=()=>{ state.side='BUY'; syncSide(); };
@@ -2449,8 +2446,53 @@ function beWinRateText(stake,payout){
     lg.addEventListener('change',()=>{ let v=Number(lg.value); if(!Number.isFinite(v)||v<0)v=25; state.settings.lossGuard=v; save(); lg.value=v;
       toast('Daily loss guard',v>0?('Orders stand down at \u2212'+fmtMoney(v)+' closed losses in a day.'):'Guard disabled \u2014 server-side caps remain the only backstop.','ok'); }); } }
 
-async function placeMt5ManualOrder(){
-  toast('Broker orders disabled','Exness broker order placement is disabled in this release. Use the labelled read-only feed and paper-only analysis.','warn');
+async function placeMt5ManualOrder({I,amt,sl,tp}){
+  const acct=state.broker?.account;
+  if(state.broker?.type!=="mt5"||!acct||!['demo','real'].includes(acct.environment)||acct.demo!==(acct.environment==='demo')){
+    toast('Verified Exness account required','MT5 must explicitly verify whether the connected account is REAL or DEMO before app orders are available.','warn');
+    return;
+  }
+  const demo=acct.demo,environment=demo?'demo':'real',environmentLabel=demo?'DEMO':'REAL';
+  if(!Number.isFinite(sl)||sl<=0||!Number.isFinite(tp)||tp<=0){
+    toast('Stop and target required',environmentLabel+' orders require both a valid stop-loss and take-profit; no order was sent.','warn');
+    return;
+  }
+  const btn=$('#placeOrderBtn');
+  const old=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='Checking '+environmentLabel.toLowerCase()+' risk…';}
+  try{
+    const preview=await bridge.previewBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp});
+    if(preview.environment!==environment||preview.demo!==demo||preview.manual_only!==true)throw new Error('The MT5 preview does not match the verified account mode; no order was sent. Reconnect and inspect the terminal account.');
+    const risk=fmtAcctMoney(preview.risk_amount,preview.currency);
+    const reward=fmtAcctMoney(preview.reward_amount,preview.currency);
+    const margin=fmtAcctMoney(preview.margin,preview.currency);
+    const accountLabel=(acct.login||'••••')+' · '+(acct.server||'verified Exness server');
+    const accountWarning=demo?'DEMO funds — this order goes to the verified Exness DEMO account.':'REAL MONEY — this sends a market order to the verified Exness REAL account. Losses affect your real balance; check every value below and cancel if anything is unexpected.';
+    const details=accountWarning+'\n\n'
+      +'Account '+accountLabel+'\n'
+      +preview.side+' '+preview.symbol+' · requested notional '+fmtMoney(preview.requested_usd)+' · estimated '+preview.lots+' lots\n'
+      +'Current '+(preview.side==='BUY'?'ask':'bid')+' '+fmtPx(preview.price,I.d)+' · stop '+fmtPx(preview.sl,I.d)+' · target '+fmtPx(preview.tp,I.d)+'\n'
+      +'Buffered estimated stop risk '+risk+' ('+Number(preview.risk_pct).toFixed(2)+'% of equity) · target estimate '+reward+' · R:R '+Number(preview.rr).toFixed(2)+' · margin '+margin+'\n\n'
+      +'Bridge hard limits (REAL and DEMO): maximum 0.5% buffered stop-risk per order, 2% account daily loss, one open position, minimum 1.2 reward:risk, and 80% free-margin ceiling. Quote and limits are rechecked by the local MT5 bridge at send time. Preview expires in 30 seconds.\n'
+      +'This app never opens an order automatically and cannot close it. Manage/close the position in MetaTrader 5. Market orders may slip and a stop does not guarantee the final loss.';
+    if(btn)btn.textContent='Waiting for '+environmentLabel+' confirmation…';
+    const confirmed=await askConfirm('Confirm Exness '+environmentLabel+' order',details,'Place '+environmentLabel+' order');
+    if(!confirmed){toast('Cancelled','No Exness order was sent.');return;}
+    if(btn)btn.textContent='Sending '+environmentLabel+' order…';
+    const intentId=Date.now().toString(36)+Math.random().toString(36).slice(2,16);
+    const result=await bridge.placeBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp,
+      previewId:preview.preview_id,intentId,manualConfirmed:true});
+    if(result.type!=='filled'||result.demo!==demo||result.environment!==environment)throw new Error('The bridge did not verify a fill on the expected '+environmentLabel+' account. Inspect MT5 positions/history before retrying.');
+    toast(environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots · buffered risk '+fmtAcctMoney(result.estimated_buffered_risk,result.currency),'ok');
+    notify('Exness '+environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots. Manage or close it directly in MT5.',{tag:'mt5-manual-order',kind:'ok'});
+    await refreshMt5Snapshot(false);
+  }catch(e){
+    const message=String(e.message||e);
+    const uncertain=/uncertain|partial or pending/i.test(message);
+    const title=uncertain?environmentLabel+' order outcome uncertain':environmentLabel+' order not sent';
+    toast(title,message,'err');
+    notify(title,message,{tag:'mt5-manual-order',kind:'err'});
+  }finally{if(btn){btn.disabled=false;btn.textContent=old;}}
 }
 
 async function placeOrder(){
@@ -2465,7 +2507,10 @@ async function placeOrder(){
   if(!amt||amt<1){ toast('Invalid amount','Enter at least $1 to place an order.','err'); return; }
   const sl=parseFloat($('#orderSL').value), tp=parseFloat($('#orderTP').value), tp2=parseFloat($('#orderTP2').value);
   if(state.broker?.type==='mt5'){
-    await placeMt5ManualOrder();return;
+    if(!['demo','real'].includes(state.broker.account?.environment)||state.broker.account?.demo!==(state.broker.account?.environment==='demo')){
+      toast('Verified account mode required','MT5 has not verified whether this is a REAL or DEMO account. Refresh/reconnect before placing any order.','warn');return;
+    }
+    await placeMt5ManualOrder({I,amt,sl,tp});return;
   }
   const px=I.p;
   if(px==null){ toast('No live price',I.s+' has no live quote yet — wait for the feed or pick another symbol.','err'); return; }
@@ -3407,8 +3452,8 @@ $$('.conn-btn').forEach(btn=>btn.onclick=async()=>{
       const bridgeToken=($('#mt5Token')&&$('#mt5Token').value.trim())||'';
       await connectMt5(url,login,password,server,bridgeToken);
       const env=state.broker?.account?.environment,verifiedEnv=env==='demo'||env==='real';
-      toast(verifiedEnv?'Exness '+env.toUpperCase()+' connected':'Exness mode unverified',verifiedEnv?`Local MT5 verified the ${env.toUpperCase()} account. This release is read-only: broker order previews and placement are disabled.`:'MT5 did not verify REAL or DEMO mode; account data remains read-only.','ok');
-      notify(verifiedEnv?'Exness '+env.toUpperCase()+' connected':'Exness mode unverified','MT5 account metrics and market data are read-only. Exness broker order previews and placement are disabled in this release.',{tag:'connect',kind:'ok'});
+      toast(verifiedEnv?'Exness '+env.toUpperCase()+' connected':'Exness mode unverified',verifiedEnv?`Local MT5 verified the ${env.toUpperCase()} account. Orders are manual only and require a fresh preview, strict bridge risk checks and explicit per-order confirmation. App automation and closes remain disabled.`:'MT5 did not verify REAL or DEMO mode; app order entry remains blocked.','ok');
+      notify(verifiedEnv?'Exness '+env.toUpperCase()+' connected':'Exness mode unverified',verifiedEnv?'Verified MT5 account; manual orders only with per-order confirmation and local risk checks. App automation and closes remain disabled.':'MT5 did not verify REAL or DEMO mode; app order entry remains blocked.',{tag:'connect',kind:'ok'});
     }
     connUI(); updateSessionInfo(); updateTradeHeader(); updateKpis();
   }catch(e){

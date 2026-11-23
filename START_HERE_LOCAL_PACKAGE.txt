@@ -15,5 +15,5 @@ MT5 connection error
 Privacy and safety
 - The Exness bridge and API run on this PC/private LAN only. Do not port-forward them or expose them to the public internet.
 - No bridge token, MT5 password, environment file, node_modules, or prior server/data store is included. The setup creates the bridge token locally; never send it in chat.
-- Sniper is analysis-only. Exness MT5 is read-only in this release; broker order previews and placement are disabled for both REAL and DEMO accounts.
+- Sniper remains analysis-only. Manual Exness orders are enabled on the verified REAL or DEMO account, each behind a fresh local preview and explicit confirmation; app-side closes stay disabled.
 - If setup fails, share a reviewed/redacted log from logs\local-startup-*.log or logs\local-api.log. Redact account identifiers and never share passwords or bridge_token.txt.

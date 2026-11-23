@@ -46,6 +46,7 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         b._MT5_PREVIEWS.clear()
         b._MT5_ORDER_REPLIES.clear()
         b._MT5_ORDER_UNCERTAIN = False
+        b.MT5_MANUAL_ORDER_EXECUTION_ENABLED = True
         m.ACCOUNT_TRADE_MODE_DEMO = 0
         m.ACCOUNT_TRADE_MODE_REAL = 2
         m.ORDER_TYPE_BUY = 0
@@ -85,26 +86,73 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         request.update(overrides)
         return request
 
-    def test_broker_order_placement_is_disabled_for_demo_and_real_without_mt5_calls(self):
-        self.assertFalse(self.bridge.MT5_MANUAL_ORDER_EXECUTION_ENABLED)
-        for environment in ("demo", "real"):
-            request = self.demo_request(environment=environment)
-            preview = self.bridge.handle_order_preview(request)
-            order = self.bridge.handle_order({
-                **request, "preview_id": "a-valid-but-unusable-preview-id",
-                "intent_id": "disabledIntent123456", "confirmed": True,
-            })
-            self.assertEqual(preview["type"], "error")
-            self.assertIn("order placement is disabled", preview["message"])
-            self.assertEqual(order["type"], "error")
-            self.assertIn("order execution is disabled", order["message"])
+    def test_unconfirmed_order_and_app_close_are_refused_without_execution_calls(self):
+        order = self.bridge.handle_order(self.demo_request())
         close = self.bridge.handle_close({"ticket": 123})
+        self.assertEqual(order["type"], "error")
+        self.assertIn("Explicit per-order confirmation is required", order["message"])
         self.assertEqual(close["type"], "error")
         self.assertIn("closing is disabled", close["message"])
-        self.fake_mt5.account_info.assert_not_called()
-        self.fake_mt5.terminal_info.assert_not_called()
         self.fake_mt5.order_send.assert_not_called()
         self.fake_mt5.PositionClose.assert_not_called()
+
+    def test_wrong_explicit_mode_is_rejected_before_preview_or_order_send(self):
+        self.fake_mt5.account_info.return_value.trade_mode = self.fake_mt5.ACCOUNT_TRADE_MODE_REAL
+        preview = self.bridge.handle_order_preview(self.demo_request())
+        self.assertEqual(preview["type"], "error")
+        self.assertIn("Selected account mode does not match", preview["message"])
+        missing_mode = self.bridge.handle_order_preview({key: value for key, value in self.demo_request().items() if key != "environment"})
+        self.assertEqual(missing_mode["type"], "error")
+        self.assertIn("Select DEMO or REAL explicitly", missing_mode["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_account_mode_switch_after_preview_refuses_without_send(self):
+        self.fake_mt5.account_info.return_value.trade_mode = self.fake_mt5.ACCOUNT_TRADE_MODE_REAL
+        request = self.demo_request(environment="real")
+        preview = self.bridge.handle_order_preview(request)
+        self.assertEqual(preview["type"], "order_preview")
+        self.fake_mt5.account_info.return_value.trade_mode = self.fake_mt5.ACCOUNT_TRADE_MODE_DEMO
+        order = self.bridge.handle_order({
+            **request, "preview_id": preview["preview_id"], "intent_id": "modeSwitch1234567890",
+            "confirmed": True,
+        })
+        self.assertEqual(order["type"], "error")
+        self.assertIn("Selected account mode does not match", order["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_verified_real_account_can_preview_and_send_only_after_explicit_confirmation(self):
+        self.fake_mt5.account_info.return_value.trade_mode = self.fake_mt5.ACCOUNT_TRADE_MODE_REAL
+        request = self.demo_request(environment="real")
+        preview = self.bridge.handle_order_preview(request)
+        self.assertEqual(preview["type"], "order_preview", preview)
+        self.assertEqual(preview["environment"], "real")
+        self.assertFalse(preview["demo"])
+        self.assertTrue(preview["manual_only"])
+        self.assertLessEqual(preview["risk_pct"], self.bridge.MT5_MAX_RISK_PCT)
+        self.fake_mt5.order_send.assert_not_called()
+
+        order = self.bridge.handle_order({
+            **request, "preview_id": preview["preview_id"], "intent_id": "realIntent1234567890",
+            "confirmed": True,
+        })
+        self.assertEqual(order["type"], "filled", order)
+        self.assertFalse(order["demo"])
+        self.assertEqual(order["environment"], "real")
+        self.assertEqual(order["ticket"], 9001)
+        sent = self.fake_mt5.order_send.call_args.args[0]
+        self.assertIn("AURUM-REAL-", sent["comment"])
+        self.fake_mt5.order_send.assert_called_once()
+
+    def test_broker_minimum_above_demo_notional_cap_refuses_with_actionable_values(self):
+        self.fake_mt5.symbol_info.return_value.volume_min = 2000.0
+        self.fake_mt5.symbol_info.return_value.volume_step = 1.0
+        reply = self.bridge.handle_order_preview(self.demo_request(volume=100.0))
+        self.assertEqual(reply["type"], "error")
+        self.assertIn("$200,000.00", reply["message"])
+        self.assertIn("$10,000.00", reply["message"])
+        self.assertIn("Reducing the requested size cannot get below the broker minimum", reply["message"])
+        self.assertIn("No order was sent", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
 
     def test_m15_history_is_read_only_and_uses_mt5_tick_volume(self):
         self.fake_mt5.TIMEFRAME_M1 = 1
@@ -152,6 +200,121 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.assertIn("matches multiple broker symbols", reply["message"])
         self.assertIn("XAUUSDm", reply["message"])
         self.assertIn("XAUUSD.pro", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_trade_permission_off_blocks_demo_preview_without_ordering(self):
+        self.fake_mt5.terminal_info.return_value.trade_allowed = False
+        reply = self.bridge.handle_order_preview(self.demo_request())
+        self.assertEqual(reply["type"], "error")
+        self.assertIn("MT5 terminal trading permission is off", reply["message"])
+        self.assertIn("manually confirmed order", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_missing_mt5_demo_mode_constant_fails_closed(self):
+        del self.fake_mt5.ACCOUNT_TRADE_MODE_DEMO
+        preview = self.bridge.handle_order_preview(self.demo_request())
+        self.assertEqual(preview["type"], "error")
+        self.assertIn("did not expose verified REAL and DEMO", preview["message"])
+        self.assertFalse(self.bridge.handle_account({}).get("demo"))
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_preview_then_manual_confirmation_sends_one_demo_market_order(self):
+        request = self.demo_request()
+        preview = self.bridge.handle_order_preview(request)
+        self.assertEqual(preview["type"], "order_preview", preview)
+        self.assertTrue(preview["manual_only"])
+        self.assertLessEqual(preview["risk_pct"], self.bridge.MT5_MAX_RISK_PCT)
+        self.assertGreaterEqual(preview["rr"], self.bridge.MT5_MIN_REWARD_RISK)
+        self.fake_mt5.order_send.assert_not_called()
+
+        order = self.bridge.handle_order({
+            **request, "preview_id": preview["preview_id"], "intent_id": "demoIntent1234567890",
+            "confirmed": True,
+        })
+        self.assertEqual(order["type"], "filled", order)
+        self.assertTrue(order["demo"])
+        self.assertEqual(order["ticket"], 9001)
+        self.fake_mt5.order_send.assert_called_once()
+        sent = self.fake_mt5.order_send.call_args.args[0]
+        self.assertEqual(sent["symbol"], "US30Cash")
+        self.assertEqual(sent["sl"], 99.9)
+        self.assertEqual(sent["tp"], 100.3)
+        self.assertIn("AURUM-DEMO-", sent["comment"])
+
+        # A repeated message with the same unique intent replays the reply, not the order send.
+        duplicate = self.bridge.handle_order({
+            **request, "preview_id": preview["preview_id"], "intent_id": "demoIntent1234567890",
+            "confirmed": True,
+        })
+        self.assertEqual(duplicate, order)
+        self.fake_mt5.order_send.assert_called_once()
+
+    def test_mandatory_stop_target_and_account_caps_fail_closed(self):
+        self.assertEqual(self.bridge.handle_order_preview(self.demo_request(sl=0))["type"], "error")
+        self.assertEqual(self.bridge.handle_order_preview(self.demo_request(tp=0))["type"], "error")
+        self.fake_mt5.positions_get.return_value = [types.SimpleNamespace(ticket=1)]
+        full = self.bridge.handle_order_preview(self.demo_request())
+        self.assertEqual(full["type"], "error")
+        self.assertIn("open positions", full["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_excessive_risk_daily_loss_stale_quotes_and_missing_history_block(self):
+        self.fake_mt5.order_calc_profit.side_effect = lambda action, _symbol, volume, open_price, close_price: -10.0 if close_price < open_price else 10.0
+        excessive = self.bridge.handle_order_preview(self.demo_request())
+        self.assertEqual(excessive["type"], "error")
+        self.assertIn("caps it at", excessive["message"])
+
+        self.setUp()
+        self.fake_mt5.history_deals_get.return_value = [types.SimpleNamespace(profit=-25, commission=0, swap=0, fee=0)]
+        daily = self.bridge.handle_order_preview(self.demo_request())
+        self.assertEqual(daily["type"], "error")
+        self.assertIn("daily-loss limit", daily["message"])
+
+        self.setUp()
+        self.fake_mt5.symbol_info_tick.return_value.time = int(time.time()) - 120
+        stale = self.bridge.handle_order_preview(self.demo_request())
+        self.assertEqual(stale["type"], "error")
+        self.assertIn("No fresh Exness MT5 tick", stale["message"])
+
+        self.setUp()
+        self.fake_mt5.history_deals_get.return_value = None
+        unknown = self.bridge.handle_order_preview(self.demo_request())
+        self.assertEqual(unknown["type"], "error")
+        self.assertIn("could not be verified", unknown["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_partial_or_pending_result_is_uncertain_and_never_retried(self):
+        self.fake_mt5.order_send.return_value.retcode = self.fake_mt5.TRADE_RETCODE_DONE_PARTIAL
+        preview = self.bridge.handle_order_preview(self.demo_request())
+        result = self.bridge.handle_order({
+            **self.demo_request(), "preview_id": preview["preview_id"],
+            "intent_id": "partialIntent1234567", "confirmed": True,
+        })
+        self.assertEqual(result["type"], "error")
+        self.assertIn("partial or pending", result["message"])
+        self.fake_mt5.order_send.assert_called_once()
+        duplicate = self.bridge.handle_order({
+            **self.demo_request(), "preview_id": preview["preview_id"],
+            "intent_id": "partialIntent1234567", "confirmed": True,
+        })
+        self.assertEqual(duplicate, result)
+        self.fake_mt5.order_send.assert_called_once()
+        new_preview = self.bridge.handle_order_preview(self.demo_request())
+        blocked = self.bridge.handle_order({
+            **self.demo_request(), "preview_id": new_preview["preview_id"],
+            "intent_id": "newIntent12345678901", "confirmed": True,
+        })
+        self.assertEqual(blocked["type"], "error")
+        self.assertIn("no further app order will be sent", blocked["message"])
+        self.fake_mt5.order_send.assert_called_once()
+
+    def test_preview_cannot_be_changed_or_replayed(self):
+        preview = self.bridge.handle_order_preview(self.demo_request())
+        changed = self.bridge.handle_order({
+            **self.demo_request(volume=200.0), "preview_id": preview["preview_id"],
+            "intent_id": "demoIntent2234567890", "confirmed": True,
+        })
+        self.assertEqual(changed["type"], "error")
         self.fake_mt5.order_send.assert_not_called()
 
     def test_exact_server_identity_and_quote_fields_remain_read_only(self):
