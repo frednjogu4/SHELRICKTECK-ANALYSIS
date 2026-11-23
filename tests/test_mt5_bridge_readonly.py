@@ -346,7 +346,9 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.fake_mt5.symbol_info_tick.return_value = types.SimpleNamespace(bid=40000.0, ask=40001.0, time=int(time.time()))
         self.fake_mt5.symbol_info.return_value = types.SimpleNamespace(
             volume_min=0.1, volume_max=50.0, volume_step=0.1, trade_contract_size=1.0,
-            currency_base="USD", currency_profit="USD", trade_mode=4, digits=2
+            currency_base="USD", currency_profit="USD", currency_margin="USD", trade_mode=4, digits=2,
+            point=0.01, tick_size=0.01, tick_value=1.0, trade_stops_level=10,
+            path="Indices\\US30", description="Wall Street 30"
         )
         reply = self.bridge.handle_quote({"symbols": ["US30"]})
         self.assertEqual(reply["type"], "quotes")
@@ -356,6 +358,16 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.assertEqual(quote["volume_step"], 0.1)
         self.assertEqual(quote["contract_size"], 1.0)
         self.assertEqual(quote["currency_profit"], "USD")
+        # Full broker-reported specification with explicit source and timestamp.
+        self.assertEqual(quote["point"], 0.01)
+        self.assertEqual(quote["tick_size"], 0.01)
+        self.assertEqual(quote["tick_value"], 1.0)
+        self.assertEqual(quote["trade_stops_level"], 10)
+        self.assertEqual(quote["currency_margin"], "USD")
+        self.assertEqual(quote["category"], "indices")
+        self.assertEqual(quote["spec_source"], "local MT5 terminal")
+        self.assertIsInstance(quote["spec_at"], int)
+        self.assertLessEqual(abs(quote["spec_at"] - int(time.time())), 5)
 
 
 if __name__ == "__main__":

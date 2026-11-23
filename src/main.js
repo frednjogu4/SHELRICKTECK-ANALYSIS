@@ -6559,7 +6559,12 @@ async function sizePlanSpecs(){
       state.cfdSpec={sym:I.s,at:now,quoteAt,volumeMin:Number(r.volume_min),
         volumeStep:Number(r.volume_step),volumeMax:Number(r.volume_max),
         contractSize:Number(r.contract_size),currencyBase:r.currency_base||null,
-        currencyProfit:r.currency_profit||null,ask:Number(r.ask),bid:Number(r.bid),brokerSymbol:r.symbol||null};
+        currencyProfit:r.currency_profit||null,ask:Number(r.ask),bid:Number(r.bid),brokerSymbol:r.symbol||null,
+        point:r.point!=null?Number(r.point):null,tickSize:r.tick_size!=null?Number(r.tick_size):null,
+        tickValue:r.tick_value!=null?Number(r.tick_value):null,
+        stopsLevel:r.trade_stops_level!=null?Number(r.trade_stops_level):null,
+        digits:r.digits!=null?Number(r.digits):null,category:r.category||null,
+        specSource:r.spec_source||null,specAt:r.spec_at!=null?Number(r.spec_at):null};
       return state.cfdSpec;
     }
   }catch(_e){}
@@ -6596,21 +6601,45 @@ function renderSizePlan(){
         volumeMin:spec&&spec.volumeMin>0?spec.volumeMin:null,
         volumeStep:spec&&spec.volumeStep>0?spec.volumeStep:null,
         volumeMax:spec&&spec.volumeMax>=spec.volumeMin?spec.volumeMax:null,
-        leverage:acct.leverage?Number(acct.leverage):null
+        leverage:acct.leverage?Number(acct.leverage):null,
+        /* Parity with bridge/mt5_bridge.py: stop loss is buffered ×1.25 before its
+           0.5%-of-equity cap, and the notional intent cap is max(amount×1.5, equity×10)
+           with the broker minimum lot exempt. */
+        riskBuffer:isMt5?1.25:1,
+        maxNotional:(isMt5&&Number.isFinite(equity)&&equity>0)?Math.max((isNaN(amt)?0:amt)*1.5,equity*10):null
       });
   const cur=plan.currency||'USD';
   let h='';
-  const row=(k,v)=>'<div class="row between" style="gap:8px"><span class="faint">'+k+'</span><b class="mono">'+v+'</b></div>';
+  const row=(k,v)=>'<div class="row between wrap" style="gap:8px"><span class="faint">'+k+'</span><b class="mono">'+v+'</b></div>';
+  const CATEGORY_LABEL={forex:'Forex CFD',metals:'Metal CFD (commodity)',energies:'Energy CFD (commodity)',commodities:'Commodity CFD',indices:'Index CFD',crypto:'Crypto CFD',stocks:'Stock CFD',etfs:'ETF CFD',bonds:'Bond CFD',other:'CFD (broker path unclassified)'};
   if(isMt5){
     const equityText=reportedEquity==null?'unavailable — refresh/reconnect Exness':reportedEquity.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+escHtml(equityCurrency);
     const lev=Number(acct.leverage);
     const leverageText=acct.leverage!=null&&Number.isFinite(lev)&&lev>0?'1:'+lev.toLocaleString('en-US',{maximumFractionDigits:2}):'unknown — margin not estimated';
     h+=row('MT5 equity (latest broker snapshot)',equityText);
     h+=row('MT5 leverage',leverageText);
+    h+=row('Balance / free margin',(acct.balance!=null&&Number.isFinite(Number(acct.balance))?Number(acct.balance).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—')+' / '+(acct.margin_free!=null&&Number.isFinite(Number(acct.margin_free))?Number(acct.margin_free).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—')+' '+escHtml(equityCurrency));
+    const env=acct.environment;
+    h+=row('Account type (MT5-verified)',env==='demo'?'DEMO — MT5 trade mode verified':env==='real'?'REAL — MT5 trade mode verified':'UNVERIFIED — simulated eligibility blocked until MT5 verifies the mode');
+    const catLabel=spec&&spec.category?(CATEGORY_LABEL[spec.category]||spec.category):'UNKNOWN — broker metadata not available';
+    h+=row('Instrument',escHtml(I?(I.n||I.s):'—')+' · Exness MT5 · '+escHtml(String(catLabel)));
+    h+=row('Broker specification source',spec?escHtml(spec.specSource||'local MT5 terminal')+' · tick '+new Date(spec.quoteAt).toLocaleTimeString()+' · age '+Math.max(0,Math.round(quoteAge/1000))+'s':'UNKNOWN — no fresh broker quote (≤60s required); simulated eligibility blocked');
     h+=row('Broker contract / volume specs',spec?escHtml(String(spec.contractSize))+' contract · '+escHtml(String(spec.volumeMin))+'–'+escHtml(String(spec.volumeMax))+' lots · step '+escHtml(String(spec.volumeStep)):'waiting for fresh MT5 quote/specs');
+    if(spec){
+      h+=row('Minimum volume',escHtml(String(spec.volumeMin))+' lots'+(Number.isFinite(plan.minNotional)?' ≈ '+fmtMoney(plan.minNotional)+' notional':''));
+      const tickBits=[];
+      if(Number.isFinite(spec.tickSize))tickBits.push('tick size '+spec.tickSize);
+      if(Number.isFinite(spec.tickValue))tickBits.push('tick value ≈ '+fmtMoney(spec.tickValue));
+      if(Number.isFinite(spec.point))tickBits.push('point '+spec.point);
+      if(Number.isFinite(spec.stopsLevel))tickBits.push('stop level '+spec.stopsLevel+' pts');
+      h+=row('Tick / stop specs',tickBits.length?tickBits.join(' · '):'not reported by broker');
+      if(Number.isFinite(freshBrokerEntry))h+=row('Size-plan entry (live '+(state.side==='SELL'?'bid':'ask')+')',fmtPx(freshBrokerEntry,I&&I.d||2)+(Number.isFinite(spec.quoteAt)?' @ '+new Date(spec.quoteAt).toLocaleTimeString():''));
+      if(Number.isFinite(equity)&&equity>0)h+=row('Exposure limit (broker minimum lot exempt)',fmtMoney(Math.max((isNaN(amt)?0:amt)*1.5,equity*10))+' — max(amount×1.5, 10× equity); the broker minimum lot is always allowed');
+    }
   }
   if(plan.status==='INCOMPLETE'){
     h+='<div style="color:var(--amber)">INCOMPLETE — '+escHtml(plan.reason)+'</div>';
+    if(isMt5&&!spec)h+='<div style="color:var(--red,#e5484d);margin-top:4px">UNKNOWN — broker specification/quote is missing or stale; simulated eligibility stays blocked until a fresh MT5 quote arrives. No contract values are substituted or cached.</div>';
     if(equityCurrency!=='USD'&&!Number(($('#convRate')||{}).value)){
       h+='<div class="row" style="margin-top:8px"><span>'+escHtml(equityCurrency)+'→USD rate (you supply — never fetched or assumed):</span><input class="input mono" id="convRate" type="number" step="any" style="width:110px" placeholder="e.g. 129"></div>';
       const cr=document.getElementById('convRate'); if(cr)cr.addEventListener('input',()=>{ state.settings.usdConvRate=Number(cr.value)||null; save(); renderSizePlan(); });
@@ -6620,9 +6649,18 @@ function renderSizePlan(){
     h+='<div style="color:var(--red,#e5484d)">BLOCKED — '+escHtml(plan.reason)+'</div>';
     if(plan.minNotional)h+=row('Broker minimum exposure','≈ '+fmtMoney(plan.minNotional));
     if(plan.expectedLoss&&plan.status==='BLOCKED'&&plan.lots===0)h+=row('Min-lot risk at this stop',fmtMoney(plan.expectedLoss));
+    if(plan.minNotional&&isMt5&&Number(acct.leverage)>0){
+      const convRate=Number(plan.inputs&&plan.inputs.conversionRate)||1;
+      h+=row('Estimated margin at minimum size','≈ '+fmtMoney(plan.minNotional/convRate/Number(acct.leverage))+' (leverage 1:'+Number(acct.leverage)+')');
+    }
+    if(Number.isFinite(plan.riskBudget))h+=row('Risk budget ('+escHtml(String(riskPct))+'% of equity)',fmtMoney(plan.riskBudget));
+    if(Number.isFinite(plan.riskBudgetBuffered)&&isMt5)h+=row('Risk budget after bridge buffer (×1.25)',fmtMoney(plan.riskBudgetBuffered));
+    if(Number.isFinite(plan.riskBudgetAccount)&&equityCurrency!=='USD')h+=row('Risk budget (account ccy)',fmtMoney(plan.riskBudgetAccount)+' '+escHtml(equityCurrency));
   }else{
     if(plan.lots!=null)h+=row('Valid size (rounded DOWN to broker step)','<b>'+plan.lots+' lots</b>');
     h+=row('Risk budget ('+escHtml(String(riskPct))+'% of equity)',fmtMoney(plan.riskBudget||0));
+    if(Number.isFinite(plan.riskBudgetBuffered)&&isMt5)h+=row('Risk budget after bridge buffer (×1.25)',fmtMoney(plan.riskBudgetBuffered));
+    if(Number.isFinite(plan.riskBudgetAccount)&&equityCurrency!=='USD')h+=row('Risk budget (account ccy)',fmtMoney(plan.riskBudgetAccount)+' '+escHtml(equityCurrency));
     h+=row('Expected loss at SL (max estimate)',fmtMoney(plan.expectedLoss||0)+(plan.currency!=='USD'?' '+escHtml(plan.currency):''));
     if(plan.notional!=null)h+=row('Notional exposure','≈ '+fmtMoney(plan.notional));
     if(plan.rr!=null)h+=row('Reward-to-risk (TP1)',plan.rr.toFixed(2)+'×');

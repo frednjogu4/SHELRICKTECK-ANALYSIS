@@ -993,6 +993,29 @@ async function run() {
     check('20s: bridge client carries only MT5-reported equity and leverage into the account snapshot', bridgeClient.includes('equity: res.equity') && bridgeClient.includes('leverage: res.leverage || null'));
   }
 
+  /* ---------- round 20v: transparent risk-calculation panel + sizer/bridge parity ---------- */
+  {
+    const main = readFileSync(join(root, 'src', 'main.js'), 'utf8');
+    const sizer = readFileSync(join(root, 'src', 'sizer.js'), 'utf8');
+    const py = readFileSync(join(root, 'bridge', 'mt5_bridge.py'), 'utf8');
+    const panel = main.slice(main.indexOf('function renderSizePlan()'));
+    check('20v: sizer sizes from the bridge-buffered budget with unit-explicit fields and strict step floor',
+      sizer.includes('riskBudgetBuffered') && sizer.includes('const riskBuffer') && sizer.includes('toPrecision(12)')
+      && sizer.includes('broker minimum lot exempt') && sizer.includes('account currency') && sizer.includes('never assumed'));
+    check('20v: size plan passes the bridge parity inputs (×1.25 buffer, max(amount×1.5, 10× equity) cap)',
+      panel.includes('riskBuffer:isMt5?1.25:1') && panel.includes('Math.max((isNaN(amt)?0:amt)*1.5,equity*10)') && panel.includes('riskBudgetBuffered'));
+    check('20v: panel shows account type, instrument class, spec source/timestamp, exposure limit and buffered budget',
+      panel.includes('Account type (MT5-verified)') && panel.includes('Broker specification source') && panel.includes('Exposure limit (broker minimum lot exempt)')
+      && panel.includes('Risk budget after bridge buffer (×1.25)') && panel.includes('Size-plan entry') && panel.includes('Minimum volume')
+      && panel.includes('Tick / stop specs') && panel.includes('UNKNOWN — broker specification/quote')
+      && panel.includes('Estimated margin at minimum size'));
+    check('20v: quote carries full broker-reported specifications with source stamp and classification',
+      py.includes('"tick_value"') && py.includes('"tick_size"') && py.includes('"trade_stops_level"')
+      && py.includes('"spec_source": "local MT5 terminal"') && py.includes('market_category(_path, _desc, sym)'));
+    check('20v: broker minimum lot stays exempt from the notional cap while the risk guard still binds',
+      py.includes('floor_exposure') && py.includes('MT5_MAX_RISK_PCT + 1e-9') && sizer.includes('Below the broker minimum'));
+  }
+
   /* ---------- round 20t: live read-only MT5 account + positions refresh ---------- */
   {
     const py = readFileSync(join(root, 'bridge', 'mt5_bridge.py'), 'utf8');
