@@ -709,8 +709,12 @@ def _mt5_order_plan(msg):
             raise ValueError
         exposure = lots * contract_size * price
         # Refuse broker-minimum rounding that silently enlarges the requested notional.
+        # The broker's own minimum lot is exempt: the floor cannot be reduced below, the
+        # preview and confirmation show the real size, and the risk/reward/margin guards
+        # below still bound the loss on any accepted size.
         notional_cap = max(requested_usd * 1.5, equity * 10)
-        if exposure > notional_cap:
+        floor_exposure = float(info.volume_min) * contract_size * price
+        if exposure > notional_cap and exposure > floor_exposure * (1.0 + 1e-9):
             return None, (
                 f"Broker minimum size is about ${exposure:,.2f} notional, above this request's cap of ${notional_cap:,.2f}. "
                 "No order was sent. Reducing the requested size cannot get below the broker minimum; choose a symbol with a smaller minimum exposure or stop here."

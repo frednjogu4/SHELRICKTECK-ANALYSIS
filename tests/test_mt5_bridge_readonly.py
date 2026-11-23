@@ -143,15 +143,30 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.assertIn("AURUM-REAL-", sent["comment"])
         self.fake_mt5.order_send.assert_called_once()
 
-    def test_broker_minimum_above_demo_notional_cap_refuses_with_actionable_values(self):
+    def test_broker_minimum_above_notional_cap_is_exempt_but_risk_guard_still_binds(self):
+        # Broker floor (2,000 lots = $200,000 notional) exceeds the $10,000 intent cap
+        # ($100 request x1.5 vs $1,000 equity x10); the floor itself is exempt, and the
+        # 0.5% buffered-risk guard must still refuse the oversized stop loss.
         self.fake_mt5.symbol_info.return_value.volume_min = 2000.0
         self.fake_mt5.symbol_info.return_value.volume_step = 1.0
         reply = self.bridge.handle_order_preview(self.demo_request(volume=100.0))
         self.assertEqual(reply["type"], "error")
-        self.assertIn("$200,000.00", reply["message"])
-        self.assertIn("$10,000.00", reply["message"])
-        self.assertIn("Reducing the requested size cannot get below the broker minimum", reply["message"])
+        self.assertNotIn("Broker minimum size", reply["message"])
+        self.assertIn("caps it at 0.5%", reply["message"])
         self.assertIn("No order was sent", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_min_lot_floor_above_notional_cap_previews_at_broker_minimum(self):
+        # A $15,000 broker floor above the $10,000 cap previews successfully when the
+        # stop keeps the buffered loss inside the 0.5%-of-equity guard.
+        info = self.fake_mt5.symbol_info.return_value
+        info.volume_min = 150.0
+        info.volume_max = 1000.0
+        info.volume_step = 1.0
+        reply = self.bridge.handle_order_preview(self.demo_request(volume=100.0, sl=99.99, tp=100.3))
+        self.assertEqual(reply["type"], "order_preview", reply)
+        self.assertEqual(reply["lots"], 150.0)
+        self.assertLessEqual(reply["risk_pct"], self.bridge.MT5_MAX_RISK_PCT)
         self.fake_mt5.order_send.assert_not_called()
 
     def test_m15_history_is_read_only_and_uses_mt5_tick_volume(self):
