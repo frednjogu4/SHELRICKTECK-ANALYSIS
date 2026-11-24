@@ -137,6 +137,14 @@ test('forming (incomplete) candle is explicitly excluded and disclosed', () => {
   assert.match(s.currentCandle, /excluded/);
 });
 
+test('millisecond candle epochs (MT5 bridge rows) are normalised, not treated as stale', () => {
+  const sets = setsFor(['up', 'up', 'up']);
+  for (const k of ['m1', 'm5', 'h1']) for (const c of sets[k]) c.time = c.time * 1000; /* ms */
+  const s = marketStrength(sets, { nowSec: NOW });
+  assertSums100(s);
+  assert.equal(s.ok, true);
+});
+
 test('methodology and disclaimer are always present', () => {
   const s = marketStrength(setsFor(['up', 'down', 'flat']), { nowSec: NOW });
   assert.ok(s.methodology.length >= 4);

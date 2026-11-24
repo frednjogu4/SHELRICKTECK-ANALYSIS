@@ -13,6 +13,7 @@ import { DERIV_CODE_MAP, INSTRUMENT_MAP } from '../server/lib/symbols.js';
 import { runDeterministicAnalysis, votesSummary, waitReason } from '../server/lib/analyzer.js';
 import { localDecision } from '../server/lib/localdecision.js';
 import { closedCandleSets } from '../src/closedcandles.js';
+import { marketStrength } from '../server/lib/strength.js';
 import { indexDailySignal, parseYahooChart } from '../server/lib/indices.js';
 import { rsi, sma } from '../server/lib/indicators.js';
 import { parseFfCalendar } from '../server/lib/news.js';
@@ -407,7 +408,9 @@ function createReadOnlyWorker({
         confidence: decision.confidence,
         entry: decision.entry, stop_loss: decision.stop_loss, tp1: decision.tp1, tp2: decision.tp2,
         rrr: decision.rrr, tf: 'MTF 1m/5m/1h', model: 'technical',
-        source, data_source: source, latest_candle_time: Number(latest?.time || 0), candle_close: closed.close, candle_current: closed.current, ts: now()
+        source, data_source: source, latest_candle_time: Number(latest?.time || 0), candle_close: closed.close, candle_current: closed.current, ts: now(),
+        /* MARKET STRENGTH for every instrument the scan reads (same shared engine as the Gold monitor). */
+        strength: marketStrength(closed.sets, { currentPresent: !!closed.current })
       };
     } catch (e) {
       const source = 'unavailable';
@@ -574,6 +577,8 @@ function createReadOnlyWorker({
           latest_candle_time: Number(latest?.time || 0),
           candle_close: closed.close,
           candle_current: closed.current,
+          /* MARKET STRENGTH for every symbol analysed here (shared engine: server/lib/strength.js). */
+          strength: marketStrength(closed.sets, { currentPresent: !!closed.current }),
           meta: { mode: 'technical', reason: 'cloudflare_readonly', engines: [], spent: 0, cap: 0, cached: false, at: new Date(now()).toISOString() }
         });
       } catch (e) {

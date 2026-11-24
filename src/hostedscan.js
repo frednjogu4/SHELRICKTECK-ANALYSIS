@@ -31,6 +31,7 @@ import { runDeterministicAnalysis, votesSummary, waitReason } from '../server/li
 import { localDecision } from '../server/lib/localdecision.js';
 import { isFeedFailure } from './derivhistory.js';
 import { closedCandleSets } from './closedcandles.js';
+import { marketStrength } from '../server/lib/strength.js';
 import { contextOnlyDailyReading } from './bestpick.js';
 
 export const DERIV_SOURCE = 'Deriv public candles';
@@ -111,6 +112,10 @@ export function buildDerivReading(symbol, sets, nowMs = Date.now()) {
     latest_candle_time: Number(latest?.time || 0),
     candle_close: closed.close,
     candle_current: closed.current,
+    /* MARKET STRENGTH from the same finished candles this reading was made from
+       (same closed sets the Worker uses; computedAt derives from nowMs so
+       browser and Worker readings compare deterministically). */
+    strength: marketStrength(closed.sets, { currentPresent: closed.current, nowSec: Math.floor(nowMs / 1000) }),
     ts: nowMs,
     sentiment_score: 50,
     sentiment_source: 'derived',

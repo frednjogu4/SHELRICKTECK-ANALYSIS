@@ -71,8 +71,9 @@ function scoreTimeframe(candles, tf, nowSec) {
     return { valid: false, reason: 'INSUFFICIENT_CANDLES', detail: `${tf.label}: ${Array.isArray(candles) ? candles.length : 0}/${MIN_CLOSED} closed candles` };
   }
   const last = candles[candles.length - 1];
-  const newest = Number(last && last.time);
+  let newest = Number(last && last.time);
   if (!finite(newest) || newest <= 0) return { valid: false, reason: 'NO_CLOSED_CANDLE', detail: `${tf.label}: last closed candle has no timestamp` };
+  if (newest > 1e12) newest = Math.floor(newest / 1000); /* accept ms epochs too (MT5 bridge rows) */
   const age = Math.max(0, nowSec - newest);
   if (age > tf.staleSec) return { valid: false, reason: 'STALE_DATA', detail: `${tf.label}: newest closed candle is ${age}s old (limit ${tf.staleSec}s)` };
 

@@ -61,6 +61,16 @@ const FIXTURE = {
   strength: STRENGTH
 };
 
+function fixtureFor(sym) {
+  const s = String(sym || 'XAU/USD');
+  if (/XAU|GOLD/i.test(s)) return FIXTURE;
+  return Object.assign({}, FIXTURE, {
+    symbol: s,
+    price: 1.085, entry: 1.085, stop_loss: 1.0795, tp1: 1.0908, tp2: 1.0965,
+    rationale: 'Fixture reading (sandbox has no market-data egress): harness-served technical analysis for ' + s + ' — not live market data.'
+  });
+}
+
 const MOCK_WS = `
 (() => {
   const FIX = window.__FIXTURE__;
@@ -143,7 +153,19 @@ async function run() {
       page.on('request', (req) => {
         const url = req.url();
         if (url.includes('/api/signals/analyze')) {
-          req.respond({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(FIXTURE) });
+          let sym = 'XAU/USD';
+          try { const b = JSON.parse(req.postData() || '{}'); if (b.symbol) sym = b.symbol; } catch (_e) {}
+          req.respond({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(fixtureFor(sym)) });
+        } else if (url.includes('/api/signals/scan')) {
+          /* azAnalyze reaches analyze only after the scan fallback returns a row */
+          let syms = ['EUR/USD'];
+          try { const b = JSON.parse(req.postData() || '{}'); if (Array.isArray(b.symbols) && b.symbols.length) syms = b.symbols; } catch (_e) {}
+          const results = syms.map((sym) => Object.assign({}, fixtureFor(sym), {
+            source: 'Deriv public candles', data_source: 'Deriv public candles',
+            computed: 'server', ts: Date.now()
+          }));
+          delete results[0].meta;
+          req.respond({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ results }) });
         } else if (url.includes('/api/')) {
           req.respond({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'harness: no backend' }) });
         } else req.continue();
@@ -161,6 +183,25 @@ async function run() {
   await new Promise((r) => setTimeout(r, 800));
   if (TAG === 'after') await desk.waitForFunction(() => { const e = document.querySelector('#ovProvenance'); return e && e.textContent.length > 40; }, { timeout: 8000 }).catch(() => {});
   await shot(desk, 'command-centre-desktop', pages[0].errors);
+
+  if (TAG === 'after') {
+    /* Signal Analyzer: any instrument → MARKET STRENGTH block */
+    await desk.evaluate(() => { const b = document.querySelector('[data-view="signals"]'); if (b) b.click(); });
+    await new Promise((r) => setTimeout(r, 600));
+    await desk.evaluate(() => { const r = document.querySelector('#azRun'); if (r) r.click(); });
+    await desk.waitForFunction(() => /%$/.test((document.querySelector('#azStrength [data-s="buyPct"]') || {}).textContent || ''), { timeout: 15000 }).catch(() => {});
+    await desk.evaluate(() => { document.querySelectorAll('.toast').forEach((t) => t.remove()); const s = document.querySelector('#azStrength'); if (s) s.scrollIntoView({ block: 'center' }); });
+    await shot(desk, 'signals-desktop', pages[0].errors);
+    const azEvidence = await desk.evaluate(() => ({
+      symbol: (document.querySelector('#azSymbol') || {}).value,
+      signal: (document.querySelector('#azSignal') || {}).textContent,
+      buy: (document.querySelector('#azStrength [data-s="buyPct"]') || {}).textContent,
+      sell: (document.querySelector('#azStrength [data-s="sellPct"]') || {}).textContent,
+      neutral: (document.querySelector('#azStrength [data-s="neutralPct"]') || {}).textContent,
+      cls: (document.querySelector('#azStrength [data-s="cls"]') || {}).textContent
+    }));
+    console.log('AZ-EVIDENCE ' + JSON.stringify(azEvidence));
+  }
 
   await desk.evaluate(() => { const b = document.querySelector('[data-view="gold"]'); if (b) b.click(); });
   if (TAG === 'after') {
