@@ -21,6 +21,7 @@ import { log } from './lib/log.js';
 import { runDeterministicAnalysis, votesSummary, waitReason } from './lib/analyzer.js';
 import { localDecision } from './lib/localdecision.js';
 import { closedCandleSets } from './lib/closedcandles.js';
+import { marketStrength } from './lib/strength.js';
 import { makeDecision, availableEngines, newsBriefViaPerplexity, newsBriefAny } from './lib/decision.js';
 import { waSend, waStatus, waRateOk } from './lib/wa.js';
 import { evaluateRisk, bossVerdict } from './lib/riskgate.js';
@@ -405,7 +406,10 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
         data_source: dataSource,
         latest_candle_time: latestCandleTime,
         candle_close: closed.close,
-        candle_current: closed.current
+        candle_current: closed.current,
+        /* GOLD MARKET STRENGTH: deterministic technical evidence from the same
+           completed candle sets — shared with the browser fallback (strength.js). */
+        strength: marketStrength(closed.sets, { currentPresent: !!closed.current })
       });
       /* ASTER strategy inventory: keep the repository's two strategy families
          separate. The source currently defines 4 rule-based setups and 12

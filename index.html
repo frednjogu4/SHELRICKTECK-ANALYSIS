@@ -602,6 +602,16 @@ body[data-view="overview"] .mob-order-bar{display:none}
 .sig-card .sig-top{display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:10px}
 .conf-bar{height:5px; border-radius:99px; background:var(--surface-3); overflow:hidden; margin-top:7px}
 .conf-bar i{display:block; height:100%; border-radius:99px; background:var(--brand)}
+/* GOLD MARKET STRENGTH — three technical-evidence bars (buying/selling/neutral) */
+.strength-row{display:grid; gap:5px}
+.strength-label{font-size:11px; letter-spacing:.08em; font-weight:600; color:var(--text-2)}
+.strength-pct{font-size:20px; font-variant-numeric:tabular-nums}
+.strength-track{height:10px; border-radius:99px; background:var(--surface-3); border:1px solid var(--border); overflow:hidden}
+.strength-track i{display:block; height:100%; width:0; border-radius:99px; transition:width .5s ease}
+#strengthBuyBar{background:var(--green)}
+#strengthSellBar{background:var(--red)}
+#strengthNeutralBar{background:var(--amber); opacity:.8}
+@media (prefers-reduced-motion: reduce){.strength-track i{transition:none}}
 .sig-levels{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0}
 .sig-levels div{background:var(--surface-2); border:1px solid var(--border-soft); border-radius:6px; padding:7px 9px; text-align:center}
 .sig-levels .k{font-size:10px; text-transform:uppercase; letter-spacing:.07em; color:var(--text-3); font-weight:700}
@@ -1013,7 +1023,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
 
         <section class="command-section" aria-labelledby="marketOverviewTitle">
           <div class="command-section-head">
-            <div><h2 id="marketOverviewTitle">Market Overview</h2><p class="sub">Live snapshot from verified Deriv ticks. Each quote carries its own time and freshness.</p></div>
+            <div><h2 id="marketOverviewTitle">Market Overview</h2><p class="sub">Live snapshot from verified Deriv ticks. Each quote carries its own time and freshness.</p><div id="ovProvenance" class="tiny faint" style="margin-top:6px;line-height:1.5" aria-live="polite"></div></div>
             <button class="btn ghost sm" data-goto="markets">Open Markets</button>
           </div>
           <div class="command-market-grid" id="commandMarkets" aria-live="polite"></div>
@@ -1269,7 +1279,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
         </div>
         <div class="card ms-head">
           <div class="row wrap ms-controls">
-            <label class="field"><span>Market</span><select class="input mono" id="msSym"></select></label>
+            <label class="field"><span>Instrument</span><select class="input mono" id="msSym"></select></label>
             <button class="btn sm primary" id="msBtn" type="button">Read again</button>
             <span class="pill" id="msFeed"><span class="dot" id="msFeedDot"></span> <span id="msFeedText">Not read yet</span></span>
           </div>
@@ -1629,6 +1639,18 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               <div class="tiny faint" id="goldSource">Source not connected.</div>
               <div class="tiny faint" id="goldQuoteTime" style="margin-top:4px">Quote time: —</div>
             </div>
+          </div>
+          <div class="card" id="goldStrength" style="margin:0 0 14px;background:var(--surface-2)" aria-live="polite">
+            <div class="row between wrap"><div><h3 style="margin:0">GOLD MARKET STRENGTH</h3><div class="tiny faint">Technical evidence from completed M1 / M5 / H1 candles — not a probability of profit, forecast or trade instruction.</div></div><span id="strengthClass" class="badge gray">AWAITING FIRST READING</span></div>
+            <div style="margin-top:12px;display:grid;gap:12px">
+              <div class="strength-row"><div class="row between"><span class="strength-label">BUYING STRENGTH</span><b class="mono strength-pct" id="strengthBuyPct">—</b></div><div class="strength-track"><i id="strengthBuyBar" style="width:0%"></i></div><div class="tiny faint" id="strengthBuyEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+              <div class="strength-row"><div class="row between"><span class="strength-label">SELLING STRENGTH</span><b class="mono strength-pct" id="strengthSellPct">—</b></div><div class="strength-track"><i id="strengthSellBar" style="width:0%"></i></div><div class="tiny faint" id="strengthSellEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+              <div class="strength-row"><div class="row between"><span class="strength-label">NEUTRAL STRENGTH</span><b class="mono strength-pct" id="strengthNeutralPct">—</b></div><div class="strength-track"><i id="strengthNeutralBar" style="width:0%"></i></div><div class="tiny faint" id="strengthNeutralEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+            </div>
+            <div class="tiny" id="strengthMtf" style="margin-top:10px"></div>
+            <div class="tiny faint" id="strengthStamp" style="margin-top:6px"></div>
+            <details id="strengthMethod" style="margin-top:8px"><summary class="tiny" style="cursor:pointer">Calculation methodology</summary><div class="tiny faint" id="strengthMethodBody" style="margin-top:6px;line-height:1.5"></div></details>
+            <div class="tiny faint" id="strengthProvenance" style="margin-top:8px;line-height:1.5"></div>
           </div>
           <div class="card" id="goldExposure" style="margin:0 0 14px" aria-live="polite"></div>
           <div class="card" style="margin:0 0 14px;background:var(--surface-2)">
