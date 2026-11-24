@@ -163,7 +163,8 @@ export function planPosition(i) {
   if (i?.feeNote) warnings.push('Costs: ' + String(i.feeNote)); else warnings.push('Fees/spread not included — no cost data supplied (not assumed).');
 
   const mk = (frac) => {
-    const t = roundToStep(lotsRaw * frac, vstep);
+    // Preserve raw-size fractions, but never offer more than the capped FULL size.
+    const t = Math.min(roundToStep(lotsRaw * frac, vstep), lots);
     return t >= vmin ? t : null;
   };
   return {

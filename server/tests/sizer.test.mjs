@@ -30,6 +30,38 @@ test('sizer: broker maximum volume caps the rounded size and rejects missing max
   assert.equal(planPosition({ ...cfd, volumeMax: 0.05 }).status, 'BLOCKED');
 });
 
+test('sizer: oversized tiers are capped by FULL, even for a misaligned broker maximum', () => {
+  const cases = [
+    { volumeMax: 0.3, volumeStep: 0.01, tiers: { SMALL: 0.3, MEDIUM: 0.3, FULL: 0.3 } },
+    { volumeMax: 0.7, volumeStep: 0.01, tiers: { SMALL: 0.5, MEDIUM: 0.7, FULL: 0.7 } },
+    { volumeMax: 0.57, volumeStep: 0.1, tiers: { SMALL: 0.5, MEDIUM: 0.5, FULL: 0.5 } },
+  ];
+  for (const { volumeMax, volumeStep, tiers } of cases) {
+    const p = planPosition({ ...cfd, volumeMax, volumeStep });
+    assert.equal(p.status, 'OK');
+    assert.equal(p.lotsRaw, 2);
+    assert.deepEqual(p.tiers, tiers);
+    assert.equal(p.tiers.FULL, p.lots);
+    assert.ok(p.tiers.SMALL <= p.tiers.MEDIUM && p.tiers.MEDIUM <= p.tiers.FULL);
+    assert.ok(p.tiers.FULL <= volumeMax);
+  }
+});
+
+test('sizer: uncapped fractions retain raw-size step rounding and below-minimum behavior', () => {
+  const p = planPosition({ ...cfd, equity: 6150, volumeStep: 0.1 }); // raw 1.23
+  assert.equal(p.status, 'OK');
+  assert.equal(p.lotsRaw, 1.23);
+  assert.deepEqual(p.tiers, { SMALL: 0.3, MEDIUM: 0.6, FULL: 1.2 });
+
+  const oneTier = planPosition({ ...cfd, equity: 1000 }); // raw 0.2
+  assert.equal(oneTier.status, 'OK');
+  assert.deepEqual(oneTier.tiers, { SMALL: null, MEDIUM: 0.1, FULL: 0.2 });
+  const blocked = planPosition({ ...cfd, equity: 100 }); // raw 0.02 < min
+  assert.equal(blocked.status, 'BLOCKED');
+  assert.equal(blocked.tiers, null);
+  assert.equal(blocked.lots, 0);
+});
+
 test('sizer: cross-currency WITHOUT a conversion rate is INCOMPLETE — never assumed', () => {
   const p = planPosition({ ...cfd, equityCurrency: 'KES' });
   assert.equal(p.status, 'INCOMPLETE');
