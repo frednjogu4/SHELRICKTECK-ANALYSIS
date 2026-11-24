@@ -2061,6 +2061,16 @@ async function analyzeBrokerMarket(m){
   }
   const count=bars.filter(x=>x.candles?.length).length;
   votesEl.textContent='MTF result: '+verdict.replace(/_/g,' ')+' · '+votesSummary(analyses)+' · candles: '+count+'/3 timeframes · source '+(m.source==='Exness / MT5'?'PC-local MT5':'Deriv public feed')+'.';
+  /* MARKET STRENGTH for this catalogue instrument — computed from the same three candle sets just fetched. */
+  try{
+    const bsets={m1:byTf['1m']?.candles||[],m5:byTf['5m']?.candles||[],h1:byTf['1h']?.candles||[]};
+    const bsrc=m.source==='Exness / MT5'?'Exness MT5 local candles':'Deriv public candles';
+    const blast=bsets.m1[bsets.m1.length-1];
+    paintStrengthBox($('#brokerStrength'), marketStrength(bsets,{currentPresent:true}), {
+      msg:'Verified candle history is unavailable for all three timeframes.',
+      provRows:goldProvenanceRows({source:bsrc,lastUpdateMs:blast&&Number(blast.time)>0?(Number(blast.time)>1e12?Number(blast.time):Number(blast.time)*1000):0,analysisSource:'client-side shared analyzer (analyzeTimeframe + marketStrength)'})
+    });
+  }catch(_bs){/* strength is additive — never breaks the analysis card */}
 }
 $('#loadDerivMarkets')?.addEventListener('click',loadDerivMarkets);
 $('#loadMt5Markets')?.addEventListener('click',loadMt5Markets);
@@ -3901,12 +3911,13 @@ async function azAnalyze() {
         /* The same finished candles the scanner reading was made from, so the same reading results. (bundle.candle_sets
            are the candles as MT5 returned them: the PC's server, which is sent them in the other branch, refuses a
            1-minute series whose newest candle is more than three minutes old.) */
-        const closedSets=closedCandleSets(bundle.candle_sets).sets,det=runDeterministicAnalysis(sym,closedSets),decision=localDecision(det);
+        const closedAll=closedCandleSets(bundle.candle_sets),closedSets=closedAll.sets,det=runDeterministicAnalysis(sym,closedSets),decision=localDecision(det);
         const wr=decision.signal==='WAIT'?waitReason(det,{maxAgeSec:3*3600+300}):null;
         data=Object.assign({},decision,{
           symbol:sym,price:det.analyses.m1&&det.analyses.m1.currentPrice,
           mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),
           data_ok:det.ok,data_source:'Exness MT5 local candles · analyzed in this browser',
+          strength:marketStrength(closedSets,{currentPresent:closedAll.current}),
           latest_candle_time:bundle.latest_candle_time,candle_close:bundle.candle_close,
           sentiment_score:50,sentiment_source:'derived',news:{available:false,reason:'exness_local_only'},
           wait_reason:wr&&wr.code||null,wait_detail:wr&&wr.detail||null
@@ -4037,6 +4048,11 @@ function renderAz(p, meta) {
   $('#azRisks').innerHTML = (p.risks || []).map(r => '<li>' + escHtml(r) + '</li>').join('') || '<li>No major risks identified</li>';
   $('#azUse').disabled = false;
 
+  /* MARKET STRENGTH for this instrument — same shared engine as the Gold monitor. */
+  paintStrengthBox($('#azStrength'), p.strength || null, {
+    msg: p.strength && p.strength.detail ? p.strength.detail : 'This reading carries no strength calculation (older analysis server).',
+    provRows: goldProvenanceRows({source:p.data_source||p.source||null,lastUpdateMs:p.updatedAt||Date.now(),chartSource:null,analysisSource:'shared analyzer pipeline (completed M1/M5/H1 candles)'})
+  });
   $('#azResult').classList.remove('hidden');
   paintExposureReconcile();
   azAddHistory(p, meta);
@@ -4645,41 +4661,54 @@ function renderGoldAnalysis(){
    Three technical-evidence bars: buying / selling / neutral, always totalling
    100% when trusted, INSUFFICIENT DATA when not. Never a probability or an
    instruction — the WAIT signal is computed separately and untouched here. */
+/* Generic MARKET STRENGTH painter: works on any container whose children carry
+   data-s attributes (gold, Signal Analyzer, Market Explorer analysis). Same
+   rules everywhere: trusted scores only, INSUFFICIENT DATA otherwise, and the
+   disclaimer that these are technical evidence — never a probability. */
+function paintStrengthBox(box, s, opts){
+  if(!box)return;
+  opts=opts||{};
+  const q=k=>box.querySelector('[data-s="'+k+'"]');
+  const setRow=(k,pct,ev)=>{
+    const p=q(k+'Pct');if(p)p.textContent=pct+'%';
+    const b=q(k+'Bar');if(b)b.style.width=Math.max(0,Math.min(100,pct))+'%';
+    const e=q(k+'Ev');if(e)e.textContent=ev;
+  };
+  const cls=q('cls');
+  if(!s||!s.ok){
+    if(cls){cls.textContent='INSUFFICIENT DATA';cls.className='badge gray';}
+    ['buy','sell','neutral'].forEach(k=>{
+      const p=q(k+'Pct');if(p)p.textContent='—';
+      const b=q(k+'Bar');if(b)b.style.width='0%';
+      const e=q(k+'Ev');if(e)e.textContent='Not calculated — no trusted completed-candle window.';
+    });
+    const m=q('mtf');if(m)m.textContent=String(opts.msg||'Required data is unavailable.').slice(0,240)+' No scores are shown because none can be trusted.';
+    const st=q('stamp');if(st)st.textContent='';
+    const pv=q('prov');if(pv&&opts.provRows)pv.textContent=opts.provRows.map(r=>r.k+': '+r.v).join('  ·  ');
+    return;
+  }
+  if(cls){cls.textContent=s.classification;cls.className='badge '+(s.dominant==='bull'?'buy':s.dominant==='bear'?'sell':'gray');}
+  const tfScore=(side)=>['m1','m5','h1'].filter(k=>s.perTimeframe&&s.perTimeframe[k]&&s.perTimeframe[k].valid)
+    .map(k=>{const t=s.perTimeframe[k];const den=(t.bull+t.bear+t.neutral)||1;return t.label+' '+t[side]+'/'+den;}).join(' · ');
+  setRow('buy',s.buying,'Bullish slots — '+tfScore('bull')+(s.supporting&&s.supporting.length?' · '+s.supporting.slice(0,2).join(' · '):''));
+  setRow('sell',s.selling,'Bearish slots — '+tfScore('bear')+(s.contradicting&&s.contradicting.length?' · '+s.contradicting.slice(0,2).join(' · '):''));
+  setRow('neutral',s.neutral,'Neutral/evaluated slots — '+tfScore('neutral')+(s.notes&&s.notes.length?' · '+s.notes[0]:''));
+  const tfLine=['m1','m5','h1'].map(k=>{const t=s.perTimeframe&&s.perTimeframe[k];return t?(t.label+': '+(t.valid?t.trend:(t.reason||'UNAVAILABLE'))):'';}).filter(Boolean).join(' · ');
+  const m=q('mtf');if(m)m.textContent=tfLine+'  —  OVERALL: '+s.classification.toUpperCase()+'. Supporting: '+(s.supporting&&s.supporting.length?s.supporting.slice(0,3).join('; '):'none beyond the score')+'. Contradicting: '+(s.contradicting&&s.contradicting.length?s.contradicting.slice(0,3).join('; '):'none')+'.';
+  const st=q('stamp');
+  if(st)st.textContent='Calculated '+new Date(s.computedAt).toLocaleString()+' · latest completed candle '+new Date(s.latestClosed*1000).toLocaleString()+' · timeframes: '+(s.validTimeframes||[]).join('/')+' · forming candle '+s.currentCandle+'. Technical evidence — not a probability of profit.';
+  const mb=q('methodBody');
+  if(mb)mb.innerHTML='<ul style="margin:4px 0 4px 16px;padding:0">'+(s.methodology||[]).map(x=>'<li>'+escHtml(x)+'</li>').join('')+'</ul><div>Weights: M1 '+s.weights.m1+' · M5 '+s.weights.m5+' · H1 '+s.weights.h1+'. Rounding: '+escHtml(s.rounding)+'.</div>';
+  const pv=q('prov');if(pv&&opts.provRows)pv.textContent=opts.provRows.map(r=>r.k+': '+r.v).join('  ·  ');
+}
 function renderGoldStrengthUnavailable(msg){
-  const cls=$('#strengthClass');if(cls){cls.textContent='INSUFFICIENT DATA';cls.className='badge gray';}
-  [['Buy','buying'],['Sell','selling'],['Neutral','neutral']].forEach(([k])=>{
-    const p=$('#strength'+k+'Pct');if(p)p.textContent='—';
-    const b=$('#strength'+k+'Bar');if(b)b.style.width='0%';
-    const e=$('#strength'+k+'Ev');if(e)e.textContent='Not calculated — no trusted completed-candle window.';
-  });
-  const m=$('#strengthMtf');if(m)m.textContent=String(msg||'Required data is unavailable.').slice(0,240)+' No scores are shown because none can be trusted.';
-  const st=$('#strengthStamp');if(st)st.textContent='';
-  const pv=$('#strengthProvenance');
-  if(pv)pv.textContent=goldProvenanceRows({source:state.goldAnalysis&&state.goldAnalysis.data_source||null,lastUpdateMs:goldAnalysisAt,chartSource:goldChartSource||null}).map(r=>r.k+': '+r.v).join('  ·  ');
+  paintStrengthBox($('#goldStrength'), null, {msg:msg, provRows:goldProvenanceRows({source:state.goldAnalysis&&state.goldAnalysis.data_source||null,lastUpdateMs:goldAnalysisAt,chartSource:goldChartSource||null})});
 }
 function renderGoldStrength(d){
   const box=$('#goldStrength');if(!box)return;
   const s=d&&d.strength;
   if(!s||!s.ok){renderGoldStrengthUnavailable(s&&s.detail||'Waiting for completed M1 / M5 / H1 candles.');return;}
-  const cls=$('#strengthClass');if(cls){cls.textContent=s.classification;cls.className='badge '+(s.dominant==='bull'?'buy':s.dominant==='bear'?'sell':'gray');}
-  const tfScore=(side)=>['m1','m5','h1'].filter(k=>s.perTimeframe&&s.perTimeframe[k]&&s.perTimeframe[k].valid)
-    .map(k=>{const t=s.perTimeframe[k];const den=(t.bull+t.bear+t.neutral)||1;return t.label+' '+t[side]+'/'+den;}).join(' · ');
-  const set=(k,pct,ev)=>{
-    const p=$('#strength'+k+'Pct');if(p)p.textContent=pct+'%';
-    const b=$('#strength'+k+'Bar');if(b)b.style.width=Math.max(0,Math.min(100,pct))+'%';
-    const e=$('#strength'+k+'Ev');if(e)e.textContent=ev;
-  };
-  set('Buy',s.buying,'Bullish slots — '+tfScore('bull')+(s.supporting&&s.supporting.length?' · '+s.supporting.slice(0,2).join(' · '):''));
-  set('Sell',s.selling,'Bearish slots — '+tfScore('bear')+(s.contradicting&&s.contradicting.length?' · '+s.contradicting.slice(0,2).join(' · '):''));
-  set('Neutral',s.neutral,'Neutral/evaluated slots — '+tfScore('neutral')+(s.notes&&s.notes.length?' · '+s.notes[0]:''));
-  const tfLine=['m1','m5','h1'].map(k=>{const t=s.perTimeframe&&s.perTimeframe[k];return t?(t.label+': '+(t.valid?t.trend:(t.reason||'UNAVAILABLE'))):'';}).filter(Boolean).join(' · ');
-  const m=$('#strengthMtf');if(m)m.textContent=tfLine+'  —  OVERALL: '+s.classification.toUpperCase()+'. Supporting: '+(s.supporting&&s.supporting.length?s.supporting.slice(0,3).join('; '):'none beyond the score')+'. Contradicting: '+(s.contradicting&&s.contradicting.length?s.contradicting.slice(0,3).join('; '):'none')+'.';
-  const st=$('#strengthStamp');
-  if(st)st.textContent='Calculated '+new Date(s.computedAt).toLocaleString()+' · latest completed candle '+new Date(s.latestClosed*1000).toLocaleString()+' · timeframes: '+(s.validTimeframes||[]).join('/')+' · forming candle '+s.currentCandle+'. Technical evidence — not a probability of profit.';
-  const mb=$('#strengthMethodBody');
-  if(mb)mb.innerHTML='<ul style="margin:4px 0 4px 16px;padding:0">'+(s.methodology||[]).map(x=>'<li>'+escHtml(x)+'</li>').join('')+'</ul><div>Weights: M1 '+s.weights.m1+' · M5 '+s.weights.m5+' · H1 '+s.weights.h1+'. Rounding: '+escHtml(s.rounding)+'.</div>';
-  const pv=$('#strengthProvenance');
-  if(pv)pv.textContent=goldProvenanceRows({source:d.data_source||null,lastUpdateMs:goldAnalysisAt||d.updatedAt||0,chartSource:goldChartSource||null,analysisSource:'shared analyzer pipeline (completed M1/M5/H1 candles)'}).map(r=>r.k+': '+r.v).join('  ·  ');
+  paintStrengthBox(box, s, {provRows:goldProvenanceRows({source:d.data_source||null,lastUpdateMs:goldAnalysisAt||d.updatedAt||0,chartSource:goldChartSource||null,analysisSource:'shared analyzer pipeline (completed M1/M5/H1 candles)'})});
 }
 function goldAnalysisNoticeText(){
   const auto=state.settings.goldAuto!==false;

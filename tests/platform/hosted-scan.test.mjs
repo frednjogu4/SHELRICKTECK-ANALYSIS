@@ -123,12 +123,23 @@ for (const symbol of DERIV_SYMBOLS) {
     const scan = (await (await aurum.post('/api/signals/scan', { symbols: [symbol] })).json()).results[0];
     assert.equal(scan.error, undefined);
     for (const key of Object.keys(scan).filter((name) => name !== 'ts')) {
-      assert.deepEqual(inBrowser[key], scan[key], `scan field "${key}"`);
+        if (key !== 'ts' && key !== 'strength') {
+          assert.deepEqual(inBrowser[key], scan[key], `scan field "${key}"`);
+        }
     }
 
     const analyze = await (await aurum.post('/api/signals/analyze', { symbol })).json();
     for (const key of Object.keys(analyze).filter((name) => name !== 'meta')) {
-      assert.deepEqual(inBrowser[key], analyze[key], `analysis field "${key}"`);
+        if (key !== 'meta' && key !== 'strength') {
+          assert.deepEqual(inBrowser[key], analyze[key], `analysis field "${key}"`);
+        }
+        /* MARKET STRENGTH carries the same reading on all three surfaces; only
+           computedAt (wall clock of each call) may differ. */
+        const stableStrength = (s) => { const c = Object.assign({}, s); delete c.computedAt; return c; };
+        assert.ok(inBrowser.strength && scan.strength && analyze.strength, 'strength present everywhere');
+        assert.deepEqual(stableStrength(inBrowser.strength), stableStrength(scan.strength), 'browser vs worker strength');
+        assert.deepEqual(stableStrength(scan.strength), stableStrength(analyze.strength), 'scan vs analyze strength');
+        assert.equal(scan.strength.buying + scan.strength.selling + scan.strength.neutral, 100);
     }
     /* All three name the 5-minute close the reading was made at, and it is the same one. */
     assert.ok(inBrowser.candle_close > 0 && inBrowser.candle_close % 300 === 0);

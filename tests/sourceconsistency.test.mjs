@@ -80,3 +80,26 @@ test('no silent provider switch: labelled fallback text retained', () => {
   assert.match(mainJs, /labelled fallback|labelled_deriv_fallback/);
   assert.match(mainJs, /No old signal is shown as current/);
 });
+
+test('MARKET STRENGTH is offered on every analysis surface, not just Gold', () => {
+  /* Signal Analyzer (any instrument) + Market Explorer catalogue analysis */
+  assert.match(html, /id="azStrength"/);
+  assert.match(html, /id="brokerStrength"/);
+  assert.equal((html.match(/data-s="buyPct"/g) || []).length >= 3, true, 'gold + az + broker buying bars');
+  assert.match(mainJs, /paintStrengthBox\(\$\('#azStrength'\)/);
+  assert.match(mainJs, /paintStrengthBox\(\$\('#brokerStrength'\)/);
+  assert.match(mainJs, /marketStrength\(bsets/);
+  assert.match(mainJs, /function paintStrengthBox/);
+});
+
+test('Cloudflare worker analyze/scan responses carry strength for staging', () => {
+  const worker = readFileSync(join(root, 'cloudflare/worker.js'), 'utf8');
+  const hits = worker.match(/strength: marketStrength\(/g) || [];
+  assert.ok(hits.length >= 2, 'worker scan + analyze payloads both attach strength');
+  assert.match(worker, /import \{ marketStrength \} from '\.\.\/server\/lib\/strength\.js'/);
+});
+
+test('strength engine accepts ms epochs (MT5 bridge candle rows)', () => {
+  const s = readFileSync(join(root, 'server/lib/strength.js'), 'utf8');
+  assert.match(s, /newest > 1e12/);
+});

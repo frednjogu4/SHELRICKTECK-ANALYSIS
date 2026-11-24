@@ -1131,6 +1131,17 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
             <svg id="brokerAnalysisChart" viewBox="0 0 640 120" role="img" aria-label="Recent verified one-minute closing prices" style="width:100%;height:150px;border-radius:8px;background:var(--surface);margin:4px 0 10px"><polyline id="brokerAnalysisLine" points="" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
             <div class="row wrap" id="brokerAnalysisFrames" style="gap:8px"></div>
             <div class="tiny" id="brokerAnalysisVotes" style="margin-top:8px"></div>
+            <div id="brokerStrength" style="margin-top:10px" aria-live="polite">
+              <div class="row between wrap"><b class="strength-label">MARKET STRENGTH</b><span data-s="cls" class="badge gray">AWAITING CANDLES</span></div>
+              <div style="margin-top:8px;display:grid;gap:8px">
+                <div class="strength-row"><div class="row between"><span class="strength-label">BUYING STRENGTH</span><b class="mono strength-pct" data-s="buyPct">—</b></div><div class="strength-track"><i data-s="buyBar" style="width:0%"></i></div><div class="tiny faint" data-s="buyEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+                <div class="strength-row"><div class="row between"><span class="strength-label">SELLING STRENGTH</span><b class="mono strength-pct" data-s="sellPct">—</b></div><div class="strength-track"><i data-s="sellBar" style="width:0%"></i></div><div class="tiny faint" data-s="sellEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+                <div class="strength-row"><div class="row between"><span class="strength-label">NEUTRAL STRENGTH</span><b class="mono strength-pct" data-s="neutralPct">—</b></div><div class="strength-track"><i data-s="neutralBar" style="width:0%"></i></div><div class="tiny faint" data-s="neutralEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+              </div>
+              <div class="tiny" data-s="mtf" style="margin-top:8px"></div>
+              <div class="tiny faint" data-s="stamp" style="margin-top:4px"></div>
+              <div class="tiny faint" data-s="prov" style="margin-top:6px;line-height:1.5"></div>
+            </div>
             <div class="hint tiny" style="margin-top:6px">Technical indicators only — analysis-only, not a trade signal. Candle history is requested from the selected broker; Exness/MT5 data stays on this PC.</div>
           </div>
         </div>
@@ -1361,6 +1372,18 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               <div class="az-tile"><div class="k">STOP LOSS</div><div class="v down" id="azSl">--</div></div>
               <div class="az-tile"><div class="k">TP 1</div><div class="v up" id="azTp1">--</div></div>
               <div class="az-tile"><div class="k">TP 2</div><div class="v up" id="azTp2">--</div></div>
+            </div>
+            <div class="card" id="azStrength" style="margin:14px 0;background:var(--surface-2)" aria-live="polite">
+              <div class="row between wrap"><div><h4 class="az-h" style="margin:0">MARKET STRENGTH</h4><div class="tiny faint">Technical evidence from completed M1 / M5 / H1 candles for this instrument — not a probability of profit, forecast or trade instruction.</div></div><span id="azStrengthClass" data-s="cls" class="badge gray">AWAITING READING</span></div>
+              <div style="margin-top:12px;display:grid;gap:12px">
+                <div class="strength-row"><div class="row between"><span class="strength-label">BUYING STRENGTH</span><b class="mono strength-pct" data-s="buyPct">—</b></div><div class="strength-track"><i data-s="buyBar" style="width:0%"></i></div><div class="tiny faint" data-s="buyEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+                <div class="strength-row"><div class="row between"><span class="strength-label">SELLING STRENGTH</span><b class="mono strength-pct" data-s="sellPct">—</b></div><div class="strength-track"><i data-s="sellBar" style="width:0%"></i></div><div class="tiny faint" data-s="sellEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+                <div class="strength-row"><div class="row between"><span class="strength-label">NEUTRAL STRENGTH</span><b class="mono strength-pct" data-s="neutralPct">—</b></div><div class="strength-track"><i data-s="neutralBar" style="width:0%"></i></div><div class="tiny faint" data-s="neutralEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+              </div>
+              <div class="tiny" data-s="mtf" style="margin-top:10px"></div>
+              <div class="tiny faint" data-s="stamp" style="margin-top:6px"></div>
+              <details style="margin-top:8px"><summary class="tiny" style="cursor:pointer">Calculation methodology</summary><div class="tiny faint" data-s="methodBody" style="margin-top:6px;line-height:1.5"></div></details>
+              <div class="tiny faint" data-s="prov" style="margin-top:8px;line-height:1.5"></div>
             </div>
             <div class="card" id="azExposure" style="margin:14px 0" aria-live="polite"></div>
             <div class="grid c2" style="margin-bottom:14px">
@@ -1641,16 +1664,16 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
             </div>
           </div>
           <div class="card" id="goldStrength" style="margin:0 0 14px;background:var(--surface-2)" aria-live="polite">
-            <div class="row between wrap"><div><h3 style="margin:0">GOLD MARKET STRENGTH</h3><div class="tiny faint">Technical evidence from completed M1 / M5 / H1 candles — not a probability of profit, forecast or trade instruction.</div></div><span id="strengthClass" class="badge gray">AWAITING FIRST READING</span></div>
+            <div class="row between wrap"><div><h3 style="margin:0">GOLD MARKET STRENGTH</h3><div class="tiny faint">Technical evidence from completed M1 / M5 / H1 candles — not a probability of profit, forecast or trade instruction.</div></div><span id="strengthClass" data-s="cls" class="badge gray">AWAITING FIRST READING</span></div>
             <div style="margin-top:12px;display:grid;gap:12px">
-              <div class="strength-row"><div class="row between"><span class="strength-label">BUYING STRENGTH</span><b class="mono strength-pct" id="strengthBuyPct">—</b></div><div class="strength-track"><i id="strengthBuyBar" style="width:0%"></i></div><div class="tiny faint" id="strengthBuyEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
-              <div class="strength-row"><div class="row between"><span class="strength-label">SELLING STRENGTH</span><b class="mono strength-pct" id="strengthSellPct">—</b></div><div class="strength-track"><i id="strengthSellBar" style="width:0%"></i></div><div class="tiny faint" id="strengthSellEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
-              <div class="strength-row"><div class="row between"><span class="strength-label">NEUTRAL STRENGTH</span><b class="mono strength-pct" id="strengthNeutralPct">—</b></div><div class="strength-track"><i id="strengthNeutralBar" style="width:0%"></i></div><div class="tiny faint" id="strengthNeutralEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+              <div class="strength-row"><div class="row between"><span class="strength-label">BUYING STRENGTH</span><b class="mono strength-pct" id="strengthBuyPct" data-s="buyPct">—</b></div><div class="strength-track"><i id="strengthBuyBar" data-s="buyBar" style="width:0%"></i></div><div class="tiny faint" id="strengthBuyEv" data-s="buyEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+              <div class="strength-row"><div class="row between"><span class="strength-label">SELLING STRENGTH</span><b class="mono strength-pct" id="strengthSellPct" data-s="sellPct">—</b></div><div class="strength-track"><i id="strengthSellBar" data-s="sellBar" style="width:0%"></i></div><div class="tiny faint" id="strengthSellEv" data-s="sellEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
+              <div class="strength-row"><div class="row between"><span class="strength-label">NEUTRAL STRENGTH</span><b class="mono strength-pct" id="strengthNeutralPct" data-s="neutralPct">—</b></div><div class="strength-track"><i id="strengthNeutralBar" data-s="neutralBar" style="width:0%"></i></div><div class="tiny faint" id="strengthNeutralEv" data-s="neutralEv">Waiting for completed M1 / M5 / H1 candles.</div></div>
             </div>
-            <div class="tiny" id="strengthMtf" style="margin-top:10px"></div>
-            <div class="tiny faint" id="strengthStamp" style="margin-top:6px"></div>
-            <details id="strengthMethod" style="margin-top:8px"><summary class="tiny" style="cursor:pointer">Calculation methodology</summary><div class="tiny faint" id="strengthMethodBody" style="margin-top:6px;line-height:1.5"></div></details>
-            <div class="tiny faint" id="strengthProvenance" style="margin-top:8px;line-height:1.5"></div>
+            <div class="tiny" id="strengthMtf" data-s="mtf" style="margin-top:10px"></div>
+            <div class="tiny faint" id="strengthStamp" data-s="stamp" style="margin-top:6px"></div>
+            <details id="strengthMethod" style="margin-top:8px"><summary class="tiny" style="cursor:pointer">Calculation methodology</summary><div class="tiny faint" id="strengthMethodBody" data-s="methodBody" style="margin-top:6px;line-height:1.5"></div></details>
+            <div class="tiny faint" id="strengthProvenance" data-s="prov" style="margin-top:8px;line-height:1.5"></div>
           </div>
           <div class="card" id="goldExposure" style="margin:0 0 14px" aria-live="polite"></div>
           <div class="card" style="margin:0 0 14px;background:var(--surface-2)">
