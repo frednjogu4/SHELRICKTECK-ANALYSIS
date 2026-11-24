@@ -17,6 +17,8 @@ import { analyzeProScalper, deriveProScalperTimeframe, backtestProScalper, attac
 import * as tv from './tradingview.js';
 import { planPosition } from './sizer.js';
 import { analyzeTimeframe, confirmMultiTimeframe, votesSummary, runDeterministicAnalysis, waitReason } from '../server/lib/analyzer.js';
+import { marketStrength } from '../server/lib/strength.js';
+import { mccProvenance, goldProvenanceRows } from './provenance.js';
 import { localDecision } from '../server/lib/localdecision.js';
 import { notify, initNotifications, enableNotifications, notifState, LEVEL_GUIDE } from './notify.js';
 import { getKeys, setKeys, clearKeys, hasAnyKey, keyHeaders } from './vault.js';
@@ -3357,6 +3359,7 @@ function renderConnectionSummary(){
   const stamp=$('#marketStatusUpdated'); if(stamp)stamp.textContent='Status checked '+timeStr(Date.now());
 }
 function renderOverview(){
+  const pv=$('#ovProvenance');if(pv)pv.textContent=mccProvenance();
   updatePortfolioLive();
   renderCommandMarkets();
   renderBestPick();
@@ -4618,6 +4621,7 @@ function goldSignalMessage(d){
 function goldReading(d){return Object.assign({},d,{symbol:GOLD_SYMBOL});}
 function renderGoldAnalysis(){
   const d=state.goldAnalysis;if(!d)return;
+  renderGoldStrength(d);
   const dig=goldDisplayDigits();
   const badge=$('#goldSignalBadge');badge.textContent=d.signal||'WAIT';badge.className='badge '+(d.signal==='BUY'?'buy':d.signal==='SELL'?'sell':'gray');
   $('#goldSignal').textContent=d.signal||'WAIT';$('#goldSignal').className=d.signal==='BUY'?'up':d.signal==='SELL'?'down':'faint';
@@ -4636,6 +4640,46 @@ function renderGoldAnalysis(){
     notify(first?'Gold/USD signal ready':'Gold/USD signal changed',msg,{tag:'gold-signal-'+key,kind:d.signal==='BUY'?'ok':d.signal==='SELL'?'warn':''});
     pushWA(msg);
   }
+}
+/* ---------- GOLD MARKET STRENGTH (src/../server/lib/strength.js) ----------
+   Three technical-evidence bars: buying / selling / neutral, always totalling
+   100% when trusted, INSUFFICIENT DATA when not. Never a probability or an
+   instruction — the WAIT signal is computed separately and untouched here. */
+function renderGoldStrengthUnavailable(msg){
+  const cls=$('#strengthClass');if(cls){cls.textContent='INSUFFICIENT DATA';cls.className='badge gray';}
+  [['Buy','buying'],['Sell','selling'],['Neutral','neutral']].forEach(([k])=>{
+    const p=$('#strength'+k+'Pct');if(p)p.textContent='—';
+    const b=$('#strength'+k+'Bar');if(b)b.style.width='0%';
+    const e=$('#strength'+k+'Ev');if(e)e.textContent='Not calculated — no trusted completed-candle window.';
+  });
+  const m=$('#strengthMtf');if(m)m.textContent=String(msg||'Required data is unavailable.').slice(0,240)+' No scores are shown because none can be trusted.';
+  const st=$('#strengthStamp');if(st)st.textContent='';
+  const pv=$('#strengthProvenance');
+  if(pv)pv.textContent=goldProvenanceRows({source:state.goldAnalysis&&state.goldAnalysis.data_source||null,lastUpdateMs:goldAnalysisAt,chartSource:goldChartSource||null}).map(r=>r.k+': '+r.v).join('  ·  ');
+}
+function renderGoldStrength(d){
+  const box=$('#goldStrength');if(!box)return;
+  const s=d&&d.strength;
+  if(!s||!s.ok){renderGoldStrengthUnavailable(s&&s.detail||'Waiting for completed M1 / M5 / H1 candles.');return;}
+  const cls=$('#strengthClass');if(cls){cls.textContent=s.classification;cls.className='badge '+(s.dominant==='bull'?'buy':s.dominant==='bear'?'sell':'gray');}
+  const tfScore=(side)=>['m1','m5','h1'].filter(k=>s.perTimeframe&&s.perTimeframe[k]&&s.perTimeframe[k].valid)
+    .map(k=>{const t=s.perTimeframe[k];const den=(t.bull+t.bear+t.neutral)||1;return t.label+' '+t[side]+'/'+den;}).join(' · ');
+  const set=(k,pct,ev)=>{
+    const p=$('#strength'+k+'Pct');if(p)p.textContent=pct+'%';
+    const b=$('#strength'+k+'Bar');if(b)b.style.width=Math.max(0,Math.min(100,pct))+'%';
+    const e=$('#strength'+k+'Ev');if(e)e.textContent=ev;
+  };
+  set('Buy',s.buying,'Bullish slots — '+tfScore('bull')+(s.supporting&&s.supporting.length?' · '+s.supporting.slice(0,2).join(' · '):''));
+  set('Sell',s.selling,'Bearish slots — '+tfScore('bear')+(s.contradicting&&s.contradicting.length?' · '+s.contradicting.slice(0,2).join(' · '):''));
+  set('Neutral',s.neutral,'Neutral/evaluated slots — '+tfScore('neutral')+(s.notes&&s.notes.length?' · '+s.notes[0]:''));
+  const tfLine=['m1','m5','h1'].map(k=>{const t=s.perTimeframe&&s.perTimeframe[k];return t?(t.label+': '+(t.valid?t.trend:(t.reason||'UNAVAILABLE'))):'';}).filter(Boolean).join(' · ');
+  const m=$('#strengthMtf');if(m)m.textContent=tfLine+'  —  OVERALL: '+s.classification.toUpperCase()+'. Supporting: '+(s.supporting&&s.supporting.length?s.supporting.slice(0,3).join('; '):'none beyond the score')+'. Contradicting: '+(s.contradicting&&s.contradicting.length?s.contradicting.slice(0,3).join('; '):'none')+'.';
+  const st=$('#strengthStamp');
+  if(st)st.textContent='Calculated '+new Date(s.computedAt).toLocaleString()+' · latest completed candle '+new Date(s.latestClosed*1000).toLocaleString()+' · timeframes: '+(s.validTimeframes||[]).join('/')+' · forming candle '+s.currentCandle+'. Technical evidence — not a probability of profit.';
+  const mb=$('#strengthMethodBody');
+  if(mb)mb.innerHTML='<ul style="margin:4px 0 4px 16px;padding:0">'+(s.methodology||[]).map(x=>'<li>'+escHtml(x)+'</li>').join('')+'</ul><div>Weights: M1 '+s.weights.m1+' · M5 '+s.weights.m5+' · H1 '+s.weights.h1+'. Rounding: '+escHtml(s.rounding)+'.</div>';
+  const pv=$('#strengthProvenance');
+  if(pv)pv.textContent=goldProvenanceRows({source:d.data_source||null,lastUpdateMs:goldAnalysisAt||d.updatedAt||0,chartSource:goldChartSource||null,analysisSource:'shared analyzer pipeline (completed M1/M5/H1 candles)'}).map(r=>r.k+': '+r.v).join('  ·  ');
 }
 function goldAnalysisNoticeText(){
   const auto=state.settings.goldAuto!==false;
@@ -4697,7 +4741,7 @@ async function goldDerivFallback(reason){
     if(short){const a=det.analyses[short];throw new Error('Deriv '+a.timeframe+' history has '+(a.have||0)+' verified candles; at least '+(a.required||50)+' are needed.');}
     const lastCandle=m1[m1.length-1];if(!lastCandle||!goldFreshTimestamp(lastCandle.time))throw new Error('Deriv Gold M1 candles are stale; no live signal will be shown.');
     if(!closed.current)throw new Error(RESUMED_NOTE('Deriv Gold'));
-    return Object.assign({},localDecision(det),{symbol:GOLD_SYMBOL,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:true,data_source:label,fallback:true,fallback_reason:reason,latest_candle_time:lastCandle.time,candle_close:closed.close,meta:{mode:'technical',reason:'labelled_deriv_fallback'}});
+    return Object.assign({},localDecision(det),{symbol:GOLD_SYMBOL,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:true,data_source:label,fallback:true,fallback_reason:reason,latest_candle_time:lastCandle.time,candle_close:closed.close,strength:marketStrength(closed.sets,{currentPresent:!!closed.current}),meta:{mode:'technical',reason:'labelled_deriv_fallback'}});
   }
 }
 async function runGoldAnalysis(){
@@ -4723,7 +4767,7 @@ async function runGoldAnalysis(){
       /* Not current: just resumed after a pause, or (no close at all) a history without a finished 5-minute candle. */
       if(!closed.current)throw new Error(closed.close>0?RESUMED_NOTE('Exness Gold'):'Exness Gold history gives no finished 5-minute candle to read at yet.');
       goldMt5Quote={symbol:String(q.symbol||''),price,time:Number(q.time),digits:q.digits,trade_mode:q.trade_mode};
-      d=Object.assign({},decision,{price:det.analyses.m1&&det.analyses.m1.currentPrice,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:det.ok,data_source:'Exness MT5 local candles',latest_candle_time:lastCandle.time,candle_close:closed.close,meta:{mode:'technical',reason:'local_read_only'}});
+      d=Object.assign({},decision,{price:det.analyses.m1&&det.analyses.m1.currentPrice,mtf_signal:det.mtfSignal,votes:votesSummary(det.analyses),data_ok:det.ok,data_source:'Exness MT5 local candles',latest_candle_time:lastCandle.time,candle_close:closed.close,strength:marketStrength(closed.sets,{currentPresent:!!closed.current}),meta:{mode:'technical',reason:'local_read_only'}});
       }catch(exnessError){goldMt5Quote=null;d=await goldDerivFallback('Exness MT5 unavailable: '+String(exnessError&&exnessError.message||exnessError).slice(0,100));}
     }else{
       d=await goldDerivFallback(goldFallbackReason());
@@ -4739,6 +4783,7 @@ async function runGoldAnalysis(){
     const r=$('#goldRationale');if(r)r.textContent=goldAnalysisError+' No old signal is being presented as current.';
     const v=$('#goldVotes');if(v)v.textContent='No current verified timeframe votes.';
     const p=$('#goldPressure');if(p)p.textContent='Buyer/seller pressure unavailable without fresh timeframe data.';
+    renderGoldStrengthUnavailable(goldAnalysisError||'Analysis unavailable.');
     const risks=$('#goldRisks');if(risks)risks.innerHTML='';
     const b=$('#goldSignalBadge');if(b){b.textContent='UNAVAILABLE';b.className='badge gray';}
     const s=$('#goldSignal');if(s){s.textContent='—';s.className='faint';}
@@ -4793,6 +4838,7 @@ function renderGold(){
     const sig=$('#goldSignal');if(sig){sig.textContent='—';sig.className='faint';}
     ['goldEntry','goldSL','goldTP1','goldTP2'].forEach(id=>{const el=$('#'+id);if(el)el.textContent='—';});
     const votes=$('#goldVotes');if(votes)votes.textContent='Fetching fresh M1 / M5 / H1 data from the selected source.';
+    renderGoldStrengthUnavailable('Analysis source changed; waiting for fresh verified candles.');
     const rationale=$('#goldRationale');if(rationale)rationale.textContent='Source changed explicitly; waiting for fresh verified candles.';
     const status=$('#goldFeedStatus');if(status)status.textContent='SOURCE CHANGED · refreshing';
     updateGoldQuoteDisplay();updateGoldAnalysisNotice();runGoldAnalysis();
