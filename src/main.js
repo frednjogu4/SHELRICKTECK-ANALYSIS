@@ -41,6 +41,7 @@ import { splitBestPick, dailyBarText, sharedDailyBarText, contextOnlyDailyReadin
 import { headlineConcerns, eventConcerns, eventTime, currenciesOf, marketsForCurrency, eatClock, eatDay, eatDayBounds, eatStamp, standAside, exposureFor, exposureForCurrency, releaseMeasuredText, trendWords, STAND_ASIDE } from './newsimpact.js';
 import { buildScheduledNewsAlerts } from './schedulednews.js';
 import { initCommandCentre } from './commandcentre.js';
+import { buildExposureReconcile, renderExposureReconcile } from './exposurereconcile.js';
 
 /* The new unified Overview has its own structure; the legacy initializer safely no-ops without its old KPI anchor. */
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => initCommandCentre(), { once: true });
@@ -849,7 +850,7 @@ async function refreshMt5Snapshot(showToast=false){
     return true;
   }catch(_e){
     state.mt5SnapshotFailed=true;
-    updateSessionInfo(); updateKpis(); renderMt5BrokerPositions();
+    updateSessionInfo(); updateKpis(); renderMt5BrokerPositions(); paintExposureReconcile();
     if(showToast)toast('MT5 refresh failed','Could not refresh from the local bridge. Last confirmed values remain shown.','err');
     return false;
   }finally{ mt5SyncBusy=false; }
@@ -3229,6 +3230,7 @@ function renderMt5BrokerPositions(){
   body.innerHTML=list.map(p=>'<tr><td class="mono tiny">'+escHtml(String(p.ticket??'—'))+'</td><td><b>'+escHtml(String(p.symbol||'—'))+'</b></td><td>'+escHtml(String(p.side||'—'))+'</td><td class="num mono">'+fmtPx(p.volume==null?null:Number(p.volume),2)+'</td><td class="num mono">'+fmtPx(p.price==null?null:Number(p.price),5)+'</td><td class="num mono">'+escHtml(fmtAcctMoney(p.profit,currency,true))+'</td><td class="num mono">'+fmtPx(p.sl==null?null:Number(p.sl),5)+'</td><td class="num mono">'+fmtPx(p.tp==null?null:Number(p.tp),5)+'</td></tr>').join('');
 }
 function updatePortfolioLive(){
+  paintExposureReconcile();
   renderMt5BrokerPositions();
   state.positions.forEach(p=>{
     const el=$('[data-pnl="'+p.id+'"]');
@@ -4033,6 +4035,7 @@ function renderAz(p, meta) {
   $('#azUse').disabled = false;
 
   $('#azResult').classList.remove('hidden');
+  paintExposureReconcile();
   azAddHistory(p, meta);
   loadPipelineFlow(); /* six-role workflow presentation (spec §5 BOSS) */
   if (meta.spent != null && meta.cap != null) {
@@ -4618,6 +4621,7 @@ function renderGoldAnalysis(){
   const dig=goldDisplayDigits();
   const badge=$('#goldSignalBadge');badge.textContent=d.signal||'WAIT';badge.className='badge '+(d.signal==='BUY'?'buy':d.signal==='SELL'?'sell':'gray');
   $('#goldSignal').textContent=d.signal||'WAIT';$('#goldSignal').className=d.signal==='BUY'?'up':d.signal==='SELL'?'down':'faint';
+  paintExposureReconcile();
   $('#goldVotes').textContent='Analysis timeframe: M1 / M5 / H1 · '+(d.mtf_signal||'no confirmation')+' · '+(d.data_source||'');
   $('#goldSignalUpdated').textContent=(closeText(d)?'Reading of the '+closeText(d)+' candle close · checked ':'Last analysis: ')+(d.updatedAt?new Date(d.updatedAt).toLocaleString():'—')+(closeText(d)?' · the next reading comes with the next 5-minute close; no fixed expiry.':' · review after next M5 candle; no fixed expiry.');
   $('#goldEntry').textContent=goldFmtLevel(d.entry,dig);$('#goldSL').textContent=goldFmtLevel(d.stop_loss,dig);$('#goldTP1').textContent=goldFmtLevel(d.tp1,dig);$('#goldTP2').textContent=goldFmtLevel(d.tp2,dig);
@@ -4760,6 +4764,26 @@ function startGoldMonitor(){
     else if(state.view==='gold'){updateGoldQuoteDisplay();renderGoldChart();}
     if(state.view==='gold'&&Date.now()-goldChartAt>GOLD_REFRESH_MS)refreshGoldChart();
   },10000);
+}
+/* Open MT5 positions beside the reading on screen (src/exposurereconcile.js):
+   read-only reconciliation of the bridge's snapshot — a different-instrument or
+   against-the-reading exposure is shown before anything else is. No orders. */
+function paintExposureReconcile(){
+  try{
+    const dirOf=sel=>{const t=$(sel)?$(sel).textContent:'';return /^(BUY|SELL)$/.test(String(t||'').trim())?String(t).trim():null;};
+    const gold=$('#goldExposure');
+    if(gold)renderExposureReconcile(gold,buildExposureReconcile({
+      reading:{symbol:'XAU/USD',signal:dirOf('#goldSignal')}, /* literal: GOLD_SYMBOL is declared later in this module */
+      broker:state.broker,positions:state.mt5LivePositions,snapshotAt:state.mt5LastSnapshotAt,snapshotFailed:state.mt5SnapshotFailed
+    }));
+    try{
+      const az=$('#azExposure');
+      if(az)renderExposureReconcile(az,buildExposureReconcile({
+        reading:{symbol:(lastAz&&lastAz.symbol)||($('#azSymbol')&&$('#azSymbol').value)||null,signal:dirOf('#azSignal')},
+        broker:state.broker,positions:state.mt5LivePositions,snapshotAt:state.mt5LastSnapshotAt,snapshotFailed:state.mt5SnapshotFailed
+      }));
+    }catch(_az){/* lastAz is in its temporal dead zone during very early boot */}
+  }catch(_e){}
 }
 function renderGold(){
   const src=$('#goldSourceSelect');if(src){src.value=state.settings.goldSource||'auto';src.onchange=()=>{

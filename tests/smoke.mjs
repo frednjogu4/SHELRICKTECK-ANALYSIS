@@ -1075,6 +1075,18 @@ async function run() {
     check('20w: full public catalogue offers Follow live, live freshness, and selection-only status', main.includes('Follow live') && main.includes('only selected Deriv markets') && html.includes('Live quote · selected only') && html.includes('Full Deriv active-market catalogue'));
   }
 
+  /* ---------- round 20x: open-position reconciliation vs the reading on screen ---------- */
+  {
+    const main = readFileSync(join(root, 'src', 'main.js'), 'utf8');
+    const html = readFileSync(join(root, 'index.html'), 'utf8');
+    const recon = readFileSync(join(root, 'src', 'exposurereconcile.js'), 'utf8');
+    check('20x: Gold view and Signal Analyzer both carry the reconciliation container', html.includes('id="goldExposure"') && html.includes('id="azExposure"'));
+    check('20x: reconciliation is wired into portfolio, gold and analyzer render paths', main.includes('paintExposureReconcile();') && main.includes('buildExposureReconcile') && main.includes('renderExposureReconcile'));
+    check('20x: reconciliation is read-only — it renders the bridge snapshot and never sends orders', recon.includes('never places or') && recon.includes('read-only') && !recon.includes('/api/deriv/order') && !recon.includes('preview_order'));
+    check('20x: a disconnected bridge states UNAVAILABLE explicitly instead of showing nothing', recon.includes("reason: 'no_mt5_bridge'") && recon.includes('cannot be compared with this reading'));
+    check('20x: different-instrument and against-the-reading exposures are distinct states', recon.includes("relation = 'mismatch'") && recon.includes("'aligned' : 'conflict'") && recon.includes('OTHER INSTRUMENT') && recon.includes('AGAINST READING'));
+  }
+
   /* ---------- report ---------- */
   console.log('\n=== PASS (' + ok.length + ') ===');
   if (bad.length) { console.log('=== FAIL (' + bad.length + ') ==='); bad.forEach(b => console.log('  x ' + b)); }
