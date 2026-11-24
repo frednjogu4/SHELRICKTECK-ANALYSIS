@@ -1,3 +1,10 @@
+FREDRICK AURUM LOCAL UPDATE — 24 NOVEMBER 2026
+
+What changed
+- New open-position reconciliation panel on the Gold/USD monitor and the Signal Analyzer. It shows the connected MT5 terminal's read-only snapshot (balance, equity, free margin and every open position with its floating P&L) directly beside the reading on screen, and flags three distinct states: a position in a different instrument than the reading (for example oil sells while the reading is Gold), an open position facing against the reading, and one following it. When the bridge is not connected or no snapshot exists yet, the panel states that the comparison cannot be made instead of showing nothing. Values come only from the bridge's last confirmed snapshot; the panel never sends, modifies or closes orders.
+
+---
+
 FREDRICK AURUM LOCAL UPDATE — 23 NOVEMBER 2026
 
 What changed
