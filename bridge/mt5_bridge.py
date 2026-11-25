@@ -1396,36 +1396,66 @@ def _git_commit():
                 with open(head, "r", encoding="utf-8", errors="replace") as f:
                     ref = f.read().strip()
                 if not ref.startswith("ref: "):
-                    return ref[:8] or None
+                    return ref[:12].lower() or None
                 name = ref[5:].strip()
                 direct = os.path.join(base, ".git", *name.split("/"))
                 if os.path.isfile(direct):
                     with open(direct, "r", encoding="utf-8", errors="replace") as f:
                         sha = f.read().strip()
-                    return sha[:8] or None
+                    return sha[:12].lower() or None
                 packed = os.path.join(base, ".git", "packed-refs")
                 if os.path.isfile(packed):
                     with open(packed, "r", encoding="utf-8", errors="replace") as f:
                         for line in f:
                             parts = line.strip().split()
                             if len(parts) == 2 and parts[1] == name:
-                                return parts[0][:8]
+                                return parts[0][:12].lower()
                 return None
             base = os.path.dirname(base)
         return None
     except Exception:
         return None
 
-def _build_json():
-    """The release facts of the page this bridge serves: the content id from
-    pwa/build.json (written by npm run build) plus runtime metadata (mtime of
-    app.html = when this PC last received a UI, git sha when in a checkout,
-    and a DEV marker while scripts/dev-local.mjs is watching)."""
+def _page_build_id(app_bytes):
+    """Extract <meta name="aurum-build" content="..."> from served HTML, or None."""
+    if not app_bytes:
+        return None
+    try:
+        import re as _re
+        head_slice = app_bytes[:8192].decode("utf-8", errors="replace")
+        m = _re.search(r'<meta\s+name="aurum-build"\s+content="([^"]+)"', head_slice)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+def _read_build_manifest():
     try:
         with open(os.path.join(_BRIDGE_DIR, "pwa", "build.json"), "r", encoding="utf-8") as f:
-            base = json.load(f)
+            return json.load(f)
     except Exception:
+        return None
+
+def _build_json():
+    """The release facts of the page this bridge serves: the content id + source
+    git sha/timestamp from pwa/build.json (written by npm run build) plus local
+    runtime metadata (installedAt mtime of app.html, git sha fallback, and a DEV
+    marker while scripts/dev-local.mjs is watching). Fails with 503 if app.html
+    carries a stamped meta id that disagrees with pwa/build.json."""
+    base = _read_build_manifest()
+    if not isinstance(base, dict) or not base.get("id"):
         return b'{"error":"build.json missing - run npm run build and re-sync the local package"}', 503
+    manifest_id = str(base.get("id"))
+    app_bytes = _load_app()
+    page_id = _page_build_id(app_bytes)
+    if page_id and page_id != manifest_id:
+        mismatch = {
+            "error": "mismatched_local_build",
+            "consistent": False,
+            "detail": "bridge/app.html (%s) does not match bridge/pwa/build.json (%s). Run UPDATE_LOCAL_APP.bat or npm run build." % (page_id, manifest_id),
+            "pageId": page_id,
+            "manifestId": manifest_id,
+        }
+        return json.dumps(mismatch).encode("utf-8"), 503
     mode = "LOCAL"
     try:
         marker = os.path.join(os.path.dirname(_BRIDGE_DIR), ".dev-watch.json")
@@ -1433,20 +1463,87 @@ def _build_json():
             mode = "LOCAL DEV (watch)"
     except OSError:
         pass
-    built_at = None
+    installed_at = None
     try:
-        built_at = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(os.path.getmtime(_APP_FILE)))
+        installed_at = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(os.path.getmtime(_APP_FILE)))
     except OSError:
         pass
     out = {
-        "id": base.get("id"),
+        "id": manifest_id,
         "version": base.get("version"),
-        "git": _git_commit(),
-        "builtAt": built_at,
+        "git": base.get("git") or _git_commit(),
+        "builtAt": base.get("builtAt") or installed_at,
+        "installedAt": installed_at,
         "mode": mode,
+        "environment": "local_dev" if mode.startswith("LOCAL DEV") else "local",
+        "consistent": True,
         "service": "mt5-bridge",
     }
-    return json.dumps(out).encode(), 200
+    return json.dumps(out).encode("utf-8"), 200
+
+_UPSTREAM_BUILD_URL = "https://raw.githubusercontent.com/frednjogu4/SHELRICKTECK-ANALYSIS/main/bridge/pwa/build.json"
+_UPSTREAM_MANIFEST_FETCHER = None
+_UPSTREAM_CACHE = {"ts": 0.0, "data": None}
+
+def _fetch_upstream_manifest_default(url=_UPSTREAM_BUILD_URL, timeout=3):
+    import urllib.request as u
+    req = u.Request(url, headers={"Accept": "application/json", "Cache-Control": "no-cache"})
+    with _opener().open(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+def _update_check(force=False):
+    """Read-only check whether GitHub main carries a newer approved release than
+    this local package folder. Never downloads or executes anything."""
+    base = _read_build_manifest() or {}
+    local_id = base.get("id")
+    local_git = base.get("git") or _git_commit()
+    now_ts = time.time()
+    remote = None
+    if not force and _UPSTREAM_CACHE["data"] is not None and (now_ts - _UPSTREAM_CACHE["ts"]) < 300:
+        remote = _UPSTREAM_CACHE["data"]
+    else:
+        fetcher = _UPSTREAM_MANIFEST_FETCHER or _fetch_upstream_manifest_default
+        try:
+            fetched = fetcher(_UPSTREAM_BUILD_URL, 3)
+            if isinstance(fetched, dict) and fetched.get("id"):
+                remote = fetched
+                _UPSTREAM_CACHE["ts"] = now_ts
+                _UPSTREAM_CACHE["data"] = remote
+        except Exception:
+            return json.dumps({
+                "ok": False,
+                "offline": True,
+                "localId": local_id,
+                "installedId": local_id,
+                "localGit": local_git,
+                "updateAvailable": False,
+            }).encode("utf-8"), 200
+    if not remote:
+        return json.dumps({
+            "ok": False,
+            "offline": True,
+            "localId": local_id,
+            "installedId": local_id,
+            "localGit": local_git,
+            "updateAvailable": False,
+        }).encode("utf-8"), 200
+    remote_id = str(remote.get("id") or "") or None
+    remote_git = remote.get("git")
+    remote_built_at = remote.get("builtAt")
+    return json.dumps({
+        "ok": True,
+        "localId": local_id,
+        "installedId": local_id,
+        "localGit": local_git,
+        "remoteId": remote_id,
+        "upstreamId": remote_id,
+        "remoteGit": remote_git,
+        "upstreamGit": remote_git,
+        "remoteBuiltAt": remote_built_at,
+        "upstreamBuiltAt": remote_built_at,
+        "remoteVersion": remote.get("version"),
+        "updateAvailable": bool(local_id and remote_id and local_id != remote_id),
+    }).encode("utf-8"), 200
 
 def _http_answer(path, hdrs):
     """Non-websocket HTTP: local app, /api proxy, or the UP text."""
@@ -1779,6 +1876,14 @@ def _start_http_app(port=8788):
                 if path in ("/app", "/app/", "/index.html"):
                     app = _load_app()
                     if app:
+                        page_id = _page_build_id(app)
+                        manifest = _read_build_manifest()
+                        if page_id and isinstance(manifest, dict) and manifest.get("id") and page_id != str(manifest.get("id")):
+                            msg = ("Local dashboard files are out of sync: bridge/app.html (%s) does not match bridge/pwa/build.json (%s). "
+                                   "Refusing to serve a mixed build. Run UPDATE_LOCAL_APP.bat (or npm run build) to restore consistency."
+                                   % (page_id, manifest.get("id"))).encode("utf-8")
+                            self._send(503, "text/plain; charset=utf-8", msg, [("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff")])
+                            return
                         etag = _app_etag(app)
                         inm = (self.headers.get("If-None-Match") or "").strip()
                         if inm and inm == etag:
@@ -1804,6 +1909,12 @@ def _start_http_app(port=8788):
                     return
                 if path == "/build.json":
                     payload, st = _build_json()
+                    self._send(st, "application/json; charset=utf-8", payload,
+                               [("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff")])
+                    return
+                if path == "/update-check" and (self.command or "GET").upper() == "GET":
+                    force_q = "force=1" in ((self.path or "").split("?", 1)[1] if "?" in (self.path or "") else "")
+                    payload, st = _update_check(force=force_q)
                     self._send(st, "application/json; charset=utf-8", payload,
                                [("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff")])
                     return

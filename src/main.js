@@ -18,8 +18,8 @@ import * as tv from './tradingview.js';
 import { planPosition } from './sizer.js';
 import { analyzeTimeframe, confirmMultiTimeframe, votesSummary, runDeterministicAnalysis, waitReason } from '../server/lib/analyzer.js';
 import { marketStrength } from '../server/lib/strength.js';
-import { mccProvenance, goldProvenanceRows } from './provenance.js';
-import { initBuildUpdateWatch, fillDiagnostics } from './buildinfo.js';
+import { mccProvenance, goldProvenanceRows, describeDataSourceSelection } from './provenance.js';
+import { initBuildUpdateWatch, initUpstreamReleaseNotice, fillDiagnostics } from './buildinfo.js';
 import { localDecision } from '../server/lib/localdecision.js';
 import { notify, initNotifications, enableNotifications, notifState, LEVEL_GUIDE } from './notify.js';
 import { getKeys, setKeys, clearKeys, hasAnyKey, keyHeaders } from './vault.js';
@@ -4543,7 +4543,33 @@ function goldDataSource(){
   return state.broker&&state.broker.type==='mt5'?'mt5':'deriv';
 }
 function goldUsingExnessResult(){return state.goldAnalysis?String(state.goldAnalysis.data_source||'').startsWith('Exness MT5'):goldDataSource()==='mt5';}
+function renderGoldDataSourceSummary(){
+  const box=$('#goldDataSourceDetails');if(!box)return;
+  const mt5Ok=bridge.bridgeStatus().status==='connected'&&(state.broker&&state.broker.type==='mt5');
+  const acctMode=state.broker&&state.broker.type==='mt5'?(state.broker.trade_mode===0?'demo':state.broker.trade_mode===2?'real':null):null;
+  const I=bySym[GOLD_SYMBOL];
+  const lastMs=goldUsingExnessResult()?(goldMt5Quote?goldEpochMs(goldMt5Quote.time):goldAnalysisAt):(goldAnalysisAt||(I&&I.t)||0);
+  const inst=goldUsingExnessResult()&&goldMt5Quote&&goldMt5Quote.symbol?`XAU/USD (${goldMt5Quote.symbol})`:'XAU/USD';
+  const summary=describeDataSourceSelection({
+    selectedMode:state.settings.goldSource||'auto',
+    mt5Connected:mt5Ok,
+    mt5AccountMode:acctMode,
+    actualDataSource:state.goldAnalysis&&state.goldAnalysis.data_source||null,
+    instrument:inst,
+    timeframe:'Completed M1 / M5 / H1 candles',
+    lastUpdateMs:lastMs
+  });
+  const put=(id,v)=>{const el=$('#'+id);if(el)el.textContent=v;};
+  put('dsSelectedProvider',summary.selectedProvider);
+  put('dsActiveProvider',summary.activeProvider);
+  put('dsFallbackProvider',summary.fallbackProvider);
+  put('dsSession',summary.session);
+  put('dsInstrument',summary.instrument);
+  put('dsTimeframe',summary.timeframe);
+  put('dsFreshness',summary.freshness);
+}
 function updateGoldQuoteDisplay(){
+  renderGoldDataSourceSummary();
   updateGoldConfidence();
   const badge=$('#goldQuoteState'),priceEl=$('#goldPrice'),sourceEl=$('#goldSource'),timeEl=$('#goldQuoteTime');if(!badge)return;
   const I=bySym[GOLD_SYMBOL];let q=null,source='';
@@ -6532,11 +6558,18 @@ registerServiceWorker();
    delivery with this release's facts. */
 {
   initBuildUpdateWatch();
-  const refill = () => fillDiagnostics({ bridgeStatus: () => bridge.bridgeStatus() });
-  refill();
+  initUpstreamReleaseNotice();
+  const refill = (forceUpstream = false) => fillDiagnostics({ bridgeStatus: () => bridge.bridgeStatus(), forceUpstream });
+  refill(false);
   try {
     const settingsBtn = document.querySelector('.nav-item[data-view="settings"]');
-    if (settingsBtn) settingsBtn.addEventListener('click', () => setTimeout(refill, 150));
+    if (settingsBtn) settingsBtn.addEventListener('click', () => setTimeout(() => refill(false), 150));
+    const checkBtn = document.getElementById('diagCheckUpdateBtn');
+    if (checkBtn) checkBtn.addEventListener('click', () => {
+      const u = document.getElementById('diagUpstream');
+      if (u) u.textContent = 'Checking GitHub main…';
+      refill(true);
+    });
   } catch (_e) { /* diagnostics stay as of load if the nav hook is missing */ }
 }
 {

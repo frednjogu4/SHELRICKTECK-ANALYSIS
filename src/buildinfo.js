@@ -91,11 +91,35 @@ export async function fetchBuildInfo(fetchImpl, url) {
     const r = await (fetchImpl || fetch)(url || '/build.json', { cache: 'no-store' });
     if (!r || !r.ok) return { ok: false, status: r ? r.status : 0 };
     const j = await r.json();
-    return { ok: true, id: j && j.id ? String(j.id) : null, version: j && j.version ? String(j.version) : null,
+    const out = { ok: true, id: j && j.id ? String(j.id) : null, version: j && j.version ? String(j.version) : null,
       git: (j && j.git) || null, builtAt: (j && (j.builtAt || j.updatedAt)) || null,
       mode: (j && j.mode) || null, service: (j && j.service) || null };
+    if (j && j.installedAt) out.installedAt = String(j.installedAt);
+    return out;
   } catch {
     return { ok: false, status: 0 };
+  }
+}
+
+/** GET /update-check on the local bridge (read-only upstream release comparison). */
+export async function fetchUpstreamCheck(fetchImpl, url) {
+  try {
+    const r = await (fetchImpl || fetch)(url || '/update-check', { cache: 'no-store' });
+    if (!r || !r.ok) return { ok: false, offline: true };
+    const j = await r.json();
+    const localId = (j && (j.localId || j.installedId)) || null;
+    if (!j || !j.ok) return { ok: false, offline: true, localId };
+    return {
+      ok: true,
+      localId,
+      localGit: j.localGit || j.installedGit || null,
+      remoteId: j.remoteId || j.upstreamId || null,
+      remoteGit: j.remoteGit || j.upstreamGit || null,
+      remoteBuiltAt: j.remoteBuiltAt || j.upstreamBuiltAt || null,
+      updateAvailable: j.updateAvailable === true
+    };
+  } catch {
+    return { ok: false, offline: true };
   }
 }
 
@@ -218,6 +242,78 @@ export function initBuildUpdateWatch(options = {}) {
   };
 }
 
+/**
+ * Packaged-mode upstream release notice on LOCAL: polls /update-check softly and
+ * shows a non-intrusive controlled-update notice when GitHub main has a newer
+ * approved build than the local package folder. Never runs shell commands.
+ */
+export function initUpstreamReleaseNotice(options = {}) {
+  const {
+    doc = typeof document !== 'undefined' ? document : null,
+    win = typeof window !== 'undefined' ? window : null,
+    fetchImpl = typeof fetch !== 'undefined' ? fetch : null,
+    intervalMs = 300000,
+    firstDelayMs = 12000,
+    setIntervalImpl = setInterval,
+    clearIntervalImpl = clearInterval,
+    setTimeoutImpl = setTimeout,
+    clearTimeoutImpl = clearTimeout
+  } = options;
+  if (!doc || !win) return { dispose() {} };
+  const env = buildEnvironment(win.location ? win.location.hostname : '');
+  if (env === 'STAGING (Cloudflare)') return { dispose() {} };
+
+  let notice = null;
+  let dismissedId = null;
+  let disposed = false;
+
+  function showUpstreamBanner(res) {
+    if (!res || !res.updateAvailable || !res.remoteId || res.remoteId === dismissedId) return;
+    if (doc.getElementById('updateBanner')) return;
+    if (!notice) {
+      notice = doc.createElement('div');
+      notice.id = 'upstreamUpdateBanner';
+      notice.setAttribute('role', 'status');
+      const style = doc.createElement('style');
+      style.id = 'upstreamUpdateBannerStyle';
+      style.textContent = '#upstreamUpdateBanner{position:fixed;right:16px;bottom:16px;z-index:1195;display:flex;gap:10px;align-items:center;flex-wrap:wrap;' +
+        'max-width:min(460px,calc(100vw - 32px));padding:12px 14px;border:1px solid var(--line,#2a3648);border-radius:10px;' +
+        'background:#0f1724;box-shadow:0 12px 32px rgba(0,0,0,.45);font-size:12.5px;line-height:1.45}' +
+        '#upstreamUpdateBanner b{display:block;width:100%;font-size:11.5px;letter-spacing:.06em;color:#e8b96a}' +
+        '#upstreamUpdateBanner .ub-actions{display:flex;gap:8px;margin-left:auto}';
+      if (!doc.getElementById('upstreamUpdateBannerStyle')) doc.head.appendChild(style);
+      doc.body.appendChild(notice);
+    }
+    const gitLabel = res.remoteGit ? ' (git ' + String(res.remoteGit).slice(0, 8) + ')' : '';
+    notice.innerHTML = '<b>APPROVED UPDATE AVAILABLE · ' + String(res.remoteId) + gitLabel + '</b>' +
+      '<span>Run <code>UPDATE_LOCAL_APP.bat</code> on this PC for a backed-up update with automatic rollback, then reload.</span>' +
+      '<span class="ub-actions"><button type="button" class="btn ghost sm ub-dismiss">Dismiss</button></span>';
+    notice.querySelector('.ub-dismiss').addEventListener('click', () => {
+      dismissedId = res.remoteId;
+      if (notice) { notice.remove(); notice = null; }
+    });
+  }
+
+  async function check() {
+    if (disposed) return;
+    const origin = (win.location && win.location.origin) || '';
+    const res = await fetchUpstreamCheck(fetchImpl, origin + '/update-check');
+    if (res.ok && res.updateAvailable) showUpstreamBanner(res);
+  }
+
+  const first = setTimeoutImpl(check, firstDelayMs);
+  const timer = setIntervalImpl(check, intervalMs);
+  return {
+    check,
+    dispose() {
+      disposed = true;
+      clearTimeoutImpl(first);
+      clearIntervalImpl(timer);
+      if (notice) { notice.remove(); notice = null; }
+    }
+  };
+}
+
 /** Fill Settings · Build & delivery with the facts of this release. */
 export async function fillDiagnostics(options = {}) {
   const {
@@ -225,11 +321,13 @@ export async function fillDiagnostics(options = {}) {
     loc = typeof location !== 'undefined' ? location : null,
     nav = typeof navigator !== 'undefined' ? navigator : null,
     fetchImpl = typeof fetch !== 'undefined' ? fetch : null,
-    bridgeStatus = null
+    bridgeStatus = null,
+    forceUpstream = false
   } = options;
   if (!doc) return {};
   const set = (id, text) => { const el = doc.getElementById(id); if (el) el.textContent = text; };
-  const info = await fetchBuildInfo(fetchImpl, (loc ? loc.origin : '') + '/build.json');
+  const origin = loc ? loc.origin : '';
+  const info = await fetchBuildInfo(fetchImpl, origin + '/build.json');
   const pageId = pageBuildMeta(doc);
   const env = buildEnvironment(loc ? loc.hostname : '');
 
@@ -248,7 +346,7 @@ export async function fillDiagnostics(options = {}) {
      API answered; only a thrown network error counts as unreachable. */
   let api = 'unreachable';
   try {
-    const r = await (fetchImpl || fetch)((loc ? loc.origin : '') + '/api/health', { cache: 'no-store' });
+    const r = await (fetchImpl || fetch)(origin + '/api/health', { cache: 'no-store' });
     api = r && r.status ? `HTTP ${r.status}` : 'unreachable';
   } catch { api = 'unreachable'; }
   set('diagApi', api);
@@ -264,6 +362,19 @@ export async function fillDiagnostics(options = {}) {
   } catch { bridge = 'unknown'; }
   set('diagBridge', bridge);
 
-  set('diagLastUpdate', (info.ok && (info.builtAt || info.id)) || pageId || '—');
+  set('diagLastUpdate', (info.ok && (info.installedAt || info.builtAt || info.id)) || pageId || '—');
+
+  if (env === 'STAGING (Cloudflare)') {
+    set('diagUpstream', 'Canonical Cloudflare staging release');
+  } else {
+    const up = await fetchUpstreamCheck(fetchImpl, origin + '/update-check' + (forceUpstream ? '?force=1' : ''));
+    if (up.ok) {
+      set('diagUpstream', up.updateAvailable
+        ? `Update available: ${up.remoteId} (run UPDATE_LOCAL_APP.bat)`
+        : `Up to date (${up.remoteId || pageId || 'verified'})`);
+    } else {
+      set('diagUpstream', 'Offline or unchecked');
+    }
+  }
   return { info, env, pageId };
 }

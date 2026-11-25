@@ -683,8 +683,9 @@ function createReadOnlyWorker({
     let info = {};
     try { info = await res.json(); } catch { return responseJson({ error: 'build_manifest_unreadable' }, 500); }
     info.service = 'cloudflare-staging';
+    info.environment = 'staging';
     const sha = (typeof env.CF_PAGES_COMMIT_SHA === 'string' && env.CF_PAGES_COMMIT_SHA) || null;
-    if (sha) info.git = String(sha).slice(0, 8);
+    if (!info.git && sha) info.git = String(sha).slice(0, 12).toLowerCase();
     return new Response(JSON.stringify(info) + '\n', {
       status: 200,
       headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }

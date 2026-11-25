@@ -55,13 +55,19 @@ test('dist carries ONE release id across page, manifest and service worker', { s
   assert.equal(readFileSync(join(dist, 'AURUM_Workspace.html'), 'utf8'), html);
 });
 
-test('shipped release files never bake timestamps or git shas (reproducible builds)', { skip: !hasBuild }, () => {
+test('shipped HTML and service worker stay content-reproducible while build.json carries canonical metadata', { skip: !hasBuild }, () => {
   const manifest = JSON.parse(readFileSync(join(dist, 'build.json'), 'utf8'));
-  assert.deepEqual(Object.keys(manifest).sort(), ['id', 'version'], 'build.json is content metadata only');
+  assert.deepEqual(
+    Object.keys(manifest).sort(),
+    ['builtAt', 'git', 'id', 'version'],
+    'build.json carries canonical id, version, git sha and build timestamp'
+  );
+  assert.match(manifest.git, /^[0-9a-f]{7,40}$/);
+  assert.ok(!Number.isNaN(Date.parse(manifest.builtAt)), 'builtAt must be a valid ISO timestamp');
   const html = readFileSync(join(dist, 'index.html'), 'utf8');
   assert.doesNotMatch(html, /aurum-build-git/);
   /* Re-running the revision against the stamped page returns the same id —
-     the property that makes a rebuild byte-identical. */
+     the property that keeps the content-derived Build ID deterministic. */
   assert.equal(buildRevision(dist).id, manifest.id);
 });
 

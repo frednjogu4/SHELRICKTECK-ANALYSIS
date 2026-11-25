@@ -609,9 +609,9 @@ body[data-view="overview"] .mob-order-bar{display:none}
 .strength-pct{font-size:20px; font-variant-numeric:tabular-nums}
 .strength-track{height:10px; border-radius:99px; background:var(--surface-3); border:1px solid var(--border); overflow:hidden}
 .strength-track i{display:block; height:100%; width:0; border-radius:99px; transition:width .5s ease}
-#strengthBuyBar{background:var(--green)}
-#strengthSellBar{background:var(--red)}
-#strengthNeutralBar{background:var(--amber); opacity:.8}
+#strengthBuyBar,.strength-track i[data-s="buyBar"]{background:var(--green)}
+#strengthSellBar,.strength-track i[data-s="sellBar"]{background:var(--red)}
+#strengthNeutralBar,.strength-track i[data-s="neutralBar"]{background:var(--text-3,#8a95a5)}
 @media (prefers-reduced-motion: reduce){.strength-track i{transition:none}}
 .sig-levels{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0}
 .sig-levels div{background:var(--surface-2); border:1px solid var(--border-soft); border-radius:6px; padding:7px 9px; text-align:center}
@@ -1641,6 +1641,15 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               <button class="btn ghost sm" id="goldNotifyBtn">Enable browser alerts</button>
             </div>
           </div>
+          <div class="tiny faint" id="goldDataSourceDetails" style="margin:0 0 12px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:6px 14px;line-height:1.45" aria-live="polite">
+            <div><b class="muted">Selected provider:</b> <span id="dsSelectedProvider">Auto (prefer Exness MT5 broker, fallback to Deriv public)</span></div>
+            <div><b class="muted">Active provider:</b> <span id="dsActiveProvider">Deriv public feed</span></div>
+            <div><b class="muted">Fallback provider:</b> <span id="dsFallbackProvider">Deriv public candles</span></div>
+            <div><b class="muted">Market session:</b> <span id="dsSession">—</span></div>
+            <div><b class="muted">Instrument:</b> <span id="dsInstrument">XAU/USD</span></div>
+            <div><b class="muted">Timeframe:</b> <span id="dsTimeframe">Completed M1 / M5 / H1 candles</span></div>
+            <div><b class="muted">Freshness:</b> <span id="dsFreshness">UNAVAILABLE (awaiting verified candles)</span></div>
+          </div>
           <div class="notice hidden" id="goldAnalysisNotice" style="margin:0 0 14px;align-items:center;justify-content:space-between;flex-wrap:wrap">
             <div><b id="goldAnalysisNoticeTitle">Gold analysis status</b><div class="tiny" id="goldAnalysisNoticeText" style="margin-top:3px"></div></div>
             <button class="btn ghost sm hidden" id="goldConnectBtn" type="button">Connect Exness locally</button>
@@ -2222,7 +2231,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               </ul>
             </div>
             <div class="card" id="buildDiagnostics" aria-label="Build and delivery diagnostics">
-              <div class="card-head"><h3>Build &amp; delivery</h3><div class="sub">Which release this screen is running — no secrets are shown here.</div></div>
+              <div class="card-head wrap"><div><h3>Build &amp; delivery</h3><div class="sub">Which release this screen is running — no secrets are shown here.</div></div><button class="btn ghost sm" type="button" id="diagCheckUpdateBtn">Check for update</button></div>
               <ul class="info-list">
                 <li><span class="k">Application version</span><span class="v" id="diagAppVersion">—</span></li>
                 <li><span class="k">Git commit</span><span class="v" id="diagGit">—</span></li>
@@ -2234,6 +2243,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
                 <li><span class="k">API health</span><span class="v" id="diagApi">—</span></li>
                 <li><span class="k">Bridge health</span><span class="v" id="diagBridge">—</span></li>
                 <li><span class="k">Last UI update</span><span class="v" id="diagLastUpdate">—</span></li>
+                <li><span class="k">Upstream release</span><span class="v" id="diagUpstream">—</span></li>
               </ul>
             </div>
           </div>

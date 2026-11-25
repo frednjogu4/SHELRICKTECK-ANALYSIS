@@ -4,14 +4,18 @@
  *  - VERSION is rewritten by scripts/postbuild.mjs to 'aurum-local-<build id>'
  *    on every build, so each UI release installs under its own cache name and
  *    activate() deletes every cache of older releases (prefix rule below).
+ *  - Install precaches SHELL using { cache: 'no-cache' } requests so an older
+ *    HTTP-cached page cannot poison a newly stamped release cache, and only
+ *    calls skipWaiting() once all shell entries succeeded.
  *  - Navigations are fetched with cache:'no-store': the HTTP cache can never
  *    hand the app an outdated shell while online (this was the root cause of
  *    "layout changes not appearing locally" — see bridge /app no-cache headers).
  *  - The shell cache exists for OFFLINE use only; it is refreshed on every
  *    successful online navigation.
- *  - /api/*, bridge commands, /build.json (version probe) and cross-origin
+ *  - /api/*, bridge commands, /build.json, /update-check and cross-origin
  *    requests are NEVER cached: live API responses, WebSocket data and
- *    authentication traffic must not be stored.
+ *    authentication traffic must not be stored. Browser storage (localStorage,
+ *    sessionStorage, IndexedDB) is never cleared.
  */
 const VERSION = 'aurum-local-dev';
 const VERSION_PREFIX = 'aurum-local-';
@@ -19,7 +23,15 @@ const SHELL = ['/app', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/i
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()).catch(() => {})
+    caches.open(VERSION)
+      .then((c) => Promise.all(SHELL.map((u) =>
+        fetch(u, { cache: 'no-cache' }).then((r) => {
+          if (!r || !r.ok) throw new Error('precache failed: ' + u);
+          return c.put(u, r);
+        })
+      )))
+      .then(() => self.skipWaiting())
+      .catch((err) => caches.delete(VERSION).then(() => Promise.reject(err)))
   );
 });
 
@@ -33,10 +45,20 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+self.addEventListener('message', (e) => {
+  const data = e && e.data;
+  if (!data || typeof data !== 'object') return;
+  if (data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  } else if (data.type === 'AURUM_SW_VERSION' && e.ports && e.ports[0]) {
+    e.ports[0].postMessage({ version: VERSION });
+  }
+});
+
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  /* Never cache live API, bridge commands, or the version probe. */
-  if (url.pathname.startsWith('/api/') || url.pathname === '/bridge' || url.pathname === '/build.json') return;
+  /* Never cache live API, bridge commands, or release/update probes. */
+  if (url.pathname.startsWith('/api/') || url.pathname === '/bridge' || url.pathname === '/build.json' || url.pathname === '/update-check') return;
   if (e.request.method !== 'GET') return;
   if (url.origin !== self.location.origin) return;
 

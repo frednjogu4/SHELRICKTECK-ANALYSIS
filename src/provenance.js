@@ -56,3 +56,94 @@ export function goldProvenanceRows({ source = null, lastUpdateMs = 0, chartSourc
     { k: 'CHART DISPLAY', v: chartSource ? `${chartSource} · TradingView widget is display-only` : 'TradingView widget (display only — not used for calculations)' }
   ];
 }
+
+/**
+ * Structured Data Source Selector state separating:
+ *   - selectedProvider (what the operator requested),
+ *   - activeProvider   (what actually supplied candles/quotes, never calling
+ *                       fallback/cached/delayed/demo feeds "live broker feed"),
+ *   - fallbackProvider (explicit fallback explanation when fallback occurred, else 'None'),
+ *   - session          (UTC market session clock — never labelled as a feed),
+ *   - instrument       (canonical + broker symbol if mapped),
+ *   - timeframe        (candle timeframes evaluated),
+ *   - freshness        (LIVE / STALE / CACHED / DELAYED / UNAVAILABLE + age).
+ */
+export function describeDataSourceSelection({
+  selectedMode = 'auto',
+  mt5Connected = false,
+  mt5AccountMode = null,
+  actualDataSource = null,
+  instrument = 'XAU/USD',
+  timeframe = 'Completed M1 / M5 / H1 candles',
+  lastUpdateMs = 0,
+  cached = false,
+  delayed = false,
+  nowMs = Date.now()
+} = {}) {
+  const mode = ['auto', 'deriv', 'mt5'].includes(selectedMode) ? selectedMode : 'auto';
+  const selectedLabel = mode === 'mt5'
+    ? 'Exness MT5 local bridge'
+    : mode === 'deriv'
+      ? 'Deriv public candles'
+      : 'Auto (prefer Exness MT5 broker, fallback to Deriv public)';
+
+  const rawActual = String(actualDataSource || '').trim();
+  const usingMt5 = rawActual
+    ? /^Exness MT5/i.test(rawActual)
+    : (mode === 'mt5' ? mt5Connected : (mode === 'auto' && mt5Connected));
+
+  let activeProvider;
+  let fallbackProvider = 'None (primary selection active)';
+
+  if (usingMt5) {
+    const acctTag = mt5AccountMode === 'demo'
+      ? 'Demo account bridge'
+      : mt5AccountMode === 'real'
+        ? 'Live broker bridge (analysis only)'
+        : 'Local MT5 bridge';
+    activeProvider = rawActual || `Exness MT5 (${acctTag})`;
+  } else if (mode === 'mt5' && !mt5Connected) {
+    activeProvider = 'Unavailable (Exness MT5 not connected)';
+    fallbackProvider = 'Disabled — explicit Exness MT5 mode never switches silently to public candles';
+  } else {
+    activeProvider = rawActual || 'Deriv public feed (public market candles — not a broker account feed)';
+    if (mode === 'auto' && !mt5Connected) {
+      fallbackProvider = 'Deriv public candles (fallback active because Exness MT5 local bridge is disconnected)';
+    }
+  }
+
+  if (delayed && !/delayed/i.test(activeProvider)) {
+    activeProvider += ' [delayed]';
+  } else if (cached && !/cached/i.test(activeProvider)) {
+    activeProvider += ' [cached]';
+  }
+
+  const sess = sessionNow(nowMs);
+  const ageMs = lastUpdateMs > 0 ? Math.max(0, nowMs - lastUpdateMs) : null;
+  let freshness;
+  if (ageMs == null) {
+    freshness = 'UNAVAILABLE (awaiting verified candles)';
+  } else if (delayed) {
+    freshness = `DELAYED (${Math.round(ageMs / 60000)}m old)`;
+  } else if (cached) {
+    freshness = `CACHED (${Math.round(ageMs / 1000)}s old)`;
+  } else if (ageMs <= 2 * 60 * 1000) {
+    freshness = `LIVE (${ageMs < 1000 ? '<1s' : Math.round(ageMs / 1000) + 's'} old)`;
+  } else if (ageMs <= AGE_STALE_MS) {
+    freshness = `RECENT (${Math.round(ageMs / 60000)}m old)`;
+  } else {
+    freshness = `STALE (${Math.round(ageMs / 60000)}m old)`;
+  }
+
+  return {
+    selectedProvider: selectedLabel,
+    activeProvider,
+    fallbackProvider,
+    fallbackActive: mode === 'auto' && !mt5Connected,
+    session: `${sess.label} (${sess.window})`,
+    instrument: String(instrument || 'XAU/USD'),
+    timeframe: String(timeframe || 'Completed M1 / M5 / H1 candles'),
+    freshness
+  };
+}
+

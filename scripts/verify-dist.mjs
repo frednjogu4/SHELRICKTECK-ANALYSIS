@@ -108,6 +108,10 @@ export function verifyDist(distDir = join(REPO_ROOT, 'dist')) {
       try { bj = JSON.parse(read('build.json')); } catch (error) { problems.push(`build.json is not valid JSON (${error.message})`); }
       if (bj) {
         if (!bj.id) problems.push('build.json has no id');
+        if (!bj.version) problems.push('build.json has no version');
+        if (bj.git != null && !/^[0-9a-f]{7,40}$/i.test(String(bj.git))) {
+          problems.push(`build.json git "${bj.git}" is not a valid commit sha`);
+        }
         if (meta && bj.id !== meta[1]) problems.push(`build.json id ${bj.id} differs from the page meta ${meta[1]} — mixed build; rebuild with "npm run build"`);
         if (present.has('sw.js')) {
           const swv = read('sw.js').match(/const VERSION = '([^']+)'/);

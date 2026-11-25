@@ -86,8 +86,10 @@ function makeStatus(doc, label, value) {
 
 export function initCommandCentre(doc = document) {
   const overview = doc.getElementById('view-overview');
+  /* Never mount a duplicate Command Centre when the unified #commandTitle overview is active. */
+  if (!overview || doc.getElementById('commandTitle')) return false;
   const kpiAnchor = doc.getElementById('ovKpis');
-  if (!overview || !kpiAnchor) return false;
+  if (!kpiAnchor) return false;
   if (doc.getElementById(ROOT_ID)) return true;
 
   if (!doc.getElementById(STYLE_ID)) {
