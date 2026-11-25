@@ -37,9 +37,17 @@ function writeIfChanged(file, data) {
   return true;
 }
 
-/* 1. Revision: hash the un-tagged page, resolve git/builtAt, then inject everywhere. */
+/* 1. Revision: hash the un-tagged page, resolve git/builtAt, then inject everywhere.
+ *    Vite empties dist/ before postbuild runs, so fall back to bridge/pwa/build.json
+ *    when dist/build.json is absent; that keeps rebuilds of identical UI content
+ *    100% byte-identical across commits and CI merge checkouts. */
 let prevManifest = null;
-try { prevManifest = JSON.parse(readFileSync(join(dist, 'build.json'), 'utf8')); } catch { prevManifest = null; }
+for (const candidate of [join(dist, 'build.json'), join(root, 'bridge', 'pwa', 'build.json')]) {
+  try {
+    prevManifest = JSON.parse(readFileSync(candidate, 'utf8'));
+    if (prevManifest && prevManifest.id) break;
+  } catch { /* try next */ }
+}
 const manifest = resolveBuildManifest(dist, root, prevManifest);
 const stamped = [];
 if (writeIfChanged(join(dist, 'index.html'), injectBuildMeta(readFileSync(join(dist, 'index.html'), 'utf8'), manifest))) stamped.push('index.html');
