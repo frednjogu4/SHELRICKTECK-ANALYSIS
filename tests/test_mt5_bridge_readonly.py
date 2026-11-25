@@ -445,6 +445,87 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.assertIsInstance(quote["spec_at"], int)
         self.assertLessEqual(abs(quote["spec_at"] - int(time.time())), 5)
 
+    def test_positions_net_profit_strict_min_lot_pending_orders_and_deals_history(self):
+        self.bridge._LOCKED_LOGIN = 43210
+        self.bridge._LOCKED_SERVER = "ExnessDemoServer"
+        self.fake_mt5.account_info.return_value = types.SimpleNamespace(
+            login=43210, server="ExnessDemoServer", company="Exness Technologies Ltd",
+            balance=1000.0, equity=1003.2, margin=12.0, margin_free=991.2, margin_level=8360.0,
+            profit=3.5, currency="USD", leverage=200, trade_mode=0, trade_allowed=True, trade_expert=True,
+        )
+        self.fake_mt5.ACCOUNT_TRADE_MODE_DEMO = 0
+        self.fake_mt5.POSITION_TYPE_BUY = 0
+        self.fake_mt5.positions_get.return_value = [
+            types.SimpleNamespace(
+                ticket=501, symbol="XAUUSDm", type=0, volume=0.02,
+                price_open=2640.0, price_current=2641.8, profit=3.60,
+                swap=-0.10, sl=2635.0, tp=2650.0,
+                time=1760000000, magic=202506, comment="AURUM-1C-DEMO",
+            )
+        ]
+        self.fake_mt5.history_deals_get = Mock(return_value=[
+            types.SimpleNamespace(ticket=880, position_id=501, entry=0, commission=-0.30, fee=0.0)
+        ])
+        pos_res = self.bridge.handle_positions({})
+        self.assertEqual(pos_res["type"], "positions")
+        self.assertEqual(pos_res["list"][0]["commission"], -0.30)
+        self.assertEqual(pos_res["list"][0]["net_profit"], 3.20)
+
+        # Strict minimum-lot guard: explicit 0.005 lots (< 0.01 min) is rejected, NEVER inflated
+        self.bridge.resolve_symbol = Mock(return_value="XAUUSDm")
+        self.fake_mt5.symbol_info.return_value = types.SimpleNamespace(
+            name="XAUUSDm", visible=True, trade_mode=4, trade_contract_size=100.0,
+            volume_min=0.01, volume_max=50.0, volume_step=0.01, digits=2, point=0.01,
+            trade_stops_level=10, currency_profit="USD", trade_filling_mode=1,
+        )
+        self.fake_mt5.SYMBOL_TRADE_MODE_FULL = 4
+        self.fake_mt5.symbol_info_tick.return_value = types.SimpleNamespace(bid=2640.0, ask=2640.2, time=int(time.time()))
+        self.fake_mt5.history_deals_get = Mock(return_value=[])
+        plan, err_msg = self.bridge._mt5_direct_order_plan({
+            "environment": "demo", "symbol": "XAUUSD", "side": "BUY", "volume": 10, "lots": 0.005
+        })
+        self.assertIsNone(plan)
+        self.assertIn("NOT increased automatically", err_msg)
+
+        # Pending BUY_LIMIT placement, listing & cancellation
+        self.fake_mt5.terminal_info = Mock(return_value=types.SimpleNamespace(connected=True, trade_allowed=True))
+        self.fake_mt5.TRADE_RETCODE_PLACED = 10008
+        self.fake_mt5.TRADE_RETCODE_DONE = 10009
+        self.fake_mt5.TRADE_ACTION_PENDING = 5
+        self.fake_mt5.TRADE_ACTION_REMOVE = 8
+        self.fake_mt5.ORDER_TIME_GTC = 0
+        self.fake_mt5.ORDER_FILLING_RETURN = 2
+        self.fake_mt5.order_send.return_value = types.SimpleNamespace(retcode=10008, order=8801, comment="placed")
+        placed = self.bridge.handle_place_pending({
+            "confirmed": True, "environment": "demo", "intent_id": "pendIntent_1234567890",
+            "symbol": "XAUUSD", "order_type": "BUY_LIMIT", "entry_price": 2630.0,
+            "lots": 0.02, "sl": 2620.0, "tp": 2650.0,
+        })
+        self.assertEqual(placed["type"], "pending_placed", msg=placed)
+        self.assertEqual(placed["ticket"], 8801)
+
+        self.fake_mt5.orders_get = Mock(return_value=[
+            types.SimpleNamespace(ticket=8801, symbol="XAUUSDm", type=2, volume_current=0.02, price_open=2630.0, sl=2620.0, tp=2650.0, time_setup=1760000100, comment="AURUM-PEND")
+        ])
+        pend_list = self.bridge.handle_pending_orders({})
+        self.assertEqual(pend_list["type"], "pending_orders")
+        self.assertEqual(len(pend_list["list"]), 1)
+
+        self.fake_mt5.order_send.return_value = types.SimpleNamespace(retcode=10009, order=8801, comment="cancelled")
+        cancelled = self.bridge.handle_cancel_pending({"confirmed": True, "environment": "demo", "ticket": 8801})
+        self.assertEqual(cancelled["type"], "pending_cancelled", msg=cancelled)
+
+        # Deals history with entry deal (entry=0) + exit deal (entry=1) commission & swap -> net_profit
+        self.fake_mt5.history_deals_get = Mock(return_value=[
+            types.SimpleNamespace(ticket=990, order=770, position_id=501, symbol="XAUUSDm", type=0, entry=0, volume=0.02, price=2640.0, profit=0.0, commission=-0.20, swap=0.0, fee=0.0, time=1760000100, comment="open", reason="0"),
+            types.SimpleNamespace(ticket=991, order=771, position_id=501, symbol="XAUUSDm", type=1, entry=1, volume=0.02, price=2642.0, profit=4.0, commission=-0.10, swap=-0.10, fee=0.0, time=1760000200, comment="close", reason="0"),
+        ])
+        deals = self.bridge.handle_deals_history({"days": 7})
+        self.assertEqual(deals["type"], "deals_history")
+        out_deal = [d for d in deals["deals"] if d["entry_kind"] == "OUT"][0]
+        self.assertAlmostEqual(out_deal["commission"], -0.30)
+        self.assertEqual(out_deal["net_profit"], 3.60)
+
 
 if __name__ == "__main__":
     unittest.main()

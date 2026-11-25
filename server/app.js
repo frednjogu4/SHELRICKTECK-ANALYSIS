@@ -61,7 +61,8 @@ export function configFromEnv(env = process.env) {
     backtestRatePerMin: Number(env.BACKTEST_RATE_PER_MIN || 12),
     /* setups module: ANALYSIS-ONLY, opt-in. Default OFF — the endpoints below
        return 503 setups_disabled until AURUM_SETUPS_ENABLED=true. */
-    setupsEnabled: String(env.AURUM_SETUPS_ENABLED || '').trim().toLowerCase() === 'true'
+    setupsEnabled: String(env.AURUM_SETUPS_ENABLED || '').trim().toLowerCase() === 'true',
+    allowFramePreview: String(env.ALLOW_FRAME_PREVIEW || '').trim().toLowerCase() === 'true'
   };
 }
 
@@ -120,7 +121,10 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
   /* ---- security headers (audit finding: none were present) ---- */
   app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');
-    res.set('X-Frame-Options', 'DENY');
+    const reqHost = String(req.get('host') || '').toLowerCase().split(':')[0];
+    if (!config.allowFramePreview && !reqHost.endsWith('.e2b.app')) {
+      res.set('X-Frame-Options', 'DENY');
+    }
     res.set('Referrer-Policy', 'no-referrer');
     res.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
     res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');

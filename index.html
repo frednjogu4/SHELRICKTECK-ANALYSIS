@@ -16,21 +16,22 @@
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" href="/icons/favicon-32.png">
 <style>
-/* ============ Design tokens ============ */
+/* ============ Design tokens (Institutional Dark Charcoal/Navy & Gold Terminal) ============ */
 :root{
-  --bg:#0a0e16; --surface:#10151f; --surface-2:#141a26; --surface-3:#1a2130;
-  --border:#222b3b; --border-soft:#1b2331;
-  --text:#e8ecf4; --text-2:#98a3b6; --text-3:#68738a;
-  --brand:#e0b45c; --brand-hi:#f0cc82; --brand-ink:#1a1406;
-  --green:#2ecc8f; --green-soft:rgba(46,204,143,.12);
-  --red:#f0616d; --red-soft:rgba(240,97,109,.12);
-  --amber:#f2b64f; --amber-soft:rgba(242,182,79,.12);
-  --blue:#5b9cf8; --blue-soft:rgba(91,156,248,.12);
+  --bg:#070b12; --surface:#0d131f; --surface-2:#121a2a; --surface-3:#182338;
+  --border:#22304a; --border-soft:#182438;
+  --text:#edf2fa; --text-2:#9eabbe; --text-3:#6b7a92;
+  --brand:#d8ab4e; --brand-hi:#ecc36d; --brand-ink:#161004;
+  --gold:#d8ab4e;
+  --green:#1ec98a; --green-soft:rgba(30,201,138,.13);
+  --red:#f05262; --red-soft:rgba(240,82,98,.13);
+  --amber:#f4b342; --amber-soft:rgba(244,179,66,.13);
+  --blue:#589af7; --blue-soft:rgba(88,154,247,.13);
   --radius:10px; --radius-sm:6px; --radius-lg:14px;
   --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
-  --shadow:0 10px 30px rgba(0,0,0,.4);
-  --sidebar-w:232px;
+  --shadow:0 12px 34px rgba(0,0,0,.48);
+  --sidebar-w:244px;
 }
 [data-theme="light"]{
   --bg:#f3f5f9; --surface:#ffffff; --surface-2:#f8fafc; --surface-3:#eef2f7;
@@ -146,11 +147,12 @@ label.field > span{display:block; font-size:12px; font-weight:600; color:var(--t
 .card-head h3{font-size:14.5px; font-weight:650}
 .card-head .sub{font-size:12px; color:var(--text-3); margin-top:2px}
 .grid{display:grid; gap:16px}
-.grid.c2{grid-template-columns:repeat(2,1fr)}
-.grid.c3{grid-template-columns:repeat(3,1fr)}
-.grid.c4{grid-template-columns:repeat(4,1fr)}
-.split{display:grid; grid-template-columns:1.7fr 1fr; gap:16px; align-items:start}
-.split.rev{grid-template-columns:1fr 1.7fr}
+.grid > *, .split > *, .card{min-width:0; max-width:100%}
+.grid.c2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.grid.c3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.grid.c4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.split{display:grid; grid-template-columns:minmax(0,1.65fr) minmax(0,1fr); gap:16px; align-items:start}
+.split.rev{grid-template-columns:minmax(0,1fr) minmax(0,1.65fr)}
 .tbl-wrap{overflow-x:auto; border-radius:var(--radius)}
 table.tbl{width:100%; border-collapse:collapse; font-size:13.5px}
 .tbl th{
@@ -652,12 +654,18 @@ body[data-view="overview"] .mob-order-bar{display:none}
 .notice.warn{background:var(--amber-soft); border-color:color-mix(in srgb, var(--amber) 35%, transparent)}
 .notice svg{width:16px; height:16px; flex:none; margin-top:2px; color:var(--blue)}
 .notice.warn svg{color:var(--amber)}
-/* settings */
-.set-row{display:flex; align-items:center; justify-content:space-between; gap:18px; padding:15px 0; border-bottom:1px solid var(--border-soft)}
+/* settings (strict zero horizontal overflow across all viewports) */
+html,body{max-width:100vw; overflow-x:clip}
+.app,.main,.content,.view{min-width:0; max-width:100%; overflow-x:clip}
+.set-row{display:flex; align-items:center; justify-content:space-between; gap:12px 18px; flex-wrap:wrap; padding:14px 0; border-bottom:1px solid var(--border-soft); min-width:0; max-width:100%}
 .set-row:last-child{border-bottom:0}
-.set-row .t{font-size:13.5px; font-weight:650}
-.set-row .d{font-size:12.5px; color:var(--text-3); margin-top:3px; line-height:1.5; max-width:56ch}
-.theme-cards{display:flex; gap:10px}
+.set-row > div{min-width:0; max-width:100%}
+.set-row > div:first-child{flex:1 1 220px}
+.set-row .t{font-size:13.5px; font-weight:650; overflow-wrap:anywhere}
+.set-row .d{font-size:12.5px; color:var(--text-3); margin-top:3px; line-height:1.5; max-width:56ch; overflow-wrap:anywhere}
+.set-row select.input,.set-row .input{max-width:100%; min-width:0}
+.settings-subnav{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius)}
+.theme-cards{display:flex; gap:10px; flex-wrap:wrap}
 .theme-card{
   border:1.5px solid var(--border); border-radius:var(--radius-sm); padding:10px 14px; cursor:pointer;
   background:var(--surface-2); font-size:12.5px; font-weight:650; color:var(--text-2); display:flex; align-items:center; gap:8px;
@@ -669,7 +677,70 @@ body[data-view="overview"] .mob-order-bar{display:none}
 .switch i::after{content:""; position:absolute; left:2px; top:2px; width:16px; height:16px; border-radius:50%; background:var(--text-3); transition:.18s}
 .switch input:checked + i{background:var(--brand); border-color:var(--brand)}
 .switch input:checked + i::after{transform:translateX(18px); background:var(--brand-ink)}
-input[type=range].range{accent-color:var(--brand); width:220px}
+input[type=range].range{accent-color:var(--brand); width:min(220px,100%); max-width:100%}
+
+/* ============ Institutional Account Status Top Bar (Section 3) ============ */
+.acct-topbar{
+  display:flex; align-items:center; justify-content:space-between; gap:10px 14px; flex-wrap:wrap;
+  padding:8px 26px; background:linear-gradient(180deg,var(--surface) 0%,var(--surface-2) 100%);
+  border-bottom:1px solid var(--border); font-size:12px; z-index:45;
+}
+.acct-metrics{display:flex; align-items:center; gap:8px 16px; flex-wrap:wrap; min-width:0}
+.acct-metric{display:inline-flex; align-items:baseline; gap:5px; white-space:nowrap}
+.acct-metric .k{font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-3); font-weight:700}
+.acct-metric .v{font-family:var(--mono); font-weight:700; color:var(--text); font-variant-numeric:tabular-nums}
+.acct-actions{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+.btn-stop-all{
+  background:rgba(240,82,98,.16); border:1.5px solid var(--red); color:#ff808d;
+  font-weight:800; letter-spacing:.04em; text-transform:uppercase; font-size:11.5px; padding:5px 11px; border-radius:6px; cursor:pointer;
+}
+.btn-stop-all:hover{background:var(--red); color:#1a0306}
+@media(max-width:960px){.acct-topbar{padding:8px 16px}}
+@media(max-width:640px){.acct-topbar{padding:8px 12px; font-size:11px; gap:6px 10px}}
+
+/* ============ Notification Bell & Slide-Over Centre (Section 9) ============ */
+.notif-bell-wrap{position:relative; display:inline-flex}
+.notif-badge{
+  position:absolute; top:-5px; right:-5px; min-width:18px; height:18px; padding:0 5px;
+  border-radius:99px; background:var(--red); color:#fff; font-size:10.5px; font-weight:800;
+  display:grid; place-items:center; font-family:var(--mono); pointer-events:none;
+}
+.notif-drawer{
+  position:fixed; top:0; right:0; bottom:0; width:min(420px,100vw); z-index:240;
+  background:var(--surface); border-left:1px solid var(--border); box-shadow:var(--shadow);
+  display:none; flex-direction:column;
+}
+.notif-drawer.open{display:flex; animation:fadein .16s ease}
+.notif-drawer-head{padding:16px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:10px}
+.notif-drawer-filters{padding:10px 18px; border-bottom:1px solid var(--border-soft); display:flex; gap:8px; flex-wrap:wrap; background:var(--surface-2)}
+.notif-drawer-list{flex:1; overflow-y:auto; padding:12px 16px; display:flex; flex-direction:column; gap:10px}
+.notif-card{padding:12px 14px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface-2); font-size:12.5px}
+.notif-card.unread{border-left:3px solid var(--brand); background:var(--surface-3)}
+
+/* ============ TradingView Command Centre Multi-Pane (Section 10) ============ */
+.tv-cc-grid{display:grid; gap:10px; width:100%; min-height:560px}
+.tv-cc-single{grid-template-columns:1fr; height:640px}
+.tv-cc-dual{grid-template-columns:repeat(2,minmax(0,1fr)); height:600px}
+.tv-cc-quad{grid-template-columns:repeat(2,minmax(0,1fr)); grid-template-rows:repeat(2,320px)}
+.tv-cc-cell{display:flex; flex-direction:column; border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden; background:var(--surface-2); min-height:280px}
+.tv-cc-cell-head{display:flex; align-items:center; justify-content:space-between; padding:6px 10px; font-size:12px; border-bottom:1px solid var(--border); background:var(--surface)}
+.tv-cc-cell-body{flex:1; min-height:260px; position:relative}
+@media(max-width:900px){.tv-cc-dual,.tv-cc-quad{grid-template-columns:1fr; height:auto}.tv-cc-cell{height:360px}}
+
+/* ============ 7-Timeframe Confluence & AI Supervisor (Sections 7, 8, 19) ============ */
+.mtf-matrix{display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:8px; margin-top:12px}
+.mtf-cell{padding:10px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface-2); text-align:center; min-width:0}
+.mtf-cell .tf{font-size:11px; font-weight:800; color:var(--text-3); letter-spacing:.05em}
+.mtf-cell .sc{font-family:var(--mono); font-size:16px; font-weight:800; margin:4px 0}
+@media(max-width:960px){.mtf-matrix{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:560px){.mtf-matrix{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.supervisor-banner{padding:11px 14px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface-2); font-size:12.5px; margin-bottom:12px}
+.supervisor-banner.approved{border-color:rgba(30,201,138,.45); background:var(--green-soft)}
+.supervisor-banner.rejected{border-color:rgba(240,82,98,.45); background:var(--red-soft)}
+.supervisor-banner.wait,.supervisor-banner.stale{border-color:rgba(244,179,66,.45); background:var(--amber-soft)}
+.profit-preset-row{display:flex; gap:6px; flex-wrap:wrap; align-items:center}
+.profit-preset-btn{padding:5px 10px; border-radius:6px; border:1px solid var(--border); background:var(--surface-2); font-family:var(--mono); font-size:12px; font-weight:700; cursor:pointer; color:var(--text-2)}
+.profit-preset-btn.active{border-color:var(--green); background:var(--green-soft); color:var(--green)}
 /* modal + toast */
 .modal-overlay{
   position:fixed; inset:0; background:rgba(4,7,12,.72); z-index:200; display:none;
@@ -909,66 +980,98 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
       <div><span id="brandName">Shelricktech</span><span class="tag" id="brandTag">INVESTMENT</span></div>
     </div>
     <nav class="nav" id="mainNav" aria-label="Main">
-      <div class="nav-label">Workspace</div>
+      <div class="nav-label">Command &amp; Intelligence</div>
       <button class="nav-item active" data-view="overview">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
         Command Centre
       </button>
       <button class="nav-item" data-view="markets">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-5 4 3 6-7"/><path d="M14 8h4v4"/></svg>
-        Markets
+        Market Scanner
+      </button>
+      <button class="nav-item" data-view="signals">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3.4"/></svg>
+        Signal Analyzer
+        <span class="nav-count" id="navSigCount">0</span>
+      </button>
+      <button class="nav-item" data-view="automation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.2"/><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4"/></svg>
+        Sniper Entry
+      </button>
+      <button class="nav-item" data-view="tv">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 14l3-4 3 2 4-5"/><path d="M8 21h8"/></svg>
+        TradingView Charts
       </button>
       <button class="nav-item" data-view="watch">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 17.5 5.5 11l1.4-1.4L12 14.7l5.1-5.1 1.4 1.4L12 17.5Z"/><path d="M12 12.6 5.5 6.1 6.9 4.7 12 9.8l5.1-5.1 1.4 1.4L12 12.6Z" opacity=".45"/></svg>
         <span>Watchlist</span>
       </button>
+      <div class="nav-label">Execution &amp; Portfolio</div>
       <button class="nav-item" data-view="trade">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><rect x="7" y="11" width="3" height="5" rx=".6"/><rect x="12" y="8" width="3" height="8" rx=".6"/><rect x="17" y="5" width="3" height="11" rx=".6"/></svg>
-        Chart &amp; Trade
+        Manual Trading
       </button>
-      <button class="nav-item" data-view="state">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l4-6 4 3 4-7 3 4 3-5"/><path d="M3 21h18" opacity=".45"/></svg>
-        Market state
+      <button class="nav-item" data-view="positions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h16M12 4v16"/><rect x="3" y="3" width="18" height="18" rx="3"/></svg>
+        Open Positions
+        <span class="nav-count" id="navOpenPosBadge" style="display:none">0</span>
       </button>
-      <button class="nav-item" data-view="signals">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3.4"/></svg>
-        AI Signals
-        <span class="nav-count" id="navSigCount">0</span>
+      <button class="nav-item" data-view="pending">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+        Pending Orders
+        <span class="nav-count" id="navPendingBadge" style="display:none">0</span>
       </button>
-      <button class="nav-item" data-view="sniper" aria-label="Sniper alerts">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.2"/><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4"/></svg>
-        Sniper alerts
-        <span class="nav-count" id="navSniperCount">0</span>
-      </button>
-      <button class="nav-item" data-view="proscalper">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-6 4 3 5-8 4 2"/><path d="M3 21h18"/></svg>
-        Pro Scalper
-      </button>
-      <button class="nav-item" data-view="gold">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18h18M5 16l4-5 3 2 6-8"/><path d="M15 5h3v3"/></svg>
-        Gold / USD
-      </button>
-      <button class="nav-item" data-view="news">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h13v14a1.5 1.5 0 0 0 1.5 1.5H5.5A1.5 1.5 0 0 1 4 19V5z"/><path d="M17 8h2.5v9.5a1.5 1.5 0 0 1-3 0V5"/><path d="M7 9h7M7 13h7M7 17h4"/></svg>
-        News
-      </button>
-      <div class="nav-label">Account</div>
       <button class="nav-item" data-view="portfolio">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 15h2.5"/></svg>
         Portfolio
         <span class="nav-count" id="navPosCount" style="display:none">0</span>
       </button>
-      <button class="nav-item" data-view="automation">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="8" width="14" height="12" rx="2"/><path d="M12 8V4M9 4h6M9 13h.01M15 13h.01M9 16.5h6"/></svg>
-        Automation
+      <button class="nav-item" data-view="history">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+        Trade History
+      </button>
+      <div class="nav-label">Research, Risk &amp; Strategy</div>
+      <button class="nav-item" data-view="intelligence">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.6-3.2 5.9L15 18H9l-.8-3.1A7 7 0 0 1 12 2z"/><path d="M9 21h6"/></svg>
+        AI Market Intelligence
+      </button>
+      <button class="nav-item" data-view="news">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h13v14a1.5 1.5 0 0 0 1.5 1.5H5.5A1.5 1.5 0 0 1 4 19V5z"/><path d="M17 8h2.5v9.5a1.5 1.5 0 0 1-3 0V5"/><path d="M7 9h7M7 13h7M7 17h4"/></svg>
+        News &amp; Economic Calendar
+      </button>
+      <button class="nav-item" data-view="gold">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18h18M5 16l4-5 3 2 6-8"/><path d="M15 5h3v3"/></svg>
+        Strategy Builder
       </button>
       <button class="nav-item" data-view="learn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 2 8l10 5 10-5-10-5Z"/><path d="M6 10.5V15c0 1.5 2.7 3 6 3s6-1.5 6-3v-4.5"/></svg>
-        <span>Calculator Lab</span>
+        <span>Risk Management</span>
       </button>
+      <button class="nav-item" data-view="backtest">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M6 15l4-5 4 3 5-7"/><circle cx="19" cy="6" r="2"/></svg>
+        Backtesting
+      </button>
+      <button class="nav-item" data-view="sniper" aria-label="Sniper alerts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        Sniper Alerts
+        <span class="nav-count" id="navSniperCount">0</span>
+      </button>
+      <button class="nav-item" data-view="state">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l4-6 4 3 4-7 3 4 3-5"/><path d="M3 21h18" opacity=".45"/></svg>
+        Market state
+      </button>
+      <button class="nav-item" data-view="proscalper">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-6 4 3 5-8 4 2"/><path d="M3 21h18"/></svg>
+        Pro Scalper
+      </button>
+      <div class="nav-label">System &amp; Governance</div>
       <button class="nav-item" data-view="settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
         Settings
+      </button>
+      <button class="nav-item" data-view="security">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+        Security &amp; Audit Logs
       </button>
     </nav>
     <div class="side-foot">
@@ -986,17 +1089,79 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
       <div class="grow">
-        <h2 id="topTitle">Market Command Centre</h2>
+        <div class="row wrap" style="gap:8px"><h2 id="topTitle">Market Command Centre</h2><span class="badge gold hide-sm" style="font-size:10px">SHELRICKTECH AI TRADING &amp; MARKET INTELLIGENCE</span></div>
         <div class="crumb" id="topCrumb">Workspace · unified market and portfolio overview</div>
+      </div>
+      <div class="notif-bell-wrap">
+        <button class="icon-btn" id="notifBellBtn" type="button" title="Signal Notification Centre" aria-label="Open Signal Notification Centre">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </button>
+        <span class="notif-badge hidden" id="notifBadge">0</span>
       </div>
       <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle colour theme">
         <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.8 6.8 0 0 0 9.8 9.8z"/></svg>
       </button>
-      <button class="icon-btn hidden" id="installBtn" title="Install AURUM app" aria-label="Install AURUM as an app">
+      <button class="icon-btn hidden" id="installBtn" title="Install Shelricktech app" aria-label="Install Shelricktech as an app">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
       </button>
       <button class="btn primary sm" data-goto="trade">New order</button>
     </header>
+
+    <!-- Permanently visible live Account Status Bar (Section 3) -->
+    <div class="acct-topbar" id="accountTopBar" role="region" aria-label="Live Broker Account Status">
+      <div class="acct-metrics">
+        <span class="pill" id="topBarBrokerPill"><span class="dot off" id="topBarBrokerDot"></span><span id="topBarBrokerText">Broker: Disconnected</span></span>
+        <span class="badge gray" id="topBarModeBadge">NO ACCOUNT</span>
+        <span class="acct-metric"><span class="k">Bal</span><span class="v" id="topBarBalance">—</span></span>
+        <span class="acct-metric"><span class="k">Eq</span><span class="v" id="topBarEquity">—</span></span>
+        <span class="acct-metric"><span class="k">Free Mgn</span><span class="v" id="topBarFreeMargin">—</span></span>
+        <span class="acct-metric"><span class="k">Mgn Lvl</span><span class="v" id="topBarMarginLevel">—</span></span>
+        <span class="acct-metric"><span class="k">Open P&amp;L</span><span class="v" id="topBarOpenPl">—</span></span>
+        <span class="acct-metric"><span class="k">Day P&amp;L</span><span class="v" id="topBarDailyPl">—</span></span>
+        <span class="acct-metric"><span class="k">Pos / Pend</span><span class="v" id="topBarCounts">0 / 0</span></span>
+      </div>
+      <div class="acct-actions">
+        <span class="tiny faint mono" id="topBarSyncTs">Sync: awaiting broker</span>
+        <span class="badge gray" id="topBarSniperBadge">SNIPER OFF</span>
+        <button class="btn ghost sm" type="button" id="topBarSwitchBrokerBtn" data-goto="automation" title="Switch or connect Deriv / Exness account">Accounts</button>
+        <button class="btn-stop-all" type="button" id="topBarEmergencyStop" title="Emergency halt all automated Sniper entries and auto-closures immediately">STOP ALL</button>
+      </div>
+    </div>
+
+    <!-- Signal Notification Centre Slide-Over Drawer (Section 9) -->
+    <aside class="notif-drawer" id="notifDrawer" aria-label="Signal Notification Centre">
+      <div class="notif-drawer-head">
+        <div>
+          <h3 style="font-size:15px">Signal Notification Centre</h3>
+          <div class="tiny faint">Real-time BUY/SELL setups, expiry &amp; broker execution events</div>
+        </div>
+        <div class="row" style="gap:6px">
+          <button class="btn ghost sm" type="button" id="notifMarkAllBtn">Mark read</button>
+          <button class="btn ghost sm" type="button" id="notifClearBtn">Clear</button>
+          <button class="icon-btn" type="button" id="notifCloseBtn" aria-label="Close Notification Centre">&times;</button>
+        </div>
+      </div>
+      <div class="notif-drawer-filters">
+        <select class="input" id="notifFilterStatus" style="width:auto;padding:5px 26px 5px 9px;font-size:12px" aria-label="Filter notification status">
+          <option value="ALL">All statuses</option>
+          <option value="ACTIVE">Active setups</option>
+          <option value="EXECUTED">Executed</option>
+          <option value="CLOSED">Closed</option>
+          <option value="INVALIDATED">Invalidated</option>
+          <option value="EXPIRED">Expired</option>
+        </select>
+        <select class="input" id="notifFilterBroker" style="width:auto;padding:5px 26px 5px 9px;font-size:12px" aria-label="Filter notification broker">
+          <option value="ALL">All brokers</option>
+          <option value="DERIV">Deriv</option>
+          <option value="MT5">Exness MT5</option>
+        </select>
+        <label class="row tiny" style="gap:5px;cursor:pointer"><input type="checkbox" id="notifUnreadOnlyChk"> Unread only</label>
+        <label class="row tiny" style="gap:5px;cursor:pointer"><input type="checkbox" id="notifSoundQuickChk"> Chime</label>
+      </div>
+      <div class="notif-drawer-list" id="notifDrawerList">
+        <div class="empty"><b>No signal notifications yet</b>Live high-confluence setups and trade confirmations appear here.</div>
+      </div>
+    </aside>
 
     <main class="content" id="content">
 
@@ -1055,16 +1220,19 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
         <section class="command-section" aria-labelledby="workspaceNavTitle">
           <div class="command-section-head"><div><h2 id="workspaceNavTitle">Workspace Navigation</h2><p class="sub">Specialist tools stay separate; this overview does not duplicate their tables or controls.</p></div></div>
           <nav class="command-nav-grid" aria-label="Workspace sections">
-            <button class="command-nav-link" data-goto="markets">Markets <span>Live catalogue and market scan</span></button>
-            <button class="command-nav-link" data-goto="watch">Watchlist <span>Pinned markets and charts</span></button>
-            <button class="command-nav-link" data-goto="trade">Charts <span>Chart &amp; Trade workspace</span></button>
-            <button class="command-nav-link" data-goto="news">News <span>Headlines and economic calendar</span></button>
-            <button class="command-nav-link" data-goto="signals">Signal Analyzer <span>Current technical scan</span></button>
-            <button class="command-nav-link" data-goto="settings" data-goto-section="analysisHistorySection">Analysis History <span>Existing online history panel in Settings</span></button>
-            <button class="command-nav-link" data-goto="portfolio" data-goto-section="closedHistoryCard">Reports <span>Closed-trade history in Portfolio</span></button>
-            <button class="command-nav-link" data-goto="settings">Settings <span>Connections, privacy and preferences</span></button>
-            <button class="command-nav-link" data-goto="settings" data-goto-section="securitySection">Security <span>Existing connection and safeguard controls</span></button>
-            <button class="command-nav-link" data-goto="proscalper" data-goto-section="psAudit">Audit <span>Local analysis audit log; no orders</span></button>
+            <button class="command-nav-link" data-goto="markets">Market Scanner <span>Live catalogue and market scan</span></button>
+            <button class="command-nav-link" data-goto="tv">TradingView Charts <span>Single, dual &amp; quad interactive charts</span></button>
+            <button class="command-nav-link" data-goto="watch">Watchlist <span>Pinned markets and mini-charts</span></button>
+            <button class="command-nav-link" data-goto="trade">Manual Trading <span>Market &amp; pending ticket workspace</span></button>
+            <button class="command-nav-link" data-goto="signals">Signal Analyzer <span>7-timeframe technical confluence</span></button>
+            <button class="command-nav-link" data-goto="automation">Sniper Entry <span>Per-account automation &amp; net-profit target</span></button>
+            <button class="command-nav-link" data-goto="positions">Open Positions <span>Live broker P&amp;L &amp; dynamic target close</span></button>
+            <button class="command-nav-link" data-goto="intelligence">AI Intelligence <span>Facts vs AI scenario synthesis</span></button>
+            <button class="command-nav-link" data-goto="news">News &amp; Calendar <span>EAT + UTC macro releases &amp; risk windows</span></button>
+            <button class="command-nav-link" data-goto="portfolio" data-goto-section="closedHistoryCard">Portfolio &amp; Reports <span>Account exposure &amp; closed trades</span></button>
+            <button class="command-nav-link" data-goto="backtest">Backtesting <span>Historical replay with spread &amp; fees</span></button>
+            <button class="command-nav-link" data-goto="settings">Settings <span>Connections, risk, alerts &amp; preferences</span></button>
+            <button class="command-nav-link" data-goto="security">Security &amp; Audit <span>Credential safety &amp; automation audit log</span></button>
           </nav>
           <p class="tiny faint command-nav-note">Analysis History, Reports, Security and Audit link to their existing specialist sections; no new routes or execution flows are introduced.</p>
         </section>
@@ -1168,9 +1336,65 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
           <div id="watchTvOutlooks" class="grid c2" style="gap:8px;margin-top:8px"></div>
         </div>
       </section>
+      <!-- ======= TRADINGVIEW COMMAND CENTRE (Section 10) ======= -->
+      <section class="view" id="view-tv">
+        <div class="view-head">
+          <div>
+            <h1>TradingView Command Centre</h1>
+            <p class="sub">Interactive multi-asset candlestick charting, drawing tools &amp; multi-timeframe layouts. Display-only TradingView quotes are explicitly separated from verified broker execution feeds.</p>
+          </div>
+          <div class="row wrap" style="gap:8px">
+            <button class="btn ghost sm" type="button" id="tvSendToTicketBtn">Open in Manual Trading ↗</button>
+            <button class="btn primary sm" type="button" id="tvAnalyzeMtfBtn">7-TF Confluence ↗</button>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <div class="row between wrap" style="gap:10px">
+            <div class="row wrap" style="gap:8px">
+              <label class="tiny">Instrument
+                <select class="input sm mono" id="tvCmdSymbol" style="display:block;margin-top:4px;min-width:190px;font-weight:700"></select>
+              </label>
+              <label class="tiny">Timeframe
+                <select class="input sm mono" id="tvCmdTf" style="display:block;margin-top:4px;width:auto">
+                  <option value="1">1m</option>
+                  <option value="5">5m</option>
+                  <option value="15" selected>15m</option>
+                  <option value="30">30m</option>
+                  <option value="60">1H</option>
+                  <option value="240">4H</option>
+                  <option value="D">1D</option>
+                </select>
+              </label>
+              <label class="tiny">Layout
+                <select class="input sm" id="tvCmdLayout" style="display:block;margin-top:4px;width:auto">
+                  <option value="single" selected>Single Full Terminal</option>
+                  <option value="dual">Dual Split (Active + EUR/USD)</option>
+                  <option value="quad">Quad MTF (M5 / M15 / H1 / H4)</option>
+                </select>
+              </label>
+            </div>
+            <div class="row wrap" id="tvQuickSymbols" style="gap:6px">
+              <button type="button" class="chip active" data-tv-sym="XAU/USD">XAU/USD</button>
+              <button type="button" class="chip" data-tv-sym="EUR/USD">EUR/USD</button>
+              <button type="button" class="chip" data-tv-sym="GBP/USD">GBP/USD</button>
+              <button type="button" class="chip" data-tv-sym="USD/JPY">USD/JPY</button>
+              <button type="button" class="chip" data-tv-sym="BTC/USD">BTC/USD</button>
+              <button type="button" class="chip" data-tv-sym="NAS100">NAS100</button>
+              <button type="button" class="chip" data-tv-sym="US30">US30</button>
+              <button type="button" class="chip" data-tv-sym="US500">US500</button>
+              <button type="button" class="chip" data-tv-sym="WTI/USD">WTI Oil</button>
+            </div>
+          </div>
+          <div class="tiny faint mono" id="tvCmdMeta" style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border-soft)">
+            Chart feed: TradingView official widget (display-only) · Execution quote: connect Deriv or Exness MT5 for verified broker pricing.
+          </div>
+        </div>
+        <div id="tvCommandMount" class="card flush" style="padding:10px"></div>
+      </section>
+
       <section class="view" id="view-trade">
         <div class="view-head">
-          <div><h1>Chart &amp; Trade</h1><p class="sub">Switch between the interactive TradingView chart and an AURUM M5 chart using the signal’s own verified candle source. The next 5m/10m directional outlook is below the graph. Entry, SL and TP markers appear only for a fresh confirmed setup; TradingView times follow your device clock, and orders still require your normal confirmation.</p></div>
+          <div><h1>Manual Trading Centre</h1><p class="sub">Switch between the interactive TradingView chart and a Shelricktech M5 chart using the signal’s own verified candle source. TradingView times follow your device clock; market &amp; pending limit/stop orders validate live direction, spread, margin and minimum lot rules before execution.</p></div>
         </div>
         <div class="split">
           <div class="chart-shell">
@@ -1223,11 +1447,28 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
             <div class="card ticket" id="ticketCard">
               <div class="card-head"><h3>Order ticket</h3><span class="badge gray" id="ticketMode">No broker</span></div>
               <div id="ticketPatAccounts" data-pat-accounts style="display:none;margin-bottom:10px"></div>
+              <div class="supervisor-banner" id="ticketSupervisorBanner" aria-live="polite">
+                <div class="row between wrap"><b>AI Trade Supervisor</b><span class="badge gray" id="ticketSupVerdict">STANDBY</span></div>
+                <div class="tiny muted" id="ticketSupText" style="margin-top:4px">Connect Deriv or Exness MT5 to validate live quote freshness, direction alignment, spread &amp; margin before order dispatch.</div>
+                <div class="tiny faint mono" id="ticketSignalCountdown" style="margin-top:4px">Signal validity: —</div>
+              </div>
+              <label class="field"><span>Order execution type</span>
+                <select class="input mono" id="orderTypeSelect">
+                  <option value="MARKET" selected>Market Order (instant execution)</option>
+                  <option value="BUY_LIMIT">Buy Limit (Exness MT5 pending)</option>
+                  <option value="SELL_LIMIT">Sell Limit (Exness MT5 pending)</option>
+                  <option value="BUY_STOP">Buy Stop (Exness MT5 pending)</option>
+                  <option value="SELL_STOP">Sell Stop (Exness MT5 pending)</option>
+                </select>
+              </label>
+              <label class="field hidden" id="pendingEntryField"><span>Pending trigger price (MT5)</span>
+                <input class="input mono" id="orderEntryPrice" type="number" step="any" placeholder="target limit/stop entry price">
+              </label>
               <div class="side-seg">
                 <button class="side-btn sel-buy" id="sideBuy" type="button">BUY<span class="px" id="bidPx">—</span></button>
                 <button class="side-btn" id="sideSell" type="button">SELL<span class="px" id="askPx">—</span></button>
               </div>
-              <label class="field"><span>Amount (USD)</span>
+              <label class="field"><span>Amount / Notional (USD)</span>
                 <input class="input mono" id="orderAmount" type="number" min="1" step="1" value="10">
                 <div class="quick-amts">
                   <button type="button" data-amt="10">$10</button>
@@ -1235,6 +1476,18 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
                   <button type="button" data-amt="50">$50</button>
                   <button type="button" data-amt="100">$100</button>
                 </div>
+              </label>
+              <div class="grid c2" style="gap:10px;margin-bottom:10px">
+                <label class="field" style="margin:0"><span>Explicit MT5 Lots <span class="faint">(optional)</span></span>
+                  <input class="input mono" id="orderLots" type="number" min="0.001" step="0.01" placeholder="auto from USD">
+                </label>
+                <label class="field" style="margin:0"><span>Max slippage (pts)</span>
+                  <input class="input mono" id="orderSlippage" type="number" min="1" max="100" step="1" value="20">
+                </label>
+              </div>
+              <label class="row tiny" style="gap:7px;margin-bottom:10px;cursor:pointer">
+                <input type="checkbox" id="strictMinLotChk" checked>
+                <span>Strict minimum-lot guard (never secretly increase order size to meet broker minimum)</span>
               </label>
               <label class="field"><span>Contract duration (Deriv paths)</span>
                 <select class="input mono" id="orderDuration">
@@ -1278,7 +1531,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
                 <label class="switch" title="Execute manual Exness &amp; Deriv orders immediately without a separate preview modal"><input type="checkbox" id="ticketOneClickChk"><i></i></label>
               </div>
               <button class="btn buy lg" id="placeOrderBtn" style="width:100%">Place BUY order</button>
-              <p class="hint">Manual live (<b>REAL and DEMO</b>) order execution and position closing are enabled on the local app (<span class="mono">http://127.0.0.1:8788/app</span>) for both <b>Exness MT5</b> and <b>Deriv</b>. In 1-click mode, pressing Place sends the order immediately; turn 1-click off to inspect a quote/risk preview modal first. Automated Sniper entries remain analysis-only. Stop risk is estimated, not guaranteed. Risk: <b id="riskTxt">—</b> if stop-loss is hit.</p>
+              <p class="hint">Manual live (<b>REAL and DEMO</b>) market &amp; pending order execution and position closing are enabled on the local app (<span class="mono">http://127.0.0.1:8788/app</span>) for <b>Exness MT5</b> and <b>Deriv</b>. Every order runs through the AI Trade Supervisor for fresh quote &amp; direction validation before dispatch. Stop risk is estimated, not guaranteed. Risk: <b id="riskTxt">—</b> if stop-loss is hit.</p>
             </div>
             <div class="card">
               <div class="card-head"><h3>Instrument info</h3></div>
@@ -1329,6 +1582,37 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
             </details>
           </div>
           <span class="pill hidden" id="azBudget">AI today —</span>
+        </div>
+
+        <!-- 7-Timeframe Confluence & Signal Validity Matrix (Sections 7 & 8) -->
+        <div class="card" style="margin-bottom:14px" id="mtfConfluenceCard">
+          <div class="card-head wrap">
+            <div>
+              <h3>Multi-Timeframe Signal Strength &amp; Validity Engine (1m · 5m · 15m · 30m · 1h · 4h · 1D)</h3>
+              <div class="sub">EMA 9/20/50/200 · SMA 50/200 · RSI(14) · MACD · Bollinger · ATR · Fibonacci &amp; HH/HL structure · Quality score 0–100 (NOT profit probability).</div>
+            </div>
+            <div class="row wrap" style="gap:8px">
+              <select class="input sm mono" id="mtfSymSelect" style="width:auto;min-width:155px"></select>
+              <button class="btn primary sm" type="button" id="mtfRefreshBtn">Evaluate 7-TF Confluence</button>
+              <button class="btn ghost sm" type="button" id="mtfTradeBtn">Load into Ticket ↗</button>
+            </div>
+          </div>
+          <div class="grid c3" style="gap:10px;margin-top:8px">
+            <div class="card" style="background:var(--surface-2);padding:12px">
+              <div class="row between"><span class="tiny faint">BUY CONFLUENCE</span><b class="mono up" id="mtfBuyScore">0 / 100</b></div>
+              <div class="strength-track" style="margin-top:6px"><i id="mtfBuyBar" style="width:0%;background:var(--green)"></i></div>
+            </div>
+            <div class="card" style="background:var(--surface-2);padding:12px">
+              <div class="row between"><span class="tiny faint">SELL CONFLUENCE</span><b class="mono down" id="mtfSellScore">0 / 100</b></div>
+              <div class="strength-track" style="margin-top:6px"><i id="mtfSellBar" style="width:0%;background:var(--red)"></i></div>
+            </div>
+            <div class="card" style="background:var(--surface-2);padding:12px">
+              <div class="row between"><span class="tiny faint">VERDICT &amp; VALIDITY</span><span class="badge gray" id="mtfVerdictBadge">WAIT</span></div>
+              <div class="mono small" id="mtfValidityClock" style="margin-top:6px">Validity window: —</div>
+            </div>
+          </div>
+          <div class="mtf-matrix" id="mtfMatrixGrid" aria-live="polite"></div>
+          <div class="tiny faint" id="mtfConflictNote" style="margin-top:10px;line-height:1.5">Select an instrument and click Evaluate 7-TF Confluence to compute completed-candle alignment across 1m, 5m, 15m, 30m, 1h, 4h and 1D.</div>
         </div>
 
         <div class="card" style="margin-bottom:14px" id="fxAnalystPanel">
@@ -1563,7 +1847,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
             <b>Connect Supabase in Settings to go online</b>
             Pattern scans, success-rate studies and pattern alerts can be stored in your own
             Supabase project — then this panel shows the same history on every device you open
-            AURUM from. Nothing is sent anywhere else.
+            Shelricktech from. Nothing is sent anywhere else.
           </div>
             <div id="cldBody" hidden>
             <div class="sub" style="margin:6px 0">Signals</div>
@@ -1707,7 +1991,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
             <div class="card"><h4 class="az-h">BUY / SELL PRESSURE</h4><p class="muted small" id="goldPressure">Waiting for M1/M5/H1 votes.</p><p class="hint tiny">This is indicator/timeframe confluence, not exchange order-book or actual buyer/seller volume.</p></div>
             <div class="card"><h4 class="az-h">READOUT &amp; RISKS</h4><p class="muted small" id="goldRationale">No signal yet. If data is unavailable or timeframes disagree, the monitor stands aside.</p><ul class="az-risks" id="goldRisks"></ul></div>
           </div>
-          <div class="hint tiny" style="margin-top:12px">Levels are technical reference values, not instructions or guaranteed fills. A BUY/SELL is shown only with confirmation; otherwise the result is WAIT. Review after the next M5 candle close; this is not a fixed expiry or holding-time guarantee. The monitor runs while AURUM is open and reachable after you open this Gold/USD panel; it cannot alert when the app/browser is closed. Confidence is the timeframe-agreement score of the analysis, marked down as the live price moves from the first-read entry toward the stop and up as it moves toward TP 1. It is a score, not a chance of profit.</div>
+          <div class="hint tiny" style="margin-top:12px">Levels are technical reference values, not instructions or guaranteed fills. A BUY/SELL is shown only with confirmation; otherwise the result is WAIT. Review after the next M5 candle close; this is not a fixed expiry or holding-time guarantee. The monitor runs while Shelricktech is open and reachable after you open this Gold/USD panel; it cannot alert when the app/browser is closed. Confidence is the timeframe-agreement score of the analysis, marked down as the live price moves from the first-read entry toward the stop and up as it moves toward TP 1. It is a score, not a chance of profit.</div>
         </div>
         <div class="grid c2">
           <div class="card">
@@ -1820,14 +2104,103 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
         </div>
       </section>
 
-      <!-- ======= AUTOMATION ======= -->
+      <!-- ======= SNIPER ENTRY & BROKER AUTOMATION (Sections 5 & 6) ======= -->
       <section class="view" id="view-automation">
         <div class="view-head">
-          <div><h1>Automation</h1><p class="sub">Broker bridges and XML bots — connect once, keep everything within reach.</p></div>
+          <div>
+            <h1>Sniper Entry &amp; Broker Execution Hub</h1>
+            <p class="sub">Explicit per-account automated Sniper entry, dynamic net-profit target auto-closure ($2 / $3 / $4 / $5 / $10 / custom), and authenticated Deriv &amp; Exness MT5 connectivity.</p>
+          </div>
+          <div class="row wrap" style="gap:8px">
+            <span class="badge gray" id="sniperAuthBadge">SNIPER EXECUTION OFF</span>
+            <button class="btn-stop-all" type="button" id="sniperStopAllBtn">EMERGENCY STOP ALL</button>
+          </div>
         </div>
+
+        <!-- Automated Sniper Execution & Dynamic Profit Target Control Deck -->
+        <div class="card" id="sniperExecDeck" style="margin-bottom:16px;border-color:var(--brand)">
+          <div class="card-head wrap">
+            <div>
+              <h3>Automated Sniper Execution &amp; Dynamic Net-Profit Closure</h3>
+              <div class="sub">OFF by default. Enabling binds exclusively to the currently verified Deriv or Exness (DEMO or REAL) account — silent broker/account switching is blocked, and disconnecting pauses automation safely without force-closing trades.</div>
+            </div>
+            <div class="row wrap" style="gap:12px">
+              <span class="tiny muted">Arm Sniper Execution</span>
+              <label class="switch" title="Explicitly authorize automated Sniper order execution on the currently connected broker account"><input type="checkbox" id="sniperExecToggle"><i></i></label>
+            </div>
+          </div>
+
+          <div class="supervisor-banner" id="sniperLiveVerdict" style="margin-bottom:14px">
+            <div class="row between wrap"><b>AI Trade Supervisor · Sniper Gate</b><span class="badge gray" id="sniperSupBadge">STANDBY</span></div>
+            <div class="tiny muted" id="sniperSupDetail" style="margin-top:4px">Sniper execution is disarmed. Connect Deriv or Exness MT5 and toggle Arm Sniper Execution above to authorize automated entries on that specific account.</div>
+          </div>
+
+          <!-- Dynamic Monetary Net-Profit Target Auto-Closure (Section 6) -->
+          <div class="card" id="sniperProfitTargetCard" style="background:var(--surface-2);margin-bottom:14px">
+            <div class="row between wrap" style="gap:10px;margin-bottom:10px">
+              <div>
+                <b>Dynamic Monetary Net-Profit Target Auto-Close</b>
+                <div class="tiny faint">Automatically closes any open position the instant its broker-verified <b>NET monetary profit</b> (after commission, swap &amp; fees) reaches your target, then continues scanning for the next setup.</div>
+              </div>
+              <label class="switch" title="Enable automatic position closing at net monetary profit target"><input type="checkbox" id="autoProfitCloseChk"><i></i></label>
+            </div>
+            <div class="row between wrap" style="gap:12px">
+              <div class="profit-preset-row" id="profitPresetRow">
+                <span class="tiny faint">Quick Net Target:</span>
+                <button type="button" class="profit-preset-btn" data-profit-preset="2">+$2.00</button>
+                <button type="button" class="profit-preset-btn active" data-profit-preset="3">+$3.00</button>
+                <button type="button" class="profit-preset-btn" data-profit-preset="4">+$4.00</button>
+                <button type="button" class="profit-preset-btn" data-profit-preset="5">+$5.00</button>
+                <button type="button" class="profit-preset-btn" data-profit-preset="10">+$10.00</button>
+              </div>
+              <label class="row tiny" style="gap:6px">
+                <span>Custom Net Target ($ USD):</span>
+                <input class="input mono sm" id="netProfitTargetInput" type="number" min="0.25" step="0.25" value="3.00" style="width:96px">
+              </label>
+            </div>
+          </div>
+
+          <!-- Configurable Sniper Entry & Risk Parameters (Section 5) -->
+          <div class="grid c4" style="gap:12px">
+            <label class="field" style="margin:0"><span>Min confluence (50–95)</span><input class="input mono sm" id="sniperMinScore" type="number" min="50" max="95" step="1" value="75"></label>
+            <label class="field" style="margin:0"><span>Position sizing mode</span>
+              <select class="input sm" id="sniperSizingMode">
+                <option value="fixed_usd" selected>Fixed USD stake/notional</option>
+                <option value="fixed_lots">Fixed MT5 Lots</option>
+                <option value="risk_pct">% of Account Equity</option>
+              </select>
+            </label>
+            <label class="field" style="margin:0"><span>Fixed USD / Stake ($)</span><input class="input mono sm" id="sniperFixedUsd" type="number" min="1" step="1" value="10"></label>
+            <label class="field" style="margin:0"><span>Fixed MT5 Lots / Risk %</span><input class="input mono sm" id="sniperFixedLots" type="number" min="0.01" step="0.01" value="0.01"></label>
+            <label class="field" style="margin:0"><span>Max concurrent positions</span><input class="input mono sm" id="sniperMaxPos" type="number" min="1" max="20" value="3"></label>
+            <label class="field" style="margin:0"><span>Max daily trades</span><input class="input mono sm" id="sniperMaxDaily" type="number" min="1" max="100" value="10"></label>
+            <label class="field" style="margin:0"><span>Daily profit target ($)</span><input class="input mono sm" id="sniperDailyProfit" type="number" min="0" step="1" value="50"></label>
+            <label class="field" style="margin:0"><span>Max daily loss ($)</span><input class="input mono sm" id="sniperDailyLoss" type="number" min="0" step="1" value="30"></label>
+            <label class="field" style="margin:0"><span>Max drawdown (%)</span><input class="input mono sm" id="sniperMaxDd" type="number" min="1" max="50" step="0.5" value="10"></label>
+            <label class="field" style="margin:0"><span>Max total exposure ($)</span><input class="input mono sm" id="sniperMaxExp" type="number" min="0" step="100" value="5000"></label>
+            <label class="field" style="margin:0"><span>Allowed session</span>
+              <select class="input sm" id="sniperSessionFilter">
+                <option value="ALL" selected>All Sessions (24h)</option>
+                <option value="LONDON_NY">London + New York</option>
+                <option value="LONDON">London Only</option>
+                <option value="NEW_YORK">New York Only</option>
+                <option value="ASIA">Tokyo / Asia Only</option>
+              </select>
+            </label>
+            <label class="field" style="margin:0"><span>Entry cooldown (sec)</span><input class="input mono sm" id="sniperCooldownSec" type="number" min="10" max="3600" step="5" value="60"></label>
+          </div>
+          <div class="row between wrap" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-soft);gap:10px">
+            <label class="row tiny" style="gap:7px;cursor:pointer">
+              <input type="checkbox" id="sniperNewsPauseChk" checked>
+              <span>Pause Sniper around high-impact economic news (<input class="input mono" id="sniperNewsPreMin" type="number" min="0" max="120" value="15" style="width:54px;padding:3px 6px;display:inline-block">m before / <input class="input mono" id="sniperNewsPostMin" type="number" min="0" max="120" value="15" style="width:54px;padding:3px 6px;display:inline-block">m after)</span>
+            </label>
+            <button class="btn primary sm" type="button" id="sniperSaveRulesBtn">Save Sniper Rules</button>
+          </div>
+        </div>
+
         <div class="notice warn" style="margin-bottom:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-          <div><b>Exness REAL &amp; DEMO and Deriv REAL &amp; DEMO manual live trading are enabled on the local app (<span class="mono">http://127.0.0.1:8788/app</span>).</b> On the local bridge app, 1-click direct order execution and in-app position closing are active by default (you can switch back to preview/confirmation modals anytime in Settings or on the Order ticket). The local MT5 bridge verifies the exact account mode, fresh ticks, free margin, daily loss guard, and single-send idempotency before every order or close. Automated Sniper/bot entries remain disabled (analysis-only), and Cloudflare staging remains read-only. Credentials stay on this PC/local bridge; use the exact same account and server on PC and phone.</div>
+          <div><b>Exness REAL &amp; DEMO and Deriv REAL &amp; DEMO execution on the local app (<span class="mono">http://127.0.0.1:8788/app</span>).</b> Both 1-click manual orders and explicitly authorized Sniper automation re-fetch a fresh broker quote, verify exact account mode, re-validate signal direction/expiry, check spread &amp; free margin, and enforce single-send idempotency before every order or profit-target close. Cloudflare staging remains read-only.</div>
         </div>
 
         <div class="grid c3" id="connGrid">
@@ -1956,10 +2329,192 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
           </ul>
         </div>
       </section>
+      <!-- ======= OPEN POSITIONS (Section 3 & 6) ======= -->
+      <section class="view" id="view-positions">
+        <div class="view-head">
+          <div>
+            <h1>Open Positions &amp; Live Net-Profit Targets</h1>
+            <p class="sub">Real-time broker positions across Exness MT5 &amp; Deriv with gross P&amp;L, commissions/swaps/fees, net P&amp;L, and editable per-position monetary auto-close targets.</p>
+          </div>
+          <div class="row wrap" style="gap:8px">
+            <button class="btn ghost sm" type="button" id="openPosRefreshBtn">Refresh Broker Snapshot</button>
+            <button class="btn primary sm" type="button" data-goto="trade">New Manual Order</button>
+          </div>
+        </div>
+        <div class="card flush">
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead><tr>
+                <th>Broker / Ticket</th><th>Symbol</th><th>Side</th><th class="right">Size</th>
+                <th class="right">Entry</th><th class="right">Current</th><th class="right">Gross P&amp;L</th>
+                <th class="right">Fees / Swap</th><th class="right">Net P&amp;L</th><th>Net Target ($)</th><th class="right">Action</th>
+              </tr></thead>
+              <tbody id="unifiedOpenPosBody"><tr><td colspan="11" class="faint center">Connect Deriv or Exness MT5 to view live open positions.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= PENDING ORDERS (Section 3 & 4) ======= -->
+      <section class="view" id="view-pending">
+        <div class="view-head">
+          <div>
+            <h1>Pending Limit &amp; Stop Orders</h1>
+            <p class="sub">Active Exness MT5 BUY_LIMIT, SELL_LIMIT, BUY_STOP &amp; SELL_STOP orders with verified broker cancellation.</p>
+          </div>
+          <div class="row wrap" style="gap:8px">
+            <button class="btn ghost sm" type="button" id="pendingRefreshBtn">Refresh Pending</button>
+            <button class="btn primary sm" type="button" data-goto="trade">Place Pending Order</button>
+          </div>
+        </div>
+        <div class="card flush">
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead><tr>
+                <th>Ticket</th><th>Symbol</th><th>Type</th><th class="right">Lots</th>
+                <th class="right">Trigger Price</th><th class="right">SL</th><th class="right">TP</th><th>Placed (UTC)</th><th class="right">Action</th>
+              </tr></thead>
+              <tbody id="pendingOrdersBody"><tr><td colspan="9" class="faint center">No active pending orders (connect Exness MT5 on local bridge to inspect or place pending orders).</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= TRADE HISTORY & PERFORMANCE ANALYTICS (Section 16) ======= -->
+      <section class="view" id="view-history">
+        <div class="view-head">
+          <div>
+            <h1>Trade History &amp; Performance Analytics</h1>
+            <p class="sub">Broker-confirmed MT5 deals, Deriv settled contracts &amp; workspace journal — net of commissions, swaps and fees.</p>
+          </div>
+          <div class="row wrap" style="gap:8px">
+            <button class="btn ghost sm" type="button" id="histSyncBrokerBtn">Sync Broker History</button>
+            <button class="btn sm" type="button" id="histExportCsvBtn">Export CSV</button>
+          </div>
+        </div>
+        <div class="grid c4" style="margin-bottom:14px">
+          <div class="kpi"><div class="label">Closed Trades</div><div class="value" id="thCount">0</div><div class="delta">Verified executions</div></div>
+          <div class="kpi"><div class="label">Win Rate</div><div class="value" id="thWinRate">—</div><div class="delta">Profitable closes</div></div>
+          <div class="kpi"><div class="label">Profit Factor</div><div class="value" id="thProfitFactor">—</div><div class="delta">Gross wins ÷ gross losses</div></div>
+          <div class="kpi"><div class="label">Net Realized P&amp;L</div><div class="value" id="thNetPl">$0.00</div><div class="delta">After fees &amp; swaps</div></div>
+        </div>
+        <div class="card flush">
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead><tr>
+                <th>Time (UTC)</th><th>Source / Ticket</th><th>Symbol</th><th>Side</th><th class="right">Size</th>
+                <th class="right">Price</th><th class="right">Gross</th><th class="right">Fees/Swap</th><th class="right">Net P&amp;L</th>
+              </tr></thead>
+              <tbody id="unifiedHistBody"><tr><td colspan="9" class="faint center">No closed trade history recorded yet.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= AI MARKET INTELLIGENCE (Section 12) ======= -->
+      <section class="view" id="view-intelligence">
+        <div class="view-head">
+          <div>
+            <h1>AI Market Intelligence</h1>
+            <p class="sub">Structured institutional brief explicitly separating Observed Market Facts from AI Technical &amp; Macro Interpretation.</p>
+          </div>
+          <div class="row wrap" style="gap:8px">
+            <select class="input sm mono" id="intelSymSelect" style="width:auto;min-width:155px"></select>
+            <button class="btn primary sm" type="button" id="intelRefreshBtn">Generate Intelligence Brief</button>
+          </div>
+        </div>
+        <div class="grid c2" style="margin-bottom:14px">
+          <div class="card">
+            <div class="card-head"><h3>Observed Market Facts (Zero Fabrication)</h3><span class="badge gray" id="intelFreshBadge">—</span></div>
+            <ul class="az-risks" id="intelFactsList"><li>Select an instrument and click Generate Intelligence Brief.</li></ul>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>AI Technical &amp; Macro Synthesis</h3><span class="badge gold" id="intelVerdictBadge">WAIT</span></div>
+            <p class="small muted" id="intelInterpretation" style="line-height:1.6">Awaiting multi-timeframe candle evaluation.</p>
+            <div class="tiny faint" id="intelLimitations" style="margin-top:10px"></div>
+          </div>
+        </div>
+        <div class="grid c2">
+          <div class="card">
+            <h3 style="font-size:14px;margin-bottom:8px;color:var(--green)">Bullish Continuation Scenario</h3>
+            <p class="small muted" id="intelBullish">—</p>
+          </div>
+          <div class="card">
+            <h3 style="font-size:14px;margin-bottom:8px;color:var(--red)">Bearish Breakdown Scenario &amp; Invalidation</h3>
+            <p class="small muted" id="intelBearish">—</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= BACKTESTING ENGINE (Section 18) ======= -->
+      <section class="view" id="view-backtest">
+        <div class="view-head">
+          <div>
+            <h1>Strategy Backtesting Lab</h1>
+            <p class="sub">Walk-forward replay on real historical candles incorporating spread, slippage &amp; commission assumptions. Past performance never guarantees future results.</p>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom:14px">
+          <div class="row wrap" style="gap:10px;align-items:flex-end">
+            <label class="field" style="margin:0;min-width:150px"><span>Instrument</span><select class="input sm mono" id="btSymSelect"></select></label>
+            <label class="field" style="margin:0;min-width:120px"><span>Timeframe</span>
+              <select class="input sm mono" id="btTfSelect"><option value="300" selected>5m</option><option value="900">15m</option><option value="3600">1h</option></select>
+            </label>
+            <label class="field" style="margin:0;width:110px"><span>Min Score</span><input class="input sm mono" id="btMinScore" type="number" min="55" max="90" value="65"></label>
+            <label class="field" style="margin:0;width:120px"><span>Risk / Trade ($)</span><input class="input sm mono" id="btRiskUsd" type="number" min="1" value="10"></label>
+            <label class="field" style="margin:0;width:120px"><span>Cost / Trade ($)</span><input class="input sm mono" id="btCostUsd" type="number" min="0" step="0.05" value="0.25"></label>
+            <button class="btn primary sm" type="button" id="btRunBtn">Run Historical Backtest</button>
+          </div>
+        </div>
+        <div class="grid c4" style="margin-bottom:14px">
+          <div class="kpi"><div class="label">Sample Trades</div><div class="value" id="btTrades">—</div><div class="delta" id="btBarsMeta">Historical candles</div></div>
+          <div class="kpi"><div class="label">Win Rate</div><div class="value" id="btWinRate">—</div><div class="delta">Net of modelled costs</div></div>
+          <div class="kpi"><div class="label">Profit Factor</div><div class="value" id="btPf">—</div><div class="delta" id="btExpectancy">Expectancy: —</div></div>
+          <div class="kpi"><div class="label">Max Drawdown</div><div class="value down" id="btMaxDd">—</div><div class="delta" id="btNetPl">Net P&amp;L: —</div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Simulated Equity Curve (Historical Replay Only)</h3><span class="tiny faint" id="btDisclaimer">Hypothetical walk-forward test on completed candles; live fills vary with liquidity.</span></div>
+          <canvas id="btEquityCanvas" height="200" style="width:100%;height:200px;display:block;background:var(--surface-2);border-radius:8px"></canvas>
+        </div>
+      </section>
+
+      <!-- ======= SECURITY & AUDIT LOGS (Section 20) ======= -->
+      <section class="view" id="view-security">
+        <div class="view-head">
+          <div>
+            <h1>Security, Credential Isolation &amp; Audit Logs</h1>
+            <p class="sub">Zero secrets in frontend bundles · strict DEMO/REAL account locks · immutable record of automation toggles, supervisor verdicts, orders &amp; emergency stops.</p>
+          </div>
+          <button class="btn-stop-all" type="button" id="secStopAllBtn">EMERGENCY STOP ALL</button>
+        </div>
+        <div class="grid c3" style="margin-bottom:14px">
+          <div class="card"><div class="tiny faint">CREDENTIAL ISOLATION</div><b style="display:block;margin-top:6px">Server / Local Bridge Only</b><p class="tiny muted" style="margin-top:4px">Deriv PATs stay server-side; Exness MT5 credentials stay in your local PC bridge session and are never exposed in logs or bundles.</p></div>
+          <div class="card"><div class="tiny faint">ACCOUNT MODE GUARD</div><b style="display:block;margin-top:6px" id="secAccountGuardState">Strict DEMO / REAL Lock Active</b><p class="tiny muted" style="margin-top:4px">Silent account switching and secret lot inflation are blocked across both manual and Sniper orders.</p></div>
+          <div class="card"><div class="tiny faint">AUTOMATION AUDIT</div><b style="display:block;margin-top:6px" id="secSniperAuthSummary">Sniper Disarmed</b><p class="tiny muted" style="margin-top:4px">Every Sniper enable/disable, supervisor rejection, order dispatch &amp; profit-target closure is timestamped below.</p></div>
+        </div>
+        <div class="card flush">
+          <div class="card-head" style="padding:14px 18px 0"><h3>Execution &amp; Security Audit Trail</h3><button class="btn ghost sm" type="button" id="secExportAuditBtn">Export Audit JSON</button></div>
+          <div class="tbl-wrap" style="margin-top:10px">
+            <table class="tbl">
+              <thead><tr><th>Timestamp (UTC)</th><th>Actor</th><th>Category</th><th>Action</th><th>Details</th></tr></thead>
+              <tbody id="securityAuditBody"><tr><td colspan="5" class="faint center">Session initialized — audit trail active.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <section class="view" id="view-settings">
         <div class="view-head">
-          <div><h1>Settings</h1><p class="sub">Appearance, trading defaults, security and data.</p></div>
+          <div><h1>Settings</h1><p class="sub">Connections, risk defaults, Sniper rules, notifications, appearance &amp; security — responsive with zero horizontal scrolling.</p></div>
         </div>
+        <nav class="settings-subnav" id="settingsSubnav" aria-label="Settings categories">
+          <button type="button" class="chip active" data-set-jump="settingsConnections">Broker Connections</button>
+          <button type="button" class="chip" data-set-jump="settingsBrandCard">Appearance &amp; Brand</button>
+          <button type="button" class="chip" data-set-jump="settingsTradingCard">Risk &amp; Order Defaults</button>
+          <button type="button" class="chip" data-set-jump="autoTradeCard">Sniper &amp; Profit Target</button>
+          <button type="button" class="chip" data-set-jump="settingsNotifCard">Notifications</button>
+          <button type="button" class="chip" data-set-jump="buildDiagnostics">Build &amp; Diagnostics</button>
+        </nav>
         <div class="split rev">
           <div class="grid" style="gap:16px">
             <section class="card" id="settingsConnections" aria-labelledby="settingsConnectionsTitle">
@@ -1967,20 +2522,20 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               <div class="hint" id="connectionDetails" aria-live="polite">Waiting for feed and broker status.</div>
               <div id="atHealth" style="margin-top:8px"></div>
             </section>
-            <div class="card">
+            <div class="card" id="settingsBrandCard">
               <div class="card-head"><h3>Brand &amp; logo</h3></div>
               <div class="set-row">
                 <div><div class="t">Workspace name</div><div class="d">Shown in the sidebar and browser tab.</div></div>
-                <input class="input" id="brandNameInput" maxlength="24" style="width:180px">
+                <input class="input" id="brandNameInput" maxlength="24" style="width:min(180px,100%)">
               </div>
               <div class="set-row">
                 <div><div class="t">Tagline</div><div class="d">Small text under the name.</div></div>
-                <input class="input" id="brandTagInput" maxlength="24" style="width:180px">
+                <input class="input" id="brandTagInput" maxlength="24" style="width:min(180px,100%)">
               </div>
               <div class="set-row">
                 <div><div class="t">Logo</div><div class="d">Any picture on this computer (square works best, max ~150&nbsp;KB). Stored on this device only.</div></div>
-                <div class="row">
-                  <input type="file" id="brandLogo" accept="image/*" class="input" style="width:210px">
+                <div class="row wrap">
+                  <input type="file" id="brandLogo" accept="image/*" class="input" style="width:min(210px,100%)">
                   <button class="btn ghost sm" id="brandReset" type="button">Reset</button>
                 </div>
               </div>
@@ -2000,7 +2555,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
                 <label class="switch"><input type="checkbox" id="compactChk"><i></i></label>
               </div>
             </div>
-            <div class="card">
+            <div class="card" id="settingsTradingCard">
               <div class="card-head"><h3>Trading defaults</h3></div>
               <div class="set-row">
                 <div><div class="t">Default order size</div><div class="d">Pre-filled amount in the order ticket.</div></div>
@@ -2170,7 +2725,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               </label>
               <label class="field" style="flex-direction:row;align-items:center;gap:8px;margin-top:8px">
                 <input type="checkbox" id="atSynth" style="width:auto">
-                <span style="font-weight:400">Include synthetics in auto-trade (VOL/BOOM/CRASH are random-walks \u2014 signals have no edge there; default OFF)</span>
+                <span style="font-weight:400">Include synthetics in auto-trade (VOL/BOOM/CRASH are random-walks &mdash; signals have no edge there; default OFF)</span>
               </label>
               <label class="field"><span>ChatGPT API key (OpenAI)</span>
                 <input class="input" id="aiOpenaiKey" type="password" placeholder="sk-…">
@@ -2201,15 +2756,15 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               </div>
               <p class="hint">Without keys the workspace still runs deterministic technical analysis on live candles (labelled <b>technical</b>, never as AI). Shared budget: <b>$5/day</b> across all engines.</p>
             </div>
-            <div class="card">
+            <div class="card" id="settingsNotifCard">
               <div class="card-head"><h3>Notifications</h3></div>
               <div class="set-row">
-                <div><div class="t">Browser notifications</div><div class="d">Upcoming high/medium scheduled releases (while AURUM is open), affected markets, news briefs, and trade/SL/TP alerts. News does not predict BUY or SELL.</div></div>
+                <div><div class="t">Browser notifications</div><div class="d">Upcoming high/medium scheduled releases (while Shelricktech is open), affected markets, news briefs, and trade/SL/TP alerts. News does not predict BUY or SELL.</div></div>
                 <button class="btn sm" id="notifBtn">Enable</button>
               </div>
               <div class="set-row">
                 <div><div class="t">WhatsApp signal number</div><div class="d">Share buttons open WhatsApp with this number. The built-in Shelricktech number is 254721752212; to use another one on this device, type it here (international format, digits only). Auto-send requires Meta's paid Cloud API.</div></div>
-                <input class="input mono" id="waNumber" inputmode="numeric" placeholder="254721752212" style="width:180px">
+                <input class="input mono" id="waNumber" inputmode="numeric" placeholder="254721752212" style="width:min(180px,100%)">
               </div>
               <div class="set-row">
                 <div><div class="t">Auto-send to WhatsApp</div><div class="d" id="waAutoStatus">Checking server…</div></div>
@@ -2234,7 +2789,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
             <div class="card">
               <div class="card-head"><h3>About</h3></div>
               <ul class="info-list">
-                <li><span class="k">Workspace</span><span class="v">AURUM 2.0 · live</span></li>
+                <li><span class="k">Workspace</span><span class="v">SHELRICKTECH · Institutional Edition</span></li>
                 <li><span class="k">Mode</span><span class="v" id="aboutMode">Full workspace</span></li>
                 <li><span class="k">Trading &amp; accounts</span><span class="v" id="aboutTrading">Through the broker you connect in this app</span></li>
                 <li><span class="k">Signal analysis</span><span class="v" id="aboutAnalysis">Exness MT5 first · labelled Deriv / Yahoo fallback</span></li>
