@@ -9,6 +9,8 @@
     "dev:local": "node scripts/dev-local.mjs",
     "sync:local": "node scripts/pc-page.mjs",
     "verify:local": "node scripts/pc-page.mjs --check",
+    "update:local": "node scripts/local-updater.mjs",
+    "update:local:dry-run": "node scripts/local-updater.mjs --dry-run",
     "api": "node server/server.js",
     "build": "vite build && node scripts/postbuild.mjs",
     "website": "node server/websiteserver.js",

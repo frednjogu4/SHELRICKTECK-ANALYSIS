@@ -197,6 +197,66 @@ class PcPageTests(unittest.TestCase):
         info = _json.loads(self.get("/build.json")[2])
         self.assertEqual(meta.group(1), info["id"])
 
+    def test_mismatched_app_html_and_build_json_returns_503(self):
+        import json as _json
+        orig_app = self.bridge._APP_FILE
+        with tempfile.TemporaryDirectory() as folder:
+            bad_page = Path(folder) / "app.html"
+            bad_page.write_text(
+                '<!doctype html><head><meta name="aurum-build" content="0000000000000"></head><body>mismatch</body>',
+                encoding="utf-8",
+            )
+            self.bridge._APP_FILE = str(bad_page)
+            try:
+                status_bj, _hdr, body_bj = self.get("/build.json")
+                self.assertEqual(status_bj, 503)
+                parsed = _json.loads(body_bj)
+                self.assertEqual(parsed["error"], "mismatched_local_build")
+                self.assertEqual(parsed["consistent"], False)
+
+                status_app, _hdr2, body_app = self.get("/app")
+                self.assertEqual(status_app, 503)
+                self.assertIn(b"Local dashboard files are out of sync", body_app)
+            finally:
+                self.bridge._APP_FILE = orig_app
+
+    def test_update_check_reports_upstream_release_and_offline_fallback(self):
+        import json as _json
+        orig_fetcher = self.bridge._UPSTREAM_MANIFEST_FETCHER
+        try:
+            current_id = _json.loads(self.get("/build.json")[2])["id"]
+
+            self.bridge._UPSTREAM_MANIFEST_FETCHER = lambda _url, _t: {
+                "id": "fffffffffffff",
+                "version": "1.0.0",
+                "git": "999999999999",
+                "builtAt": "2026-11-23T12:00:00Z",
+            }
+            st1, hdr1, b1 = self.get("/update-check?force=1")
+            self.assertEqual(st1, 200)
+            self.assertIn("no-store", hdr1["cache-control"])
+            j1 = _json.loads(b1)
+            self.assertEqual(j1["ok"], True)
+            self.assertEqual(j1["installedId"], current_id)
+            self.assertEqual(j1["upstreamId"], "fffffffffffff")
+            self.assertEqual(j1["updateAvailable"], True)
+
+            self.bridge._UPSTREAM_MANIFEST_FETCHER = lambda _url, _t: {"id": current_id, "version": "1.0.0"}
+            j2 = _json.loads(self.get("/update-check?force=1")[2])
+            self.assertEqual(j2["ok"], True)
+            self.assertEqual(j2["updateAvailable"], False)
+
+            def _offline(_url, _t):
+                raise OSError("network unreachable")
+
+            self.bridge._UPSTREAM_MANIFEST_FETCHER = _offline
+            j3 = _json.loads(self.get("/update-check?force=1")[2])
+            self.assertEqual(j3["ok"], False)
+            self.assertEqual(j3["offline"], True)
+            self.assertEqual(j3["updateAvailable"], False)
+        finally:
+            self.bridge._UPSTREAM_MANIFEST_FETCHER = orig_fetcher
+
 
 if __name__ == "__main__":
     unittest.main()

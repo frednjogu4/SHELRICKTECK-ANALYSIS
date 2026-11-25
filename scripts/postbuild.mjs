@@ -20,7 +20,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyDist } from './verify-dist.mjs';
 import { PC_PAGE_COPIES, refreshPcPage } from './pc-page.mjs';
-import { buildRevision, injectBuildMeta, injectSwVersion } from './build-revision.mjs';
+import { resolveBuildManifest, injectBuildMeta, injectSwVersion } from './build-revision.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
@@ -37,13 +37,23 @@ function writeIfChanged(file, data) {
   return true;
 }
 
-/* 1. Revision: hash the un-tagged page, then inject everywhere. */
-const rev = buildRevision(dist, root);
+/* 1. Revision: hash the un-tagged page, resolve git/builtAt, then inject everywhere.
+ *    Vite empties dist/ before postbuild runs, so fall back to bridge/pwa/build.json
+ *    when dist/build.json is absent; that keeps rebuilds of identical UI content
+ *    100% byte-identical across commits and CI merge checkouts. */
+let prevManifest = null;
+for (const candidate of [join(dist, 'build.json'), join(root, 'bridge', 'pwa', 'build.json')]) {
+  try {
+    prevManifest = JSON.parse(readFileSync(candidate, 'utf8'));
+    if (prevManifest && prevManifest.id) break;
+  } catch { /* try next */ }
+}
+const manifest = resolveBuildManifest(dist, root, prevManifest);
 const stamped = [];
-if (writeIfChanged(join(dist, 'index.html'), injectBuildMeta(readFileSync(join(dist, 'index.html'), 'utf8'), rev))) stamped.push('index.html');
-if (writeIfChanged(join(dist, 'sw.js'), injectSwVersion(readFileSync(join(dist, 'sw.js'), 'utf8'), rev.id))) stamped.push('sw.js');
-if (writeIfChanged(join(dist, 'build.json'), JSON.stringify({ id: rev.id, version: rev.version }, null, 2) + '\n')) stamped.push('build.json');
-console.log(`postbuild: build revision ${rev.id} (${rev.version || 'no version'})${stamped.length ? ' stamped ' + stamped.join(', ') : ' already stamped'}`);
+if (writeIfChanged(join(dist, 'index.html'), injectBuildMeta(readFileSync(join(dist, 'index.html'), 'utf8'), manifest))) stamped.push('index.html');
+if (writeIfChanged(join(dist, 'sw.js'), injectSwVersion(readFileSync(join(dist, 'sw.js'), 'utf8'), manifest.id))) stamped.push('sw.js');
+if (writeIfChanged(join(dist, 'build.json'), JSON.stringify(manifest, null, 2) + '\n')) stamped.push('build.json');
+console.log(`postbuild: build revision ${manifest.id} (${manifest.version || 'no version'}${manifest.git ? ', git ' + manifest.git : ''})${stamped.length ? ' stamped ' + stamped.join(', ') : ' already stamped'}`);
 
 writeIfChanged(join(dist, 'AURUM_Workspace.html'), readFileSync(join(dist, 'index.html')));
 
