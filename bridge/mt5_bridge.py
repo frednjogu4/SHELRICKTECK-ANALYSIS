@@ -50,19 +50,24 @@ from localapiauth import api_proxy_authorized
 HOST = os.environ.get("AURUM_BRIDGE_HOST", "0.0.0.0")
 PORT = 8787
 MAGIC = 234000  # our orders' magic number
-# Exness real/demo manual-only execution. Automation and app-side closes remain
-# blocked. The local bridge independently verifies the selected account mode,
-# quote, SL/TP, volume, equity, daily loss and open positions before each send.
+# Exness real/demo manual-only execution (1-click direct or preview-confirmed)
+# and manual position closing. Automated Sniper/bot entries remain blocked.
+# The local bridge independently verifies the selected account mode, quote,
+# volume, equity, margin, daily loss and open positions before each send.
 MT5_MANUAL_ORDER_EXECUTION_ENABLED = True
+MT5_MANUAL_CLOSE_ENABLED = True
 MT5_MAX_OPEN_POSITIONS = 1
+MT5_DIRECT_MAX_OPEN_POSITIONS = int(os.environ.get("AURUM_MT5_DIRECT_MAX_OPEN_POSITIONS", "10"))
 MT5_MAX_RISK_PCT = 0.5
 MT5_MAX_DAILY_LOSS_PCT = 2.0
+MT5_DIRECT_MAX_DAILY_LOSS_PCT = float(os.environ.get("AURUM_MT5_DIRECT_MAX_DAILY_LOSS_PCT", "20.0"))
 MT5_MIN_REWARD_RISK = 1.2
 MT5_MAX_TICK_AGE_SECONDS = 60
 _ORDER_LOCK = threading.Lock()  # serialize fresh position-check + order_send across WS/HTTP clients
 _MT5_PREVIEW_LOCK = threading.Lock()
 _MT5_PREVIEWS = {}  # short-lived server-side order preview, keyed by an unguessable id
 _MT5_ORDER_REPLIES = {}  # same intent id never sends twice during this bridge process
+_MT5_CLOSE_REPLIES = {}  # same close intent id never sends twice during this bridge process
 _MT5_ORDER_UNCERTAIN = False  # ambiguous/partial MT5 outcome halts further app orders until bridge restart
 _LOGIN_LOCK = threading.RLock()  # one account/server identity shared by PC + phone clients
 _LOCKED_LOGIN = None  # in-memory numeric login; never logged or returned
@@ -786,8 +791,129 @@ def handle_order_preview(msg):
             "manual_only": True}
 
 
+def _mt5_direct_order_plan(msg):
+    """Verify live 1-click manual Exness order facts (optional SL/TP, verified mode, margin & daily loss guard)."""
+    environment = str(msg.get("environment") or "").strip().lower()
+    if environment not in ("demo", "real"):
+        return None, "Select DEMO or REAL explicitly; no order was sent."
+    env_label = environment.upper()
+    account, problem = _mt5_manual_account_gate(environment)
+    if problem:
+        return None, problem
+    requested_symbol = str(msg.get("symbol") or "").strip()
+    symbol = resolve_symbol(requested_symbol)
+    if not symbol:
+        return None, _symbol_match_error(requested_symbol)
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        return None, "Symbol specifications are unavailable; no order was sent."
+    side = str(msg.get("side") or "").upper()
+    if side not in ("BUY", "SELL"):
+        return None, "Side must be BUY or SELL."
+    try:
+        trade_mode = int(getattr(info, "trade_mode", 0))
+    except (TypeError, ValueError, OverflowError):
+        trade_mode = 0
+    if not (trade_mode == 4 or (trade_mode == 1 and side == "BUY") or (trade_mode == 2 and side == "SELL")):
+        return None, "This symbol/side is not verified as tradable by the broker."
+    try:
+        requested_usd = float(msg.get("volume"))
+        if not math.isfinite(requested_usd) or requested_usd <= 0:
+            raise ValueError
+        raw_sl = msg.get("sl")
+        raw_tp = msg.get("tp")
+        sl = float(raw_sl) if raw_sl not in (None, "", 0, "0") else 0.0
+        tp = float(raw_tp) if raw_tp not in (None, "", 0, "0") else 0.0
+        if not math.isfinite(sl) or sl < 0 or not math.isfinite(tp) or tp < 0:
+            raise ValueError
+        equity = float(account.equity)
+        free_margin = float(account.margin_free)
+        contract_size = float(info.trade_contract_size)
+        price_point = float(info.point)
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise ValueError
+        bid, ask = float(tick.bid), float(tick.ask)
+        tick_time = int(tick.time)
+        price = ask if side == "BUY" else bid
+        if not all(math.isfinite(x) and x > 0 for x in (equity, free_margin, contract_size, price_point, bid, ask, price)):
+            raise ValueError
+        age = time.time() - tick_time
+        if age < -5 or age > MT5_MAX_TICK_AGE_SECONDS:
+            return None, "No fresh Exness MT5 tick (maximum age 60 seconds); no order was sent."
+        stops_level = int(getattr(info, "trade_stops_level", 0) or 0) * price_point
+        if sl > 0:
+            if side == "BUY" and sl >= price:
+                return None, "For a BUY, stop-loss must be below the live ask."
+            if side == "SELL" and sl <= price:
+                return None, "For a SELL, stop-loss must be above the live bid."
+            if stops_level and abs(price - sl) < stops_level:
+                return None, "Stop-loss is closer than the broker's minimum stop distance."
+        if tp > 0:
+            if side == "BUY" and tp <= price:
+                return None, "For a BUY, take-profit must be above the live ask."
+            if side == "SELL" and tp >= price:
+                return None, "For a SELL, take-profit must be below the live bid."
+            if stops_level and abs(tp - price) < stops_level:
+                return None, "Take-profit is closer than the broker's minimum stop distance."
+        lots = usd_to_lots(info, price, requested_usd)
+        if lots <= 0:
+            raise ValueError
+        exposure = lots * contract_size * price
+        notional_cap = max(requested_usd * 2.0, equity * 200)
+        floor_exposure = float(info.volume_min) * contract_size * price
+        if exposure > notional_cap and exposure > floor_exposure * (1.0 + 1e-9):
+            return None, (
+                f"Requested exposure (${exposure:,.2f} notional) exceeds this account's safety cap (${notional_cap:,.2f}). No order was sent."
+            )
+        order_type = mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL
+        margin_result = mt5.order_calc_margin(order_type, symbol, lots, price)
+        if margin_result is None:
+            raise ValueError
+        margin = float(margin_result)
+        if not math.isfinite(margin) or margin < 0:
+            raise ValueError
+        if margin > free_margin * 0.95:
+            return None, "Required margin would use more than 95% of free margin; no order was sent."
+        buffered_risk = None
+        risk_pct = None
+        rr = None
+        if sl > 0:
+            loss_result = mt5.order_calc_profit(order_type, symbol, lots, price, sl)
+            if loss_result is not None and math.isfinite(float(loss_result)) and float(loss_result) < 0:
+                buffered_risk = abs(float(loss_result)) * 1.25
+                risk_pct = buffered_risk / equity * 100
+                if tp > 0:
+                    reward_result = mt5.order_calc_profit(order_type, symbol, lots, price, tp)
+                    if reward_result is not None and math.isfinite(float(reward_result)) and float(reward_result) > 0:
+                        rr = float(reward_result) / abs(float(loss_result))
+    except (TypeError, ValueError, OverflowError, AttributeError, ZeroDivisionError):
+        return None, "Live quote, account equity, or broker margin/sizing could not be verified; no order was sent."
+
+    positions = mt5.positions_get()
+    open_gate = validate_open_positions(positions, MT5_DIRECT_MAX_OPEN_POSITIONS)
+    if not open_gate["ok"]:
+        return None, open_gate["reason"]
+    daily_net = _mt5_daily_net()
+    if daily_net is None:
+        return None, "Today's broker-reported account P/L could not be verified; no order was sent."
+    daily_limit = equity * MT5_DIRECT_MAX_DAILY_LOSS_PCT / 100
+    if daily_net <= -daily_limit:
+        return None, f"{env_label} daily-loss limit reached ({MT5_DIRECT_MAX_DAILY_LOSS_PCT:.1f}% of equity); no order was sent."
+    return {
+        "symbol": symbol, "side": side, "requested_usd": requested_usd,
+        "lots": lots, "exposure": exposure, "price": price,
+        "sl": norm_price(info, sl) if sl > 0 else 0.0,
+        "tp": norm_price(info, tp) if tp > 0 else 0.0,
+        "risk_amount": buffered_risk, "risk_pct": risk_pct, "rr": rr,
+        "margin": margin, "currency": str(account.currency),
+        "equity": equity, "point": price_point, "trade_mode": trade_mode,
+        "environment": environment, "demo": environment == "demo",
+    }, None
+
+
 def handle_order(msg):
-    """One explicitly confirmed manual Exness order; no app automation or close path."""
+    """One explicitly confirmed manual Exness order (1-click direct or preview-confirmed); no app automation."""
     global _MT5_ORDER_UNCERTAIN
     environment = str(msg.get("environment") or "").strip().lower()
     env_label = environment.upper() if environment in ("demo", "real") else "MT5"
@@ -795,30 +921,38 @@ def handle_order(msg):
         return {**err("Exness manual order execution is disabled; no order was sent.")}
     if msg.get("confirmed") is not True:
         return {**err("Explicit per-order confirmation is required; no order was sent.")}
+    is_direct = msg.get("direct") is True
     preview_id = str(msg.get("preview_id") or "")
     intent_id = str(msg.get("intent_id") or "")
-    if environment not in ("demo", "real") or not preview_id or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", intent_id):
+    if environment not in ("demo", "real") or (not is_direct and not preview_id) or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", intent_id):
         return {**err("A current mode-matched preview, explicit account mode, and unique intent id are required; no order was sent.")}
     with _ORDER_LOCK:
         if intent_id in _MT5_ORDER_REPLIES:
             return _MT5_ORDER_REPLIES[intent_id]
         if _MT5_ORDER_UNCERTAIN:
             return {**err("A previous MT5 order outcome is uncertain. Inspect MT5 positions/history; no further app order will be sent until the bridge is restarted after the outcome is understood.")}
-        with _MT5_PREVIEW_LOCK:
-            preview = _MT5_PREVIEWS.pop(preview_id, None)
-        if not preview or time.time() - preview["created"] > 30:
-            return {**err("Order preview expired; review a fresh quote and confirm again. No order was sent.")}
-        request_msg = {key: msg.get(key) for key in ("symbol", "side", "volume", "sl", "tp", "environment")}
-        plan, problem = _mt5_order_plan(request_msg)
-        if problem:
-            return {**err(problem)}
-        old = preview["plan"]
-        if (plan["environment"] != old["environment"] or plan["symbol"] != old["symbol"] or plan["side"] != old["side"]
-                or plan["lots"] != old["lots"] or plan["sl"] != old["sl"] or plan["tp"] != old["tp"]
-                or plan["requested_usd"] != old["requested_usd"]
-                or abs(plan["price"] - old["price"]) > max(plan["point"] * 20, old["point"] * 20)
-                or abs(plan["risk_amount"] - old["risk_amount"]) > max(old["risk_amount"] * 0.05, 0.01)):
-            return {**err("Order mode, size, stop/target, quote, or risk changed since preview; review a fresh quote and confirm again. No order was sent.")}
+        if is_direct:
+            plan, problem = _mt5_direct_order_plan(msg)
+            if problem:
+                return {**err(problem)}
+            pos_cap = MT5_DIRECT_MAX_OPEN_POSITIONS
+        else:
+            with _MT5_PREVIEW_LOCK:
+                preview = _MT5_PREVIEWS.pop(preview_id, None)
+            if not preview or time.time() - preview["created"] > 30:
+                return {**err("Order preview expired; review a fresh quote and confirm again. No order was sent.")}
+            request_msg = {key: msg.get(key) for key in ("symbol", "side", "volume", "sl", "tp", "environment")}
+            plan, problem = _mt5_order_plan(request_msg)
+            if problem:
+                return {**err(problem)}
+            old = preview["plan"]
+            if (plan["environment"] != old["environment"] or plan["symbol"] != old["symbol"] or plan["side"] != old["side"]
+                    or plan["lots"] != old["lots"] or plan["sl"] != old["sl"] or plan["tp"] != old["tp"]
+                    or plan["requested_usd"] != old["requested_usd"]
+                    or abs(plan["price"] - old["price"]) > max(plan["point"] * 20, old["point"] * 20)
+                    or abs(plan["risk_amount"] - old["risk_amount"]) > max(old["risk_amount"] * 0.05, 0.01)):
+                return {**err("Order mode, size, stop/target, quote, or risk changed since preview; review a fresh quote and confirm again. No order was sent.")}
+            pos_cap = MT5_MAX_OPEN_POSITIONS
         try:
             account, account_problem = _mt5_manual_account_gate(plan["environment"])
             if account_problem:
@@ -828,23 +962,29 @@ def handle_order(msg):
             positions = mt5.positions_get()
             if info is None or tick is None or positions is None:
                 raise RuntimeError("fresh broker state unavailable")
-            open_gate = validate_open_positions(positions, MT5_MAX_OPEN_POSITIONS)
+            open_gate = validate_open_positions(positions, pos_cap)
             if not open_gate["ok"]:
                 return {**err(open_gate["reason"])}
             send_price = float(tick.ask if plan["side"] == "BUY" else tick.bid)
             if not math.isfinite(send_price) or send_price <= 0 or abs(send_price - plan["price"]) > float(info.point) * 20:
                 return {**err(f"{env_label} quote moved beyond the confirmation tolerance; preview and confirm again. No order was sent.")}
             order_type = mt5.ORDER_TYPE_BUY if plan["side"] == "BUY" else mt5.ORDER_TYPE_SELL
-            actual_loss = mt5.order_calc_profit(order_type, plan["symbol"], plan["lots"], send_price, plan["sl"])
             actual_margin = mt5.order_calc_margin(order_type, plan["symbol"], plan["lots"], send_price)
-            if actual_loss is None or actual_margin is None:
-                raise RuntimeError("fresh MT5 risk calculation unavailable")
-            actual_risk = abs(float(actual_loss)) * 1.25
-            if (not math.isfinite(actual_risk) or actual_loss >= 0
-                    or actual_risk > float(account.equity) * MT5_MAX_RISK_PCT / 100
-                    or not math.isfinite(float(actual_margin))
-                    or float(actual_margin) > float(account.margin_free) * 0.8):
-                return {**err(f"Fresh {env_label} stop risk or margin exceeds the confirmed limit; no order was sent.")}
+            if actual_margin is None or not math.isfinite(float(actual_margin)):
+                raise RuntimeError("fresh MT5 margin calculation unavailable")
+            if is_direct:
+                if float(actual_margin) > float(account.margin_free) * 0.95:
+                    return {**err(f"Fresh {env_label} margin exceeds the 95% free-margin limit; no order was sent.")}
+            else:
+                actual_loss = mt5.order_calc_profit(order_type, plan["symbol"], plan["lots"], send_price, plan["sl"])
+                if actual_loss is None:
+                    raise RuntimeError("fresh MT5 risk calculation unavailable")
+                actual_risk = abs(float(actual_loss)) * 1.25
+                if (not math.isfinite(actual_risk) or actual_loss >= 0
+                        or actual_risk > float(account.equity) * MT5_MAX_RISK_PCT / 100
+                        or float(actual_margin) > float(account.margin_free) * 0.8):
+                    return {**err(f"Fresh {env_label} stop risk or margin exceeds the confirmed limit; no order was sent.")}
+            comment_prefix = "AURUM-1C-" if is_direct else "AURUM-"
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": plan["symbol"],
@@ -853,7 +993,7 @@ def handle_order(msg):
                 "price": send_price,
                 "sl": plan["sl"], "tp": plan["tp"],
                 "deviation": 20, "magic": MAGIC,
-                "comment": "AURUM-" + env_label + "-" + intent_id[:10],
+                "comment": comment_prefix + env_label + "-" + intent_id[:8 if is_direct else 10],
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": fillings_for(info)[0],
             }
@@ -879,9 +1019,11 @@ def handle_order(msg):
                      "lots": plan["lots"], "symbol": plan["symbol"], "demo": plan["demo"], "environment": plan["environment"],
                      "currency": plan["currency"], "requested_usd": plan["requested_usd"],
                      "effective_notional": round(plan["exposure"], 2),
-                     "estimated_buffered_risk": round(plan["risk_amount"], 2),
-                     "risk_pct": round(plan["risk_pct"], 4), "rr": round(plan["rr"], 3),
-                     "open_positions_before": open_gate["count"], "max_open_positions": MT5_MAX_OPEN_POSITIONS}
+                     "estimated_buffered_risk": round(plan["risk_amount"], 2) if plan["risk_amount"] is not None else None,
+                     "risk_pct": round(plan["risk_pct"], 4) if plan["risk_pct"] is not None else None,
+                     "rr": round(plan["rr"], 3) if plan["rr"] is not None else None,
+                     "direct": is_direct,
+                     "open_positions_before": open_gate["count"], "max_open_positions": pos_cap}
         else:
             reply = {**err(f"{env_label} order rejected by MT5 (retcode={getattr(result, 'retcode', None)}): {getattr(result, 'comment', '')}. No retry was made.")}
         _MT5_ORDER_REPLIES[intent_id] = reply
@@ -889,8 +1031,96 @@ def handle_order(msg):
             _MT5_ORDER_REPLIES.pop(next(iter(_MT5_ORDER_REPLIES)))
         return reply
 
-def handle_close(_msg):
-    return {**err("App-side Exness position closing is disabled. Manage or close REAL/DEMO positions directly in MetaTrader 5.")}
+def handle_close(msg):
+    """Close one open Exness REAL or DEMO position by ticket with explicit manual confirmation."""
+    global _MT5_ORDER_UNCERTAIN
+    if not MT5_MANUAL_CLOSE_ENABLED:
+        return {**err("App-side Exness position closing is disabled. Manage or close REAL/DEMO positions directly in MetaTrader 5.")}
+    if not isinstance(msg, dict) or msg.get("confirmed") is not True:
+        return {**err("Explicit per-close confirmation is required; no close order was sent.")}
+    environment = str(msg.get("environment") or "").strip().lower()
+    env_label = environment.upper() if environment in ("demo", "real") else "MT5"
+    intent_id = str(msg.get("intent_id") or "")
+    try:
+        ticket = int(msg.get("ticket"))
+    except (TypeError, ValueError, OverflowError):
+        ticket = 0
+    if environment not in ("demo", "real") or ticket <= 0 or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", intent_id):
+        return {**err("Explicit account mode (REAL or DEMO), valid MT5 ticket, and unique intent id are required; no close order was sent.")}
+    with _ORDER_LOCK:
+        if intent_id in _MT5_CLOSE_REPLIES:
+            return _MT5_CLOSE_REPLIES[intent_id]
+        account, account_problem = _mt5_manual_account_gate(environment)
+        if account_problem:
+            return {**err(account_problem)}
+        try:
+            positions = mt5.positions_get()
+        except Exception:
+            positions = None
+        if positions is None:
+            return {**err("MT5 open positions could not be verified; no close order was sent.")}
+        pos = next((p for p in positions if int(getattr(p, "ticket", -1)) == ticket), None)
+        if pos is None:
+            return {**err(f"MT5 position #{ticket} is not open (already closed or settled).")}
+        try:
+            info = mt5.symbol_info(pos.symbol)
+            tick = mt5.symbol_info_tick(pos.symbol)
+            if info is None or tick is None:
+                raise RuntimeError("symbol/tick unavailable")
+            age = time.time() - int(tick.time)
+            if age < -5 or age > MT5_MAX_TICK_AGE_SECONDS:
+                return {**err(f"No fresh Exness MT5 tick for {pos.symbol} (maximum age 60 seconds); no close order was sent.")}
+            is_buy = getattr(pos, "type", None) == getattr(mt5, "POSITION_TYPE_BUY", 0)
+            close_type = mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY
+            close_price = float(tick.bid if is_buy else tick.ask)
+            if not math.isfinite(close_price) or close_price <= 0:
+                raise RuntimeError("invalid close price")
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": pos.symbol,
+                "volume": float(pos.volume),
+                "type": close_type,
+                "position": int(pos.ticket),
+                "price": close_price,
+                "deviation": 20,
+                "magic": MAGIC,
+                "comment": "AURUM-CLOSE-" + env_label + "-" + intent_id[:6],
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": fillings_for(info)[0],
+            }
+            result = mt5.order_send(request)
+        except Exception:
+            log.exception("MT5 close send returned an ambiguous exception")
+            _MT5_ORDER_UNCERTAIN = True
+            reply = {**err(f"{env_label} close outcome for #{ticket} is uncertain. Inspect MT5 positions/history; no automatic retry was made.")}
+            _MT5_CLOSE_REPLIES[intent_id] = reply
+            return reply
+        if result is None:
+            _MT5_ORDER_UNCERTAIN = True
+            reply = {**err(f"{env_label} close outcome for #{ticket} is uncertain (MT5 returned no result). Inspect MT5 positions/history; no automatic retry was made.")}
+        elif result.retcode == getattr(mt5, "TRADE_RETCODE_DONE", -1):
+            log.info("%s close: #%s %s %.2f lots @ %s", env_label, pos.ticket, pos.symbol, float(pos.volume), getattr(result, "price", close_price))
+            reply = {
+                "type": "closed",
+                "ticket": int(pos.ticket),
+                "deal": getattr(result, "deal", None),
+                "order": getattr(result, "order", None),
+                "symbol": pos.symbol,
+                "side": "BUY" if is_buy else "SELL",
+                "volume": float(pos.volume),
+                "entry": float(getattr(pos, "price_open", 0.0) or 0.0),
+                "price": float(getattr(result, "price", close_price) or close_price),
+                "profit": float(getattr(pos, "profit", 0.0) or 0.0),
+                "currency": str(account.currency),
+                "environment": environment,
+                "demo": environment == "demo",
+            }
+        else:
+            reply = {**err(f"{env_label} close rejected by MT5 (retcode={getattr(result, 'retcode', None)}): {getattr(result, 'comment', '')}. No retry was made.")}
+        _MT5_CLOSE_REPLIES[intent_id] = reply
+        if len(_MT5_CLOSE_REPLIES) > 256:
+            _MT5_CLOSE_REPLIES.pop(next(iter(_MT5_CLOSE_REPLIES)))
+        return reply
 
 
 def handle_positions(_msg):
@@ -1324,7 +1554,7 @@ def _up_txt():
     lines.append("(not the app.html file, not the installed https app), click any 'Allow local network'")
     lines.append("bubble, and pause VPN/proxy/antivirus web-shield while testing.")
     return "\n".join(lines)
-UPSTREAM = os.environ.get("AURUM_UPSTREAM", "https://aurum-staging.up.railway.app")
+UPSTREAM = os.environ.get("AURUM_UPSTREAM", "http://127.0.0.1:4100")
 _BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
 _APP_FILE = os.path.join(_BRIDGE_DIR, "app.html")
 _PWA_FILES = {
@@ -1347,7 +1577,15 @@ def _opener():
         _OPENER = u.build_opener(u.ProxyHandler({}))
     return _OPENER
 
-def _proxy_api(method, path, body, ctype):
+_PROXY_FORWARD_HEADERS = (
+    "X-Deriv-Pat",
+    "X-Aurum-User",
+    "X-Aurum-Diag-Key",
+    "X-Aurum-Session",
+    "Authorization",
+)
+
+def _proxy_api(method, path, body, ctype, fwd_headers=None):
     """Forward /api/* to the AURUM server (fixed upstream, direct, sync)."""
     import time
     import urllib.error as ue
@@ -1357,6 +1595,11 @@ def _proxy_api(method, path, body, ctype):
         req = u.Request(UPSTREAM.rstrip("/") + path, data=body if body else None, method=method)
         req.add_header("Content-Type", ctype or "application/json")
         req.add_header("Accept", "application/json")
+        if fwd_headers:
+            for hk in _PROXY_FORWARD_HEADERS:
+                hv = fwd_headers.get(hk) or fwd_headers.get(hk.lower())
+                if hv:
+                    req.add_header(hk, str(hv))
         try:
             with _opener().open(req, timeout=15) as r:
                 st, ct, data = r.status, r.headers.get("Content-Type", "application/json"), r.read()
@@ -1550,18 +1793,19 @@ def _http_answer(path, hdrs):
     common = [("Access-Control-Allow-Origin", "*"),
               ("Access-Control-Allow-Private-Network", "true"),
               ("Access-Control-Allow-Headers", "*"),
-              ("Access-Control-Allow-Methods", "GET, POST, OPTIONS")]
-    if path.rstrip("/") == "/bridge" and (hdrs.get("method") or "GET").upper() == "POST":
+              ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")]
+    clean_path = (path or "/").split("?", 1)[0]
+    if clean_path.rstrip("/") == "/bridge" and (hdrs.get("method") or "GET").upper() == "POST":
         reply = _http_bridge_command(hdrs.get("__body"), hdrs.get("__peer"), hdrs.get("__sid") or "")
         return 200, common + [("Content-Type", "application/json; charset=utf-8")], json.dumps(reply).encode()
-    if path.startswith("/api/"):
+    if clean_path.startswith("/api/"):
         if not api_proxy_authorized(_LOCAL_API_TOKEN, hdrs.get("x-aurum-local-api-token"), (hdrs.get("__peer") or ("",))[0]):
             return 403, common + [("Content-Type", "application/json; charset=utf-8")], b'{"error":"local API access requires the bridge token"}'
         method = hdrs.get("method") or "GET"
         body = hdrs.get("__body")
-        st, ct, data = _proxy_api(method, path, body, hdrs.get("content-type"))
+        st, ct, data = _proxy_api(method, path, body, hdrs.get("content-type"), hdrs)
         return st, common + [("Content-Type", ct)], data
-    if path in ("/app", "/app/", "/index.html"):
+    if clean_path in ("/app", "/app/", "/index.html"):
         # 8787 cannot proxy POSTs (websockets drops non-GET HTTP) -> the app
         # must be used from the threaded HTTP server on 8788. Send them there.
         return 301, common + [("Content-Type", "text/plain; charset=utf-8"),
@@ -1634,6 +1878,10 @@ async def _bridge_http(*args):
             st, hdrs, data = _http_answer(path, {"method": getattr(req, "method", "GET"),
                                                  "content-type": req.headers.get("Content-Type"),
                                                  "x-aurum-local-api-token": req.headers.get("X-Aurum-Local-Api-Token") or "",
+                                                 "x-deriv-pat": req.headers.get("X-Deriv-Pat") or "",
+                                                 "x-aurum-user": req.headers.get("X-Aurum-User") or "",
+                                                 "x-aurum-diag-key": req.headers.get("X-Aurum-Diag-Key") or "",
+                                                 "authorization": req.headers.get("Authorization") or "",
                                                  "__body": body,
                                                  "__peer": getattr(conn, "remote_address", None),
                                                  "__sid": req.headers.get("X-Aurum-Session") or ""})
@@ -1678,7 +1926,7 @@ def _start_http_app(port=8788):
                     self.send_header("Access-Control-Allow-Origin", _ao)
                 self.send_header("Access-Control-Allow-Private-Network", "true")
                 self.send_header("Access-Control-Allow-Headers", "*")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
                 for k, v in (extra or []):
                     self.send_header(k, v)
                 self.end_headers()
@@ -1860,7 +2108,7 @@ def _start_http_app(port=8788):
                         return
                     n = int(self.headers.get("Content-Length") or 0)
                     body = self.rfile.read(n) if n else None
-                    st, ct, data = _proxy_api(self.command, path, body, self.headers.get("Content-Type"))
+                    st, ct, data = _proxy_api(self.command, self.path or path, body, self.headers.get("Content-Type"), self.headers)
                     self._send(st, ct, data)
                     return
                 if self.command == "GET" and path in _PWA_FILES:
@@ -1926,6 +2174,8 @@ def _start_http_app(port=8788):
                     pass
         def do_GET(self): self._do()
         def do_POST(self): self._do()
+        def do_PUT(self): self._do()
+        def do_DELETE(self): self._do()
         def do_OPTIONS(self): self._send(204, "text/plain", b"")
         def log_message(self, fmt, *args):
             log.info("http " + (fmt % args))

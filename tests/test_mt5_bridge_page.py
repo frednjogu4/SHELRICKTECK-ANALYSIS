@@ -257,6 +257,80 @@ class PcPageTests(unittest.TestCase):
         finally:
             self.bridge._UPSTREAM_MANIFEST_FETCHER = orig_fetcher
 
+    def test_api_proxy_preserves_query_strings_deriv_headers_and_delete_method(self):
+        import json as _json
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+
+        seen = []
+
+        class UpstreamStub(BaseHTTPRequestHandler):
+            def _capture(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(n).decode("utf-8") if n else ""
+                seen.append({
+                    "method": self.command,
+                    "path": self.path,
+                    "x_deriv_pat": self.headers.get("X-Deriv-Pat"),
+                    "x_aurum_user": self.headers.get("X-Aurum-User"),
+                    "body": body,
+                })
+                out = _json.dumps({"ok": True, "method": self.command, "path": self.path}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+            do_GET = _capture
+            do_POST = _capture
+            do_DELETE = _capture
+            def log_message(self, *args):
+                pass
+
+        upstream = HTTPServer(("127.0.0.1", 0), UpstreamStub)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        orig_upstream = self.bridge.UPSTREAM
+        try:
+            self.bridge.UPSTREAM = f"http://127.0.0.1:{upstream.server_address[1]}"
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            conn.request(
+                "POST",
+                "/api/deriv/order?mode=1click",
+                body=b'{"symbol":"EUR/USD","amount":5}',
+                headers={
+                    "Host": "127.0.0.1:8788",
+                    "Content-Type": "application/json",
+                    "X-Deriv-Pat": "pat_secret_xyz",
+                    "X-Aurum-User": "fred@local",
+                },
+            )
+            r1 = conn.getresponse()
+            r1.read()
+            self.assertEqual(r1.status, 200)
+
+            conn.request(
+                "DELETE",
+                "/api/deriv/pat/acct_1?confirm=1",
+                headers={"Host": "127.0.0.1:8788", "X-Aurum-User": "fred@local"},
+            )
+            r2 = conn.getresponse()
+            r2.read()
+            self.assertEqual(r2.status, 200)
+            conn.close()
+
+            self.assertEqual(len(seen), 2)
+            self.assertEqual(seen[0]["method"], "POST")
+            self.assertEqual(seen[0]["path"], "/api/deriv/order?mode=1click")
+            self.assertEqual(seen[0]["x_deriv_pat"], "pat_secret_xyz")
+            self.assertEqual(seen[0]["x_aurum_user"], "fred@local")
+            self.assertEqual(seen[1]["method"], "DELETE")
+            self.assertEqual(seen[1]["path"], "/api/deriv/pat/acct_1?confirm=1")
+            self.assertEqual(seen[1]["x_aurum_user"], "fred@local")
+        finally:
+            self.bridge.UPSTREAM = orig_upstream
+            upstream.shutdown()
+            upstream.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

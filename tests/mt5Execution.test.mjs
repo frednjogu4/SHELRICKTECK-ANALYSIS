@@ -13,6 +13,10 @@ test('client refuses Exness orders unless the connected MT5 account mode matches
   );
 });
 
-test('app-side Exness closes remain disabled in both account modes', async () => {
-  await assert.rejects(closeBridgeOrder(123), /App-side Exness position closing is disabled/);
+test('client refuses Exness closes unless the connected MT5 account mode matches and close is explicitly confirmed', async () => {
+  await assert.rejects(closeBridgeOrder(123), /MT5 account mode does not match the explicitly selected REAL or DEMO close.*no close order was sent/i);
+  await assert.rejects(
+    closeBridgeOrder({ ticket: 123, environment: 'real', intentId: 'closeIntent1234567890', manualConfirmed: true }),
+    /MT5 account mode does not match the explicitly selected REAL or DEMO close.*no close order was sent/i,
+  );
 });

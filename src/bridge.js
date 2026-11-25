@@ -344,12 +344,21 @@ export function previewBridgeOrder(o) {
 }
 export function placeBridgeOrder(o) {
   if (!verifiedOrderEnvironment(o?.environment)) return Promise.reject(new Error('MT5 account mode does not match the explicitly selected REAL or DEMO order. Reconnect and verify the account; no order was sent.'));
-  if (o?.manualConfirmed !== true || !o.previewId || !o.intentId) return Promise.reject(new Error('A fresh mode-matched preview and explicit per-order confirmation are required. No order was sent.'));
-  return frame({ type: 'order', environment: o.environment, symbol: o.symbol, side: o.side, volume: o.volume, sl: o.sl, tp: o.tp,
-    preview_id: o.previewId, intent_id: o.intentId, confirmed: true });
+  const direct = o?.direct === true;
+  if (o?.manualConfirmed !== true || !o.intentId || (!direct && !o.previewId)) return Promise.reject(new Error('A fresh mode-matched preview (or 1-click direct intent) and explicit per-order confirmation are required. No order was sent.'));
+  const sl = Number.isFinite(Number(o.sl)) && Number(o.sl) > 0 ? Number(o.sl) : 0;
+  const tp = Number.isFinite(Number(o.tp)) && Number(o.tp) > 0 ? Number(o.tp) : 0;
+  return frame({ type: 'order', environment: o.environment, symbol: o.symbol, side: o.side, volume: o.volume, sl, tp,
+    preview_id: o.previewId, direct, intent_id: o.intentId, confirmed: true });
 }
-export function closeBridgeOrder(_ticket) {
-  return Promise.reject(new Error('App-side Exness position closing is disabled. Manage or close the position directly in MetaTrader 5.'));
+export function closeBridgeOrder(o) {
+  const req = (o && typeof o === 'object') ? o : { ticket: o };
+  if (!verifiedOrderEnvironment(req?.environment)) return Promise.reject(new Error('MT5 account mode does not match the explicitly selected REAL or DEMO close. Reconnect and verify the account; no close order was sent.'));
+  const ticket = Number(req.ticket);
+  if (req?.manualConfirmed !== true || !Number.isInteger(ticket) || ticket <= 0 || !req.intentId) {
+    return Promise.reject(new Error('Explicit per-close confirmation, valid MT5 ticket, and unique intent id are required. No close order was sent.'));
+  }
+  return frame({ type: 'close', ticket, environment: req.environment, intent_id: req.intentId, confirmed: true });
 }
 export function bridgePositions() { return frame({ type: 'positions' }); }
 export async function bridgeAccount() {
