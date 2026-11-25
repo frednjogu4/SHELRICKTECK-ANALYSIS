@@ -91,7 +91,18 @@ export function checkHighImpactNewsWindow(events = [], symbol = '', { beforeMin 
   for (const ev of events) {
     const impact = String(ev.impact || ev.importance || '').toLowerCase();
     if (!impact.includes('high') && impact !== '3') continue;
-    const evMs = Number(ev.tsMs || ev.timestamp || (ev.time ? Date.parse(ev.time) : NaN));
+    const rawT = ev.tsMs ?? ev.t ?? ev.timestamp ?? null;
+    let evMs = NaN;
+    if (typeof rawT === 'number' && Number.isFinite(rawT)) {
+      evMs = rawT > 0 && rawT < 1e11 ? rawT * 1000 : rawT;
+    } else if (rawT instanceof Date) {
+      evMs = rawT.getTime();
+    } else if (typeof rawT === 'string' && rawT.trim()) {
+      const n = Number(rawT);
+      evMs = Number.isFinite(n) ? (n < 1e11 ? n * 1000 : n) : Date.parse(rawT);
+    } else if (ev.time || ev.date) {
+      evMs = Date.parse(String(ev.time || ev.date));
+    }
     if (!Number.isFinite(evMs)) continue;
     const ccy = String(ev.currency || ev.country || '').toUpperCase();
     const affectsPair = !ccy || ccy === 'USD' || symUpper.includes(ccy);

@@ -1181,8 +1181,18 @@ def handle_positions(_msg):
     for p in mt5.positions_get() or ():
         gross = float(getattr(p, "profit", 0.0) or 0.0)
         swap = float(getattr(p, "swap", 0.0) or 0.0)
-        commission = float(getattr(p, "commission", 0.0) or 0.0)
-        fee = float(getattr(p, "fee", 0.0) or 0.0)
+        raw_comm = getattr(p, "commission", None)
+        raw_fee = getattr(p, "fee", None)
+        commission = float(raw_comm or 0.0)
+        fee = float(raw_fee or 0.0)
+        # Standard MT5 positions_get() records omit commission/fee; source linked deal costs from history_deals_get(position=ticket).
+        if raw_comm is None and raw_fee is None and hasattr(mt5, "history_deals_get"):
+            try:
+                pos_deals = mt5.history_deals_get(position=int(p.ticket)) or ()
+                commission = sum(float(getattr(d, "commission", 0.0) or 0.0) for d in pos_deals)
+                fee = sum(float(getattr(d, "fee", 0.0) or 0.0) for d in pos_deals)
+            except Exception:
+                pass
         out.append(
             {
                 "ticket": p.ticket,
@@ -1415,31 +1425,46 @@ def handle_deals_history(msg):
         deals = None
     if deals is None:
         return {**err("MT5 deal execution history is unavailable.")}
+    all_deals = list(deals)
+    entry_costs_by_pos = {}
+    for d in all_deals:
+        pos_id = int(getattr(d, "position_id", 0) or 0)
+        if pos_id > 0 and getattr(d, "entry", 1) == 0:
+            acc = entry_costs_by_pos.setdefault(pos_id, {"commission": 0.0, "swap": 0.0, "fee": 0.0})
+            acc["commission"] += float(getattr(d, "commission", 0.0) or 0.0)
+            acc["swap"] += float(getattr(d, "swap", 0.0) or 0.0)
+            acc["fee"] += float(getattr(d, "fee", 0.0) or 0.0)
     out = []
-    for d in list(deals)[-300:]:
+    for d in all_deals[-300:]:
         sym = str(getattr(d, "symbol", "") or "")
         if not sym:
             continue  # balance/credit operation without instrument
         dtype = getattr(d, "type", 0)
         entry_flag = getattr(d, "entry", 1)
+        pos_id = int(getattr(d, "position_id", 0) or 0)
         gross = float(getattr(d, "profit", 0.0) or 0.0)
         comm = float(getattr(d, "commission", 0.0) or 0.0)
         swap = float(getattr(d, "swap", 0.0) or 0.0)
         fee = float(getattr(d, "fee", 0.0) or 0.0)
+        entry_acc = entry_costs_by_pos.get(pos_id) if (pos_id > 0 and entry_flag != 0) else None
+        total_comm = comm + (entry_acc["commission"] if entry_acc else 0.0)
+        total_swap = swap + (entry_acc["swap"] if entry_acc else 0.0)
+        total_fee = fee + (entry_acc["fee"] if entry_acc else 0.0)
         out.append({
             "deal": int(getattr(d, "ticket", 0) or 0),
             "order": int(getattr(d, "order", 0) or 0),
-            "position_id": int(getattr(d, "position_id", 0) or 0),
+            "position_id": pos_id,
             "symbol": sym,
             "side": "BUY" if dtype == 0 else "SELL" if dtype == 1 else str(dtype),
             "entry_kind": "IN" if entry_flag == 0 else "OUT" if entry_flag == 1 else "INOUT",
             "volume": float(getattr(d, "volume", 0.0) or 0.0),
             "price": float(getattr(d, "price", 0.0) or 0.0),
             "profit": gross,
-            "commission": comm,
-            "swap": swap,
-            "fee": fee,
-            "net_profit": round(gross + comm + swap + fee, 2),
+            "commission": total_comm,
+            "swap": total_swap,
+            "fee": total_fee,
+            "net_profit": round(gross + total_comm + total_swap + total_fee, 2),
+            "entry_costs_included": bool(entry_acc),
             "time": int(getattr(d, "time", 0) or 0),
             "comment": str(getattr(d, "comment", "") or ""),
             "reason": str(getattr(d, "reason", "") or ""),

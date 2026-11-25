@@ -273,10 +273,12 @@ test('7-Timeframe Confluence, AI Market Intelligence & News Window checks operat
   assert.ok(brief.observedFacts.length >= 3);
   assert.match(brief.limitations, /NOT a probability of profit/);
 
-  // News window check
+  // News window check (both tsMs and normalized calendarEntries() `t` field)
   const evTime = Date.now() + 5 * 60_000;
   const nw = checkHighImpactNewsWindow([{ title: 'CPI YoY', currency: 'USD', impact: 'High', tsMs: evTime }], 'XAU/USD', { beforeMin: 15, afterMin: 15 });
   assert.equal(nw.active, true);
+  const nwFromT = checkHighImpactNewsWindow([{ title: 'FOMC Rate Decision', currency: 'USD', impact: 'High', t: evTime }], 'EUR/USD', { beforeMin: 15, afterMin: 15 });
+  assert.equal(nwFromT.active, true);
 });
 
 test('Notification Centre deduplicates signals and TradingView Command Centre maps Oil, Gold, Silver, Crypto, FX & Indices', () => {

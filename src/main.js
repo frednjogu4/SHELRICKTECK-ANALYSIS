@@ -2588,8 +2588,8 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
 }
 
 async function executeDerivDirect({mode,I,amt,sl,tp,tp2,px,dur}){
-  if(isCloudflareReadonlyMode()){toast('Read-only staging','Order execution is disabled on Cloudflare staging.','warn');return;}
-  if(state.broker?.mode==='cloud_readonly'){toast('Read-only session','This Deriv token has Read-only scope; connect with a Trade-scope token on the local app.','warn');return;}
+  if(isCloudflareReadonlyMode()){toast('Read-only staging','Order execution is disabled on Cloudflare staging.','warn');return false;}
+  if(state.broker?.mode==='cloud_readonly'){toast('Read-only session','This Deriv token has Read-only scope; connect with a Trade-scope token on the local app.','warn');return false;}
   const du=dur||derivDurationFor(I.s);
   const side=state.side;
   const btn=$('#placeOrderBtn');
@@ -2642,10 +2642,12 @@ async function executeDerivDirect({mode,I,amt,sl,tp,tp2,px,dur}){
     }
     state.positions.push(pos); save();
     renderNavCounts(); renderPortfolio();
+    return true;
   }catch(e){
     const msg=String(e.message||e);
     toast('Order not placed',msg,'err');
     notify('Order failed',msg,{tag:'trade',kind:'err'});
+    return false;
   }finally{if(btn){btn.disabled=false;btn.textContent=old;}}
 }
 
@@ -7577,6 +7579,58 @@ async function preValidateManualTicketDirection(sym, intendedSide) {
   return { ok: true };
 }
 
+const sniperPeakEquityByAccount = new Map();
+function getActiveCalendarList() {
+  const timed = typeof calendarEntries === 'function' ? calendarEntries() : null;
+  if (Array.isArray(timed) && timed.length) return timed;
+  if (Array.isArray(state.calWeek) && state.calWeek.length) return state.calWeek;
+  if (Array.isArray(state.calEvents) && state.calEvents.length) return state.calEvents;
+  if (Array.isArray(state.calendar) && state.calendar.length) return state.calendar;
+  return [];
+}
+function estimateContractSize(rawSym) {
+  const s = String(rawSym || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (s.startsWith('XAU')) return 100;
+  if (s.startsWith('XAG')) return 5000;
+  if (s.includes('OIL') || s.startsWith('WTI')) return 1000;
+  if (s.startsWith('BTC') || s.startsWith('ETH') || /^(US30|NAS100|US500|GER40|UK100|JP225)/.test(s)) return 1;
+  if (s.length === 6) return 100000;
+  return 1;
+}
+function computeAccountDrawdownAndExposure(ident, sym, lotSize, usdSize, refPx) {
+  const key = ident?.authKey || 'default';
+  const curBal = Number(ident?.balance);
+  const curEq = Number(ident?.equity ?? ident?.balance);
+  let peak = sniperPeakEquityByAccount.get(key) || 0;
+  if (Number.isFinite(curBal) && curBal > peak) peak = curBal;
+  if (Number.isFinite(curEq) && curEq > peak) peak = curEq;
+  if (peak > 0) sniperPeakEquityByAccount.set(key, peak);
+  const currentDrawdownPct = peak > 0 && Number.isFinite(curEq)
+    ? Math.max(0, ((peak - curEq) / peak) * 100)
+    : 0;
+
+  let totalOpenExposureUsd = 0;
+  if (ident?.broker === 'mt5') {
+    for (const p of state.mt5LivePositions || []) {
+      const vol = Number(p.volume || 0);
+      const px = Number(p.current_price || p.price || 0);
+      const cSize = Number(p.contract_size) || estimateContractSize(p.symbol);
+      totalOpenExposureUsd += vol > 0 && px > 0 ? vol * cSize * px : 0;
+    }
+  } else {
+    for (const p of state.positions || []) {
+      totalOpenExposureUsd += Math.max(0, Number(p.amt ?? p.buy_price ?? 0) || 0);
+    }
+  }
+
+  let effectiveRequestedUsd = Math.max(0, Number(usdSize) || 0);
+  if (ident?.broker === 'mt5' && Number.isFinite(lotSize) && lotSize > 0) {
+    const px = Number(refPx) || Number(bySym[sym]?.p) || 0;
+    if (px > 0) effectiveRequestedUsd = lotSize * estimateContractSize(sym) * px;
+  }
+  return { currentDrawdownPct, totalOpenExposureUsd, effectiveRequestedUsd };
+}
+
 function refreshTicketSupervisorBanner() {
   const banner = $('#ticketSupervisorBanner');
   const badge = $('#ticketSupVerdict');
@@ -7592,8 +7646,10 @@ function refreshTicketSupervisorBanner() {
   const reqUsd = parseFloat($('#orderAmount')?.value || '10') || 10;
   const reqLots = parseFloat($('#orderLots')?.value || '') || null;
   const strictMin = Boolean($('#strictMinLotChk')?.checked);
+  const { currentDrawdownPct, totalOpenExposureUsd, effectiveRequestedUsd } =
+    computeAccountDrawdownAndExposure(ident, sym, reqLots, reqUsd, I?.ask ?? I?.bid ?? I?.p);
 
-  const newsWin = checkHighImpactNewsWindow(state.calendar || [], sym, {
+  const newsWin = checkHighImpactNewsWindow(getActiveCalendarList(), sym, {
     beforeMin: sniperExecConfig.newsWindowBeforeMin,
     afterMin: sniperExecConfig.newsWindowAfterMin,
   });
@@ -7613,12 +7669,14 @@ function refreshTicketSupervisorBanner() {
     quoteTsMs: I?.tickAt || (I?.p != null ? Date.now() : null),
     freeMargin: ident.freeMargin,
     requestedLots: reqLots,
-    requestedUsd: reqUsd,
+    requestedUsd: effectiveRequestedUsd,
     strictMinVolume: strictMin,
     openPositionsCount: ident.broker === 'mt5' ? (state.mt5LivePositions?.length || 0) : (state.positions?.length || 0),
     maxConcurrentPositions: 25,
     dailyRealizedPl: ident.dailyRealizedPl || 0,
     maxDailyLossUsd: typeof lossGuardLimit === 'function' ? lossGuardLimit() : 0,
+    currentDrawdownPct,
+    totalOpenExposureUsd,
     highImpactNewsActive: newsWin.active,
     highImpactEventTitle: newsWin.title,
     requireSignalValidation: false,
@@ -7902,7 +7960,7 @@ async function executeSupervisedSniperEntry(candidate) {
     const openSymbols = new Set(openList.map((p) => (p.symbol || p.sym || '').replace('/', '')));
     const symClean = sym.replace('/', '');
     const newsWin = sniperExecConfig.pauseOnHighImpactNews
-      ? checkHighImpactNewsWindow(state.calendar || [], sym, {
+      ? checkHighImpactNewsWindow(getActiveCalendarList(), sym, {
           beforeMin: sniperExecConfig.newsWindowBeforeMin,
           afterMin: sniperExecConfig.newsWindowAfterMin,
         })
@@ -7912,6 +7970,8 @@ async function executeSupervisedSniperEntry(candidate) {
       ? Math.max(1, (ident.equity * sniperExecConfig.riskPct) / 100)
       : sniperExecConfig.fixedUsd;
     const lotSize = sniperExecConfig.sizingMode === 'fixed_lots' ? sniperExecConfig.fixedLots : null;
+    const { currentDrawdownPct, totalOpenExposureUsd, effectiveRequestedUsd } =
+      computeAccountDrawdownAndExposure(ident, sym, lotSize, usdSize, liveAsk || liveBid || I.p);
 
     const sup = evaluateTradeSupervisor({
       intendedSide: candidate.signal,
@@ -7931,7 +7991,7 @@ async function executeSupervisedSniperEntry(candidate) {
       quoteTsMs,
       freeMargin: ident.freeMargin,
       requestedLots: lotSize,
-      requestedUsd: usdSize,
+      requestedUsd: effectiveRequestedUsd,
       strictMinVolume: sniperExecConfig.strictMinVolume,
       openPositionsCount: openList.length,
       maxConcurrentPositions: sniperExecConfig.maxConcurrentPositions,
@@ -7940,7 +8000,9 @@ async function executeSupervisedSniperEntry(candidate) {
       dailyRealizedPl: ident.dailyRealizedPl || 0,
       maxDailyLossUsd: sniperExecConfig.maxDailyLossUsd,
       dailyProfitTargetUsd: sniperExecConfig.dailyProfitTargetUsd,
+      currentDrawdownPct,
       maxDrawdownPct: sniperExecConfig.maxDrawdownPct,
+      totalOpenExposureUsd,
       maxExposureUsd: sniperExecConfig.maxExposureUsd,
       duplicateSignalIds: sniperRuntime.executedSignals,
       openSymbols,
@@ -7987,17 +8049,24 @@ async function executeSupervisedSniperEntry(candidate) {
       state.side = freshSig.signal;
       const dh = state.derivHealth;
       const mode = (dh && dh.authorized && dh.tradingEnabled) ? 'proxy' : (state.broker?.mode === 'pat_server' ? 'pat_server' : 'pat');
-      await executeDerivDirect({
-        mode,
-        I,
-        amt: Math.round(usdSize * 100) / 100,
-        sl: Number(freshSig.stop_loss) || null,
-        tp: Number(freshSig.tp1) || null,
-        tp2: Number(freshSig.tp2) || null,
-        px: liveAsk || liveBid || I.p,
-        dur: derivDurationFor(I.s),
-      });
-      state.side = prevSide;
+      let derivFilled = false;
+      try {
+        derivFilled = Boolean(await executeDerivDirect({
+          mode,
+          I,
+          amt: Math.round(usdSize * 100) / 100,
+          sl: Number(freshSig.stop_loss) || null,
+          tp: Number(freshSig.tp1) || null,
+          tp2: Number(freshSig.tp2) || null,
+          px: liveAsk || liveBid || I.p,
+          dur: derivDurationFor(I.s),
+        }));
+      } finally {
+        state.side = prevSide;
+      }
+      if (!derivFilled) {
+        throw new Error('Deriv Sniper execution failed or was rejected before confirmation.');
+      }
       if (atSession) atSession.entries = (atSession.entries || 0) + 1;
       sniperRuntime.finishAutoEntry(true, envelope?.signalId);
       recordPlatformAudit('SNIPER_EXECUTION', 'DERIV_FILLED', { symbol: sym, side: freshSig.signal, stake: usdSize, environment: ident.environment });
@@ -8268,11 +8337,28 @@ async function refreshAndRenderPendingOrders() {
 async function renderUnifiedTradeHistory(syncBroker = false) {
   if (syncBroker && state.broker?.type === 'mt5') {
     const res = await bridge.bridgeDealsHistory(30).catch(() => null);
-    if (res && Array.isArray(res.deals)) mt5DealsHistoryCache = res.deals.filter((d) => d.entry_kind !== 'IN');
+    if (res && Array.isArray(res.deals)) {
+      const entryCostsByPos = new Map();
+      for (const d of res.deals) {
+        if (d.entry_kind === 'IN' && Number(d.position_id) > 0) {
+          const prev = entryCostsByPos.get(d.position_id) || 0;
+          entryCostsByPos.set(d.position_id, prev + Number(d.commission || 0) + Number(d.swap || 0) + Number(d.fee || 0));
+        }
+      }
+      mt5DealsHistoryCache = res.deals
+        .filter((d) => d.entry_kind !== 'IN')
+        .map((d) => {
+          const extra = !d.entry_costs_included && Number(d.position_id) > 0 ? (entryCostsByPos.get(d.position_id) || 0) : 0;
+          const gross = Number(d.profit || 0);
+          const costs = Number(d.commission || 0) + Number(d.swap || 0) + Number(d.fee || 0) + extra;
+          return { ...d, _aggCosts: costs, _aggNet: Number((gross + costs).toFixed(2)) };
+        });
+    }
   }
   const combined = [];
   for (const d of mt5DealsHistoryCache) {
-    const costs = Number(d.commission || 0) + Number(d.swap || 0) + Number(d.fee || 0);
+    const gross = Number(d.profit || 0);
+    const costs = d._aggCosts != null ? d._aggCosts : (Number(d.commission || 0) + Number(d.swap || 0) + Number(d.fee || 0));
     combined.push({
       tsMs: (d.time || 0) * 1000,
       source: `MT5 Deal #${d.deal}`,
@@ -8280,9 +8366,9 @@ async function renderUnifiedTradeHistory(syncBroker = false) {
       side: d.side,
       size: `${Number(d.volume).toFixed(2)} lots`,
       price: d.price,
-      gross: Number(d.profit || 0),
+      gross,
       costs,
-      net: Number(d.net_profit ?? (Number(d.profit || 0) + costs)),
+      net: d._aggNet != null ? d._aggNet : Number(d.net_profit ?? (gross + costs)),
     });
   }
   for (const h of state.history || []) {
@@ -8354,7 +8440,7 @@ async function refreshMarketIntelligenceView() {
       symbol: sym,
       quote: I && I.p != null ? { mid: I.p, bid: I.bid ?? I.p, ask: I.ask ?? I.p, tsMs: I.tickAt || Date.now() } : null,
       mtf: cached.mtf,
-      calendarEvents: state.calendar || [],
+      calendarEvents: getActiveCalendarList(),
       headlines: state.newsItems || [],
       dataSource: cached.source,
     });

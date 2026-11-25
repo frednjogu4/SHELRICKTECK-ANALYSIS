@@ -459,12 +459,16 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
             types.SimpleNamespace(
                 ticket=501, symbol="XAUUSDm", type=0, volume=0.02,
                 price_open=2640.0, price_current=2641.8, profit=3.60,
-                swap=-0.10, commission=-0.30, fee=0.0, sl=2635.0, tp=2650.0,
+                swap=-0.10, sl=2635.0, tp=2650.0,
                 time=1760000000, magic=202506, comment="AURUM-1C-DEMO",
             )
         ]
+        self.fake_mt5.history_deals_get = Mock(return_value=[
+            types.SimpleNamespace(ticket=880, position_id=501, entry=0, commission=-0.30, fee=0.0)
+        ])
         pos_res = self.bridge.handle_positions({})
         self.assertEqual(pos_res["type"], "positions")
+        self.assertEqual(pos_res["list"][0]["commission"], -0.30)
         self.assertEqual(pos_res["list"][0]["net_profit"], 3.20)
 
         # Strict minimum-lot guard: explicit 0.005 lots (< 0.01 min) is rejected, NEVER inflated
@@ -511,13 +515,16 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         cancelled = self.bridge.handle_cancel_pending({"confirmed": True, "environment": "demo", "ticket": 8801})
         self.assertEqual(cancelled["type"], "pending_cancelled", msg=cancelled)
 
-        # Deals history with commission & swap -> net_profit
+        # Deals history with entry deal (entry=0) + exit deal (entry=1) commission & swap -> net_profit
         self.fake_mt5.history_deals_get = Mock(return_value=[
-            types.SimpleNamespace(ticket=991, order=771, position_id=501, symbol="XAUUSDm", type=1, entry=1, volume=0.02, price=2642.0, profit=4.0, commission=-0.30, swap=-0.10, fee=0.0, time=1760000200, comment="close", reason="0")
+            types.SimpleNamespace(ticket=990, order=770, position_id=501, symbol="XAUUSDm", type=0, entry=0, volume=0.02, price=2640.0, profit=0.0, commission=-0.20, swap=0.0, fee=0.0, time=1760000100, comment="open", reason="0"),
+            types.SimpleNamespace(ticket=991, order=771, position_id=501, symbol="XAUUSDm", type=1, entry=1, volume=0.02, price=2642.0, profit=4.0, commission=-0.10, swap=-0.10, fee=0.0, time=1760000200, comment="close", reason="0"),
         ])
         deals = self.bridge.handle_deals_history({"days": 7})
         self.assertEqual(deals["type"], "deals_history")
-        self.assertEqual(deals["deals"][0]["net_profit"], 3.60)
+        out_deal = [d for d in deals["deals"] if d["entry_kind"] == "OUT"][0]
+        self.assertAlmostEqual(out_deal["commission"], -0.30)
+        self.assertEqual(out_deal["net_profit"], 3.60)
 
 
 if __name__ == "__main__":
