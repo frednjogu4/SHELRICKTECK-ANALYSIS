@@ -108,7 +108,7 @@ def _account_environment(trade_mode):
     return None
 
 
-_NEED_AUTH = ("order", "preview_order", "close", "positions", "account", "quote", "search", "symbols", "history")
+_NEED_AUTH = ("order", "preview_order", "close", "positions", "pending_orders", "place_pending", "cancel_pending", "deals_history", "account", "quote", "search", "symbols", "history")
 _BRIDGE_TOKEN = os.environ.get("AURUM_BRIDGE_TOKEN", "").strip()
 _LOCAL_API_AUTH = os.environ.get("AURUM_LOCAL_API_AUTH", "").strip() == "1"
 _LOCAL_API_TOKEN = os.environ.get("AURUM_LOCAL_API_TOKEN", "").strip()
@@ -583,16 +583,34 @@ def handle_account(_msg):
     if ai is None:
         code, desc = _last_error()
         return {**err(f"MT5 account info unavailable (code {code}: {desc})")}
+    daily_pl = _mt5_daily_net()
+    try:
+        pos_list = mt5.positions_get()
+        open_count = len(pos_list) if pos_list is not None else None
+    except Exception:
+        open_count = None
+    try:
+        ord_list = mt5.orders_get() if hasattr(mt5, "orders_get") else None
+        pending_count = len(ord_list) if ord_list is not None else 0
+    except Exception:
+        pending_count = 0
     return {
         "type": "account",
         "balance": ai.balance,
         "equity": ai.equity,
+        "margin": getattr(ai, "margin", 0.0),
         "margin_free": ai.margin_free,
+        "margin_level": getattr(ai, "margin_level", 0.0),
+        "profit": getattr(ai, "profit", 0.0),
+        "daily_realized_pl": round(daily_pl, 2) if daily_pl is not None else None,
+        "open_positions_count": open_count,
+        "pending_orders_count": pending_count,
         "currency": ai.currency,
         "leverage": ai.leverage,
         "demo": _account_environment(getattr(ai, "trade_mode", None)) == "demo",
         "environment": _account_environment(getattr(ai, "trade_mode", None)),
         "trade_mode": getattr(ai, "trade_mode", None),
+        "ts": int(time.time()),
     }
 
 
@@ -856,12 +874,34 @@ def _mt5_direct_order_plan(msg):
                 return None, "For a SELL, take-profit must be below the live bid."
             if stops_level and abs(tp - price) < stops_level:
                 return None, "Take-profit is closer than the broker's minimum stop distance."
-        lots = usd_to_lots(info, price, requested_usd)
+        raw_lots_input = msg.get("lots")
+        strict_min_vol = bool(msg.get("strict_min_volume"))
+        vmin = float(info.volume_min)
+        vmax = float(info.volume_max)
+        vstep = float(info.volume_step or 0.01)
+        floor_exposure = vmin * contract_size * price
+        if raw_lots_input not in (None, "", 0, "0"):
+            explicit_lots = float(raw_lots_input)
+            if not math.isfinite(explicit_lots) or explicit_lots <= 0:
+                raise ValueError
+            if explicit_lots + 1e-12 < vmin:
+                return None, f"Requested volume ({explicit_lots:g} lots) is below the broker minimum ({vmin:g} lots ≈ ${floor_exposure:,.2f} notional); order was NOT increased automatically."
+            if explicit_lots - 1e-12 > vmax:
+                return None, f"Requested volume ({explicit_lots:g} lots) exceeds the broker maximum ({vmax:g} lots); no order was sent."
+            lots = round((int((explicit_lots + 1e-12) / vstep) * vstep) if vstep > 0 else explicit_lots, 8)
+            if lots + 1e-12 < vmin:
+                return None, f"Requested volume ({explicit_lots:g} lots) rounds below the broker minimum ({vmin:g} lots); no order was sent."
+        else:
+            if strict_min_vol and requested_usd + 1e-6 < floor_exposure:
+                return None, (
+                    f"Requested exposure (${requested_usd:,.2f}) is below the broker minimum lot ({vmin:g} lots ≈ ${floor_exposure:,.2f} notional). "
+                    "Order size is never secretly increased; enter at least the broker minimum or select an instrument with smaller contract size."
+                )
+            lots = usd_to_lots(info, price, requested_usd)
         if lots <= 0:
             raise ValueError
         exposure = lots * contract_size * price
         notional_cap = max(requested_usd * 2.0, equity * 200)
-        floor_exposure = float(info.volume_min) * contract_size * price
         if exposure > notional_cap and exposure > floor_exposure * (1.0 + 1e-9):
             return None, (
                 f"Requested exposure (${exposure:,.2f} notional) exceeds this account's safety cap (${notional_cap:,.2f}). No order was sent."
@@ -984,6 +1024,11 @@ def handle_order(msg):
                         or actual_risk > float(account.equity) * MT5_MAX_RISK_PCT / 100
                         or float(actual_margin) > float(account.margin_free) * 0.8):
                     return {**err(f"Fresh {env_label} stop risk or margin exceeds the confirmed limit; no order was sent.")}
+            try:
+                dev_pts = int(msg.get("max_slippage_points") or 20)
+                dev_pts = max(1, min(100, dev_pts))
+            except (TypeError, ValueError):
+                dev_pts = 20
             comment_prefix = "AURUM-1C-" if is_direct else "AURUM-"
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
@@ -992,7 +1037,7 @@ def handle_order(msg):
                 "type": order_type,
                 "price": send_price,
                 "sl": plan["sl"], "tp": plan["tp"],
-                "deviation": 20, "magic": MAGIC,
+                "deviation": dev_pts, "magic": MAGIC,
                 "comment": comment_prefix + env_label + "-" + intent_id[:8 if is_direct else 10],
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": fillings_for(info)[0],
@@ -1014,9 +1059,14 @@ def handle_order(msg):
             _MT5_ORDER_UNCERTAIN = True
             reply = {**err(f"MT5 reports a partial or pending {env_label} order. Inspect positions/history; no further app order will be sent until the outcome is understood. Do not retry.")}
         elif result.retcode == getattr(mt5, "TRADE_RETCODE_DONE", -1):
-            log.info("%s fill: %s %s %.2f lots @ %s ticket=%s", env_label, plan["side"], plan["symbol"], plan["lots"], result.price, result.order)
-            reply = {"type": "filled", "ticket": result.order, "price": result.price,
-                     "lots": plan["lots"], "symbol": plan["symbol"], "demo": plan["demo"], "environment": plan["environment"],
+            exec_px = float(getattr(result, "price", send_price) or send_price)
+            log.info("%s fill: %s %s %.2f lots @ %s ticket=%s", env_label, plan["side"], plan["symbol"], plan["lots"], exec_px, result.order)
+            reply = {"type": "filled", "ticket": result.order, "deal": getattr(result, "deal", None), "price": exec_px,
+                     "requested_price": send_price, "slippage": round(exec_px - send_price, 6),
+                     "execution_ts": int(time.time()), "margin": round(float(actual_margin), 2),
+                     "broker_comment": str(getattr(result, "comment", "") or ""),
+                     "lots": plan["lots"], "symbol": plan["symbol"], "side": plan["side"],
+                     "demo": plan["demo"], "environment": plan["environment"],
                      "currency": plan["currency"], "requested_usd": plan["requested_usd"],
                      "effective_notional": round(plan["exposure"], 2),
                      "estimated_buffered_risk": round(plan["risk_amount"], 2) if plan["risk_amount"] is not None else None,
@@ -1129,6 +1179,10 @@ def handle_positions(_msg):
         return {**err(identity_error)}
     out = []
     for p in mt5.positions_get() or ():
+        gross = float(getattr(p, "profit", 0.0) or 0.0)
+        swap = float(getattr(p, "swap", 0.0) or 0.0)
+        commission = float(getattr(p, "commission", 0.0) or 0.0)
+        fee = float(getattr(p, "fee", 0.0) or 0.0)
         out.append(
             {
                 "ticket": p.ticket,
@@ -1136,12 +1190,262 @@ def handle_positions(_msg):
                 "side": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
                 "volume": p.volume,
                 "price": p.price_open,
-                "profit": p.profit,
+                "current_price": getattr(p, "price_current", p.price_open),
+                "profit": gross,
+                "swap": swap,
+                "commission": commission,
+                "fee": fee,
+                "net_profit": round(gross + swap + commission + fee, 2),
                 "sl": p.sl,
                 "tp": p.tp,
+                "time": getattr(p, "time", None),
+                "magic": getattr(p, "magic", None),
+                "comment": str(getattr(p, "comment", "") or ""),
             }
         )
-    return {"type": "positions", "list": out}
+    return {"type": "positions", "list": out, "ts": int(time.time())}
+
+
+def handle_pending_orders(_msg):
+    """Return active MT5 pending limit/stop orders for the verified Exness account."""
+    identity_error = _locked_identity_error()
+    if identity_error:
+        return {**err(identity_error)}
+    if not hasattr(mt5, "orders_get"):
+        return {"type": "pending_orders", "list": [], "ts": int(time.time())}
+    try:
+        rows = mt5.orders_get()
+    except Exception:
+        rows = None
+    if rows is None:
+        return {**err("MT5 pending orders could not be verified.")}
+    type_names = {
+        getattr(mt5, "ORDER_TYPE_BUY_LIMIT", 2): "BUY_LIMIT",
+        getattr(mt5, "ORDER_TYPE_SELL_LIMIT", 3): "SELL_LIMIT",
+        getattr(mt5, "ORDER_TYPE_BUY_STOP", 4): "BUY_STOP",
+        getattr(mt5, "ORDER_TYPE_SELL_STOP", 5): "SELL_STOP",
+    }
+    out = []
+    for o in rows:
+        ot = getattr(o, "type", None)
+        label = type_names.get(ot, str(ot))
+        out.append({
+            "ticket": int(getattr(o, "ticket", 0) or 0),
+            "symbol": str(getattr(o, "symbol", "") or ""),
+            "order_type": label,
+            "side": "BUY" if "BUY" in label else "SELL",
+            "volume": float(getattr(o, "volume_current", getattr(o, "volume_initial", 0.0)) or 0.0),
+            "price_open": float(getattr(o, "price_open", 0.0) or 0.0),
+            "sl": float(getattr(o, "sl", 0.0) or 0.0),
+            "tp": float(getattr(o, "tp", 0.0) or 0.0),
+            "time_setup": int(getattr(o, "time_setup", 0) or 0),
+            "comment": str(getattr(o, "comment", "") or ""),
+        })
+    return {"type": "pending_orders", "list": out, "ts": int(time.time())}
+
+
+def handle_place_pending(msg):
+    """Submit a verified BUY_LIMIT, SELL_LIMIT, BUY_STOP or SELL_STOP pending order."""
+    global _MT5_ORDER_UNCERTAIN
+    if not MT5_MANUAL_ORDER_EXECUTION_ENABLED:
+        return {**err("Exness manual order execution is disabled; no pending order was sent.")}
+    if not isinstance(msg, dict) or msg.get("confirmed") is not True:
+        return {**err("Explicit per-order confirmation is required; no pending order was sent.")}
+    environment = str(msg.get("environment") or "").strip().lower()
+    env_label = environment.upper() if environment in ("demo", "real") else "MT5"
+    intent_id = str(msg.get("intent_id") or "")
+    if environment not in ("demo", "real") or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", intent_id):
+        return {**err("Explicit account mode (demo or real) and unique intent_id are required; no pending order was sent.")}
+    order_kind = str(msg.get("order_type") or "").strip().upper()
+    kind_map = {
+        "BUY_LIMIT": getattr(mt5, "ORDER_TYPE_BUY_LIMIT", 2),
+        "SELL_LIMIT": getattr(mt5, "ORDER_TYPE_SELL_LIMIT", 3),
+        "BUY_STOP": getattr(mt5, "ORDER_TYPE_BUY_STOP", 4),
+        "SELL_STOP": getattr(mt5, "ORDER_TYPE_SELL_STOP", 5),
+    }
+    if order_kind not in kind_map:
+        return {**err("Pending order_type must be BUY_LIMIT, SELL_LIMIT, BUY_STOP, or SELL_STOP.")}
+    with _ORDER_LOCK:
+        if intent_id in _MT5_ORDER_REPLIES:
+            return _MT5_ORDER_REPLIES[intent_id]
+        if _MT5_ORDER_UNCERTAIN:
+            return {**err("A previous MT5 order outcome is uncertain. Inspect MT5 before sending new orders.")}
+        account, problem = _mt5_manual_account_gate(environment)
+        if problem:
+            return {**err(problem)}
+        requested_symbol = str(msg.get("symbol") or "").strip()
+        symbol = resolve_symbol(requested_symbol)
+        if not symbol:
+            return {**err(_symbol_match_error(requested_symbol))}
+        info = mt5.symbol_info(symbol)
+        tick = mt5.symbol_info_tick(symbol)
+        if info is None or tick is None:
+            return {**err("Symbol specifications or live tick unavailable; no pending order was sent.")}
+        try:
+            entry_price = float(msg.get("entry_price"))
+            raw_sl = msg.get("sl")
+            raw_tp = msg.get("tp")
+            sl = float(raw_sl) if raw_sl not in (None, "", 0, "0") else 0.0
+            tp = float(raw_tp) if raw_tp not in (None, "", 0, "0") else 0.0
+            if not math.isfinite(entry_price) or entry_price <= 0 or sl < 0 or tp < 0:
+                raise ValueError
+            bid, ask = float(tick.bid), float(tick.ask)
+            point = float(info.point)
+            stops_dist = int(getattr(info, "trade_stops_level", 0) or 0) * point
+            if order_kind == "BUY_LIMIT" and entry_price >= ask - stops_dist:
+                return {**err("BUY_LIMIT entry price must be below the current ask (respecting broker stop distance).")}
+            if order_kind == "BUY_STOP" and entry_price <= ask + stops_dist:
+                return {**err("BUY_STOP entry price must be above the current ask (respecting broker stop distance).")}
+            if order_kind == "SELL_LIMIT" and entry_price <= bid + stops_dist:
+                return {**err("SELL_LIMIT entry price must be above the current bid (respecting broker stop distance).")}
+            if order_kind == "SELL_STOP" and entry_price >= bid - stops_dist:
+                return {**err("SELL_STOP entry price must be below the current bid (respecting broker stop distance).")}
+            is_buy = order_kind.startswith("BUY")
+            if sl > 0:
+                if is_buy and sl >= entry_price:
+                    return {**err("For a BUY pending order, stop-loss must be below entry_price.")}
+                if not is_buy and sl <= entry_price:
+                    return {**err("For a SELL pending order, stop-loss must be above entry_price.")}
+            if tp > 0:
+                if is_buy and tp <= entry_price:
+                    return {**err("For a BUY pending order, take-profit must be above entry_price.")}
+                if not is_buy and tp >= entry_price:
+                    return {**err("For a SELL pending order, take-profit must be below entry_price.")}
+            vmin = float(info.volume_min)
+            vmax = float(info.volume_max)
+            vstep = float(info.volume_step or 0.01)
+            csize = float(info.trade_contract_size)
+            floor_exp = vmin * csize * entry_price
+            if msg.get("lots") not in (None, "", 0, "0"):
+                explicit_lots = float(msg.get("lots"))
+                if explicit_lots + 1e-12 < vmin:
+                    return {**err(f"Requested volume ({explicit_lots:g} lots) is below broker minimum ({vmin:g} lots ≈ ${floor_exp:,.2f} notional); order was NOT increased.")}
+                if explicit_lots - 1e-12 > vmax:
+                    return {**err(f"Requested volume ({explicit_lots:g} lots) exceeds broker maximum ({vmax:g} lots).")}
+                lots = round((int((explicit_lots + 1e-12) / vstep) * vstep) if vstep > 0 else explicit_lots, 8)
+            else:
+                req_usd = float(msg.get("volume"))
+                if bool(msg.get("strict_min_volume")) and req_usd + 1e-6 < floor_exp:
+                    return {**err(f"Requested exposure (${req_usd:,.2f}) is below broker minimum ({vmin:g} lots ≈ ${floor_exp:,.2f} notional); order was NOT increased.")}
+                lots = usd_to_lots(info, entry_price, req_usd)
+            if lots <= 0:
+                raise ValueError
+            req = {
+                "action": getattr(mt5, "TRADE_ACTION_PENDING", 5),
+                "symbol": symbol,
+                "volume": lots,
+                "type": kind_map[order_kind],
+                "price": norm_price(info, entry_price),
+                "sl": norm_price(info, sl) if sl > 0 else 0.0,
+                "tp": norm_price(info, tp) if tp > 0 else 0.0,
+                "magic": MAGIC,
+                "comment": "AURUM-PEND-" + env_label + "-" + intent_id[:6],
+                "type_time": getattr(mt5, "ORDER_TIME_GTC", 0),
+                "type_filling": fillings_for(info)[0],
+            }
+            result = mt5.order_send(req)
+        except Exception as exc:
+            return {**err(f"Pending order validation/send failed: {exc}")}
+        placed_codes = tuple(c for c in (getattr(mt5, "TRADE_RETCODE_DONE", 10009), getattr(mt5, "TRADE_RETCODE_PLACED", 10008)) if c is not None)
+        if result is not None and getattr(result, "retcode", None) in placed_codes:
+            reply = {
+                "type": "pending_placed",
+                "ticket": int(getattr(result, "order", 0) or 0),
+                "symbol": symbol,
+                "order_type": order_kind,
+                "side": "BUY" if order_kind.startswith("BUY") else "SELL",
+                "lots": lots,
+                "entry_price": norm_price(info, entry_price),
+                "sl": norm_price(info, sl) if sl > 0 else 0.0,
+                "tp": norm_price(info, tp) if tp > 0 else 0.0,
+                "environment": environment,
+                "demo": environment == "demo",
+                "ts": int(time.time()),
+            }
+        else:
+            reply = {**err(f"{env_label} pending order rejected by MT5 (retcode={getattr(result, 'retcode', None)}): {getattr(result, 'comment', '')}.")}
+        _MT5_ORDER_REPLIES[intent_id] = reply
+        return reply
+
+
+def handle_cancel_pending(msg):
+    """Cancel an active MT5 pending order by ticket."""
+    if not MT5_MANUAL_CLOSE_ENABLED:
+        return {**err("Pending order cancellation is disabled.")}
+    if not isinstance(msg, dict) or msg.get("confirmed") is not True:
+        return {**err("Explicit confirmation is required to cancel a pending order.")}
+    environment = str(msg.get("environment") or "").strip().lower()
+    if environment not in ("demo", "real"):
+        return {**err("Select DEMO or REAL explicitly before cancelling a pending order.")}
+    try:
+        ticket = int(msg.get("ticket"))
+        if ticket <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return {**err("Valid positive MT5 pending order ticket is required.")}
+    with _ORDER_LOCK:
+        _account, problem = _mt5_manual_account_gate(environment)
+        if problem:
+            return {**err(problem)}
+        req = {
+            "action": getattr(mt5, "TRADE_ACTION_REMOVE", 8),
+            "order": ticket,
+        }
+        result = mt5.order_send(req)
+        ok_codes = tuple(c for c in (getattr(mt5, "TRADE_RETCODE_DONE", 10009), getattr(mt5, "TRADE_RETCODE_PLACED", 10008)) if c is not None)
+        if result is not None and getattr(result, "retcode", None) in ok_codes:
+            return {"type": "pending_cancelled", "ticket": ticket, "environment": environment, "ts": int(time.time())}
+        return {**err(f"Pending order #{ticket} cancel failed (retcode={getattr(result, 'retcode', None)}): {getattr(result, 'comment', '')}.")}
+
+
+def handle_deals_history(msg):
+    """Return broker-confirmed MT5 execution deals (including commission, swap, fee, net profit)."""
+    identity_error = _locked_identity_error()
+    if identity_error:
+        return {**err(identity_error)}
+    try:
+        days = max(1, min(90, int((msg or {}).get("days") or 30)))
+    except (TypeError, ValueError):
+        days = 30
+    now = datetime.datetime.now(datetime.timezone.utc)
+    start = now - datetime.timedelta(days=days)
+    try:
+        deals = mt5.history_deals_get(start, now)
+    except Exception:
+        deals = None
+    if deals is None:
+        return {**err("MT5 deal execution history is unavailable.")}
+    out = []
+    for d in list(deals)[-300:]:
+        sym = str(getattr(d, "symbol", "") or "")
+        if not sym:
+            continue  # balance/credit operation without instrument
+        dtype = getattr(d, "type", 0)
+        entry_flag = getattr(d, "entry", 1)
+        gross = float(getattr(d, "profit", 0.0) or 0.0)
+        comm = float(getattr(d, "commission", 0.0) or 0.0)
+        swap = float(getattr(d, "swap", 0.0) or 0.0)
+        fee = float(getattr(d, "fee", 0.0) or 0.0)
+        out.append({
+            "deal": int(getattr(d, "ticket", 0) or 0),
+            "order": int(getattr(d, "order", 0) or 0),
+            "position_id": int(getattr(d, "position_id", 0) or 0),
+            "symbol": sym,
+            "side": "BUY" if dtype == 0 else "SELL" if dtype == 1 else str(dtype),
+            "entry_kind": "IN" if entry_flag == 0 else "OUT" if entry_flag == 1 else "INOUT",
+            "volume": float(getattr(d, "volume", 0.0) or 0.0),
+            "price": float(getattr(d, "price", 0.0) or 0.0),
+            "profit": gross,
+            "commission": comm,
+            "swap": swap,
+            "fee": fee,
+            "net_profit": round(gross + comm + swap + fee, 2),
+            "time": int(getattr(d, "time", 0) or 0),
+            "comment": str(getattr(d, "comment", "") or ""),
+            "reason": str(getattr(d, "reason", "") or ""),
+        })
+    out.reverse()
+    return {"type": "deals_history", "deals": out, "days": days, "ts": int(time.time())}
 
 
 def handle_quote(msg):
@@ -1246,9 +1550,17 @@ def handle_history(msg):
     if not sym:
         return {**err(_symbol_match_error(requested_symbol))}
     frame = str(msg.get("timeframe") or "").upper()
-    frames = {"M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5, "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1}
-    if frame not in frames:
-        return {**err("Timeframe must be M1, M5, M15, or H1.")}
+    frames = {
+        "M1": getattr(mt5, "TIMEFRAME_M1", None),
+        "M5": getattr(mt5, "TIMEFRAME_M5", None),
+        "M15": getattr(mt5, "TIMEFRAME_M15", None),
+        "M30": getattr(mt5, "TIMEFRAME_M30", None),
+        "H1": getattr(mt5, "TIMEFRAME_H1", None),
+        "H4": getattr(mt5, "TIMEFRAME_H4", None),
+        "D1": getattr(mt5, "TIMEFRAME_D1", None),
+    }
+    if frame not in frames or frames[frame] is None:
+        return {**err("Timeframe must be M1, M5, M15, M30, H1, H4, or D1.")}
     try:
         count = max(50, min(300, int(msg.get("count") or 120)))
     except (TypeError, ValueError, OverflowError):
@@ -1275,7 +1587,22 @@ def handle_history(msg):
             "source": "local MT5 terminal", "ts": int(time.time())}
 
 
-HANDLERS = {"login": handle_login, "preview_order": handle_order_preview, "order": handle_order, "close": handle_close, "positions": handle_positions, "account": handle_account, "quote": handle_quote, "search": handle_search, "symbols": handle_symbols, "history": handle_history}
+HANDLERS = {
+    "login": handle_login,
+    "preview_order": handle_order_preview,
+    "order": handle_order,
+    "close": handle_close,
+    "positions": handle_positions,
+    "pending_orders": handle_pending_orders,
+    "place_pending": handle_place_pending,
+    "cancel_pending": handle_cancel_pending,
+    "deals_history": handle_deals_history,
+    "account": handle_account,
+    "quote": handle_quote,
+    "search": handle_search,
+    "symbols": handle_symbols,
+    "history": handle_history,
+}
 
 
 # ---------------------------------------------------------------- server

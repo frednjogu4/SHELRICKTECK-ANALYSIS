@@ -348,8 +348,12 @@ export function placeBridgeOrder(o) {
   if (o?.manualConfirmed !== true || !o.intentId || (!direct && !o.previewId)) return Promise.reject(new Error('A fresh mode-matched preview (or 1-click direct intent) and explicit per-order confirmation are required. No order was sent.'));
   const sl = Number.isFinite(Number(o.sl)) && Number(o.sl) > 0 ? Number(o.sl) : 0;
   const tp = Number.isFinite(Number(o.tp)) && Number(o.tp) > 0 ? Number(o.tp) : 0;
-  return frame({ type: 'order', environment: o.environment, symbol: o.symbol, side: o.side, volume: o.volume, sl, tp,
-    preview_id: o.previewId, direct, intent_id: o.intentId, confirmed: true });
+  const payload = { type: 'order', environment: o.environment, symbol: o.symbol, side: o.side, volume: o.volume, sl, tp,
+    preview_id: o.previewId, direct, intent_id: o.intentId, confirmed: true };
+  if (Number.isFinite(Number(o.lots)) && Number(o.lots) > 0) payload.lots = Number(o.lots);
+  if (o.strictMinVolume) payload.strict_min_volume = true;
+  if (Number.isFinite(Number(o.maxSlippagePoints)) && Number(o.maxSlippagePoints) > 0) payload.max_slippage_points = Math.round(Number(o.maxSlippagePoints));
+  return frame(payload);
 }
 export function closeBridgeOrder(o) {
   const req = (o && typeof o === 'object') ? o : { ticket: o };
@@ -361,9 +365,31 @@ export function closeBridgeOrder(o) {
   return frame({ type: 'close', ticket, environment: req.environment, intent_id: req.intentId, confirmed: true });
 }
 export function bridgePositions() { return frame({ type: 'positions' }); }
+export function bridgePendingOrders() { return frame({ type: 'pending_orders' }); }
+export function placeBridgePendingOrder(o) {
+  if (!verifiedOrderEnvironment(o?.environment)) return Promise.reject(new Error('MT5 account mode does not match the explicitly selected REAL or DEMO pending order.'));
+  if (o?.manualConfirmed !== true || !o.intentId) return Promise.reject(new Error('Explicit confirmation and unique intentId are required for pending orders.'));
+  const sl = Number.isFinite(Number(o.sl)) && Number(o.sl) > 0 ? Number(o.sl) : 0;
+  const tp = Number.isFinite(Number(o.tp)) && Number(o.tp) > 0 ? Number(o.tp) : 0;
+  const payload = {
+    type: 'place_pending', environment: o.environment, symbol: o.symbol,
+    order_type: o.orderType, entry_price: Number(o.entryPrice), volume: Number(o.volume || 0),
+    sl, tp, intent_id: o.intentId, confirmed: true
+  };
+  if (Number.isFinite(Number(o.lots)) && Number(o.lots) > 0) payload.lots = Number(o.lots);
+  if (o.strictMinVolume) payload.strict_min_volume = true;
+  return frame(payload);
+}
+export function cancelBridgePendingOrder(o) {
+  if (!verifiedOrderEnvironment(o?.environment)) return Promise.reject(new Error('MT5 account mode does not match the explicitly selected REAL or DEMO pending cancellation.'));
+  const ticket = Number(o?.ticket);
+  if (o?.manualConfirmed !== true || !Number.isInteger(ticket) || ticket <= 0) return Promise.reject(new Error('Explicit confirmation and valid pending order ticket are required.'));
+  return frame({ type: 'cancel_pending', ticket, environment: o.environment, confirmed: true });
+}
+export function bridgeDealsHistory(days = 30) { return frame({ type: 'deals_history', days }); }
 export async function bridgeAccount() {
   const snapshot=await frame({ type: 'account' });
-  if(account)account={...account,balance:snapshot.balance,equity:snapshot.equity,margin_free:snapshot.margin_free,currency:snapshot.currency,leverage:snapshot.leverage,environment:snapshot.environment||null,demo:snapshot.environment==='demo'?true:snapshot.environment==='real'?false:null,tradeMode:snapshot.trade_mode??null};
+  if(account)account={...account,balance:snapshot.balance,equity:snapshot.equity,margin:snapshot.margin,margin_free:snapshot.margin_free,margin_level:snapshot.margin_level,profit:snapshot.profit,daily_realized_pl:snapshot.daily_realized_pl,open_positions_count:snapshot.open_positions_count,pending_orders_count:snapshot.pending_orders_count,currency:snapshot.currency,leverage:snapshot.leverage,environment:snapshot.environment||null,demo:snapshot.environment==='demo'?true:snapshot.environment==='real'?false:null,tradeMode:snapshot.trade_mode??null,ts:snapshot.ts||Math.floor(Date.now()/1000)};
   return snapshot;
 }
 export function bridgeSymbols() { return frame({ type: 'symbols' }); }

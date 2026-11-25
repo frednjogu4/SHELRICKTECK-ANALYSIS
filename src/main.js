@@ -45,6 +45,9 @@ import { headlineConcerns, eventConcerns, eventTime, currenciesOf, marketsForCur
 import { buildScheduledNewsAlerts } from './schedulednews.js';
 import { initCommandCentre } from './commandcentre.js';
 import { buildExposureReconcile, renderExposureReconcile } from './exposurereconcile.js';
+import { computeMultiTimeframeConfluence, stampSignalEnvelope, getSignalValidityState, evaluateTradeSupervisor, buildMarketIntelligenceBrief, evaluateSingleTimeframe, resampleCandles } from './supervisor.js';
+import { DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
+import { pushNotificationItem, listNotifications, unreadNotificationCount, markNotificationRead, markAllNotificationsRead, updateNotificationStatusBySignal, clearResolvedNotifications, subscribeNotifications } from './notify.js';
 
 /* The new unified Overview has its own structure; the legacy initializer safely no-ops without its old KPI anchor. */
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => initCommandCentre(), { once: true });
@@ -425,20 +428,27 @@ $('#themeBtn').onclick=()=>{
 
 /* ---------- navigation ---------- */
 const VIEW_META={
-  overview:['Market Command Centre','Workspace · unified read-only overview'],
-  markets:['Markets','All instruments · live Deriv prices'],
-  trade:['Chart & Trade','Live TradingView chart · broker-routed orders'],
-  state:['Market state','Four timeframes · live directional bias'],
-  signals:['Signal Analyzer','MTF confluence → validated decision'],
-  sniper:['Sniper alerts','Choose markets · entry/exit notifications'],
-  gold:['Gold / USD','Dedicated XAU/USD analysis · no orders'],
-  proscalper:['Pro Scalper','Deterministic technical analysis · execution disabled'],
-  news:['News','Live headlines & economic calendar'],
-  portfolio:['Portfolio','Positions, balance & history'],
-  automation:['Automation','Broker bridges & XML bots'],
-  learn:['Calculator Lab','Risk education · hypothetical tools'],
+  overview:['Market Command Centre','Workspace · unified market and portfolio overview'],
+  markets:['Market Scanner','All instruments · live multi-asset quotes & signals'],
+  tv:['TradingView Command Centre','Interactive multi-pane charts · drawing tools · display-only vs broker execution'],
   watch:['Watchlist','Your pinned markets · live charts & quick trade'],
-  settings:['Settings','Appearance, AI keys & notifications']
+  trade:['Manual Trading Centre','Market & pending limit/stop ticket · live pre-order AI Supervisor'],
+  positions:['Open Positions','Live broker positions · net P&L after fees · dynamic monetary target close'],
+  pending:['Pending Orders','Active Exness MT5 limit & stop orders · verified broker management'],
+  portfolio:['Portfolio','Account balance, exposure & risk summary'],
+  history:['Trade History','Broker-confirmed deals, win rate, profit factor & CSV export'],
+  intelligence:['AI Market Intelligence','Observed market facts vs AI technical & macro scenarios'],
+  state:['Market state','Four timeframes · live directional bias'],
+  signals:['Signal Analyzer','7-timeframe confluence (1m–1D) · synchronized validity countdown'],
+  sniper:['Sniper Alerts','Monitored market setups · entry/exit notifications'],
+  gold:['Strategy Builder · Gold / USD','Transparent multi-rule setup evaluation & XAU/USD lab'],
+  proscalper:['Pro Scalper','Deterministic technical analysis · execution disabled'],
+  news:['News & Economic Calendar','EAT + UTC macro releases · high-impact Sniper risk windows'],
+  automation:['Sniper Entry & Broker Hub','Per-account automated Sniper execution · dynamic $2–$10+ net profit close'],
+  learn:['Calculator Lab','Risk Management · sizing, drawdown & leverage calculators'],
+  backtest:['Backtesting Lab','Historical candle replay with spread, slippage & commission modelling'],
+  settings:['Settings','Connections, risk defaults, Sniper rules, notifications & appearance'],
+  security:['Security & Audit Logs','Credential isolation · DEMO/REAL locks · immutable execution audit log']
 };
 function goto(view){
   if(!VIEW_META[view])view='overview';
@@ -455,7 +465,13 @@ function goto(view){
   closeSidebar();
   render(view);
   if(view==='markets'){ mktScanRefresh(); }
-  if(view==='trade'){ if(chartDisplayMode==='tv')setTimeout(()=>tv.mountChart($('#tvChart'),state.chart.sym),40);else refreshChartSignalPlot(true); refreshChartOutlook(true); }
+  if(view==='tv'){ if(typeof mountCommandTvWorkspace==='function')setTimeout(()=>mountCommandTvWorkspace(),30); }
+  if(view==='trade'){ if(chartDisplayMode==='tv')setTimeout(()=>tv.mountChart($('#tvChart'),state.chart.sym),40);else refreshChartSignalPlot(true); refreshChartOutlook(true); if(typeof refreshTicketSupervisorBanner==='function')refreshTicketSupervisorBanner(); }
+  if(view==='positions'){ if(typeof renderUnifiedOpenPositions==='function')renderUnifiedOpenPositions(); }
+  if(view==='pending'){ if(typeof refreshAndRenderPendingOrders==='function')refreshAndRenderPendingOrders(); }
+  if(view==='history'){ if(typeof renderUnifiedTradeHistory==='function')renderUnifiedTradeHistory(); }
+  if(view==='intelligence'){ if(typeof refreshMarketIntelligenceView==='function')refreshMarketIntelligenceView(); }
+  if(view==='security'){ if(typeof renderSecurityAuditView==='function')renderSecurityAuditView(); }
   if(view==='gold')refreshGoldOutlook(true);
   if(view==='watch')refreshWatchOutlooks();
   if(view==='learn')refreshDrawdownOutlook();
@@ -846,13 +862,16 @@ async function refreshMt5Snapshot(showToast=false){
     if(state.broker?.type!=='mt5'||epoch!==mt5SnapshotEpoch)return false;
     const a=state.broker.account||{};
     state.broker.account=Object.assign({},a,{
-      balance:acct.balance,equity:acct.equity,margin_free:acct.margin_free,
+      balance:acct.balance,equity:acct.equity,margin:acct.margin,margin_free:acct.margin_free,
+      margin_level:acct.margin_level,profit:acct.profit,daily_realized_pl:acct.daily_realized_pl,
+      open_positions_count:acct.open_positions_count,pending_orders_count:acct.pending_orders_count,ts:acct.ts,
       currency:acct.currency||a.currency,leverage:acct.leverage||a.leverage||null,
       environment:acct.environment||null,demo:acct.environment==='demo'?true:acct.environment==='real'?false:null,tradeMode:acct.trade_mode??a.tradeMode??null
     });
     state.balance=acct.balance!=null&&Number.isFinite(Number(acct.balance))?Number(acct.balance):null;
     state.mt5LivePositions=Array.isArray(positions.list)?positions.list:null;
     state.mt5LastSnapshotAt=Date.now(); state.mt5SnapshotFailed=false;
+    if(typeof updateAccountTopBar==='function')updateAccountTopBar();
     updateSessionInfo(); updateKpis(); updatePortfolioLive();
     refreshMt5SizePlan();
     if(state.view==='overview')renderOverview();
@@ -2478,9 +2497,41 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
     return;
   }
   const demo=acct.demo,environment=demo?'demo':'real',environmentLabel=demo?'DEMO':'REAL';
-  const directOneClick=!!state.settings.oneClick&&!isCloudflareReadonlyMode();
+  const orderKind=($('#orderTypeSelect')?.value||'MARKET').toUpperCase();
+  const explicitLotsRaw=parseFloat($('#orderLots')?.value||'');
+  const explicitLots=Number.isFinite(explicitLotsRaw)&&explicitLotsRaw>0?explicitLotsRaw:null;
+  const maxSlippagePoints=Math.max(1,Math.min(100,parseInt($('#orderSlippage')?.value||'20',10)||20));
+  const strictMinVolume=Boolean($('#strictMinLotChk')?.checked);
   const cleanSl=Number.isFinite(sl)&&sl>0?sl:0;
   const cleanTp=Number.isFinite(tp)&&tp>0?tp:0;
+
+  if(orderKind!=='MARKET'){
+    const entryPrice=parseFloat($('#orderEntryPrice')?.value||'');
+    if(!Number.isFinite(entryPrice)||entryPrice<=0){
+      toast('Pending trigger price required','Enter a valid limit/stop trigger price for '+orderKind+'.','err');
+      return;
+    }
+    const btnP=$('#placeOrderBtn'),oldP=btnP?btnP.textContent:'';
+    if(btnP){btnP.disabled=true;btnP.textContent='Placing '+environmentLabel+' '+orderKind+'…';}
+    try{
+      const intentId=Date.now().toString(36)+Math.random().toString(36).slice(2,16);
+      const pendRes=await bridge.placeBridgePendingOrder({
+        environment,symbol:I.s.replace('/',''),orderType:orderKind,entryPrice,volume:amt,
+        lots:explicitLots,strictMinVolume,sl:cleanSl,tp:cleanTp,intentId,manualConfirmed:true
+      });
+      if(pendRes.type!=='pending_placed')throw new Error(pendRes.message||'MT5 pending order was not confirmed.');
+      if(typeof recordPlatformAudit==='function')recordPlatformAudit('MANUAL_PENDING',orderKind,{symbol:I.s,ticket:pendRes.ticket,lots:pendRes.lots,entryPrice:pendRes.entry_price,environment});
+      toast(environmentLabel+' pending order placed',orderKind+' '+I.s+' · ticket #'+pendRes.ticket+' · '+pendRes.lots+' lots @ '+pendRes.entry_price,'ok');
+      notify('Pending order placed',environmentLabel+' '+orderKind+' '+I.s+' · #'+pendRes.ticket+' @ '+pendRes.entry_price,{tag:'mt5-pending',kind:'ok',broker:'MT5',accountMode:environmentLabel,symbol:I.s});
+      if(typeof refreshAndRenderPendingOrders==='function')refreshAndRenderPendingOrders();
+      await refreshMt5Snapshot(false);
+    }catch(e){
+      toast('Pending order rejected',String(e.message||e),'err');
+    }finally{if(btnP){btnP.disabled=false;btnP.textContent=oldP;}}
+    return;
+  }
+
+  const directOneClick=!!state.settings.oneClick&&!isCloudflareReadonlyMode();
   if(!directOneClick&&(cleanSl<=0||cleanTp<=0)){
     toast('Stop and target required',environmentLabel+' preview orders require both a valid stop-loss and take-profit (or enable 1-click live execution for optional SL/TP); no order was sent.','warn');
     return;
@@ -2491,12 +2542,13 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
   try{
     if(directOneClick){
       const intentId=Date.now().toString(36)+Math.random().toString(36).slice(2,16);
-      const result=await bridge.placeBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl:cleanSl,tp:cleanTp,
+      const result=await bridge.placeBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,lots:explicitLots,strictMinVolume,maxSlippagePoints,sl:cleanSl,tp:cleanTp,
         direct:true,intentId,manualConfirmed:true});
       if(result.type!=='filled'||result.demo!==demo||result.environment!==environment)throw new Error('The bridge did not verify a fill on the expected '+environmentLabel+' account. Inspect MT5 positions/history before retrying.');
+      if(typeof recordPlatformAudit==='function')recordPlatformAudit('MANUAL_ORDER','MT5_'+state.side,{symbol:I.s,ticket:result.ticket,lots:result.lots,price:result.price,environment});
       const riskSuffix=result.estimated_buffered_risk!=null?(' · buffered risk '+fmtAcctMoney(result.estimated_buffered_risk,result.currency)):'';
       toast(environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots @ '+fmtPx(result.price,I.d)+riskSuffix,'ok');
-      notify('Exness '+environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots. Close anytime from Portfolio → Live MT5 positions or in MT5.',{tag:'mt5-manual-order',kind:'ok'});
+      notify('Exness '+environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots. Close anytime from Open Positions or in MT5.',{tag:'mt5-manual-order',kind:'ok',broker:'MT5',accountMode:environmentLabel,symbol:I.s,direction:state.side,status:'EXECUTED'});
       await refreshMt5Snapshot(false);
       return;
     }
@@ -2513,17 +2565,18 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
       +'Current '+(preview.side==='BUY'?'ask':'bid')+' '+fmtPx(preview.price,I.d)+' · stop '+fmtPx(preview.sl,I.d)+' · target '+fmtPx(preview.tp,I.d)+'\n'
       +'Buffered estimated stop risk '+risk+' ('+Number(preview.risk_pct).toFixed(2)+'% of equity) · target estimate '+reward+' · R:R '+Number(preview.rr).toFixed(2)+' · margin '+margin+'\n\n'
       +'Bridge hard limits (preview mode): maximum 0.5% buffered stop-risk per order, 2% account daily loss, one open position, minimum 1.2 reward:risk, and 80% free-margin ceiling. Quote and limits are rechecked by the local MT5 bridge at send time. Preview expires in 30 seconds.\n'
-      +'This app never opens an order automatically; close positions from Portfolio → Live MT5 positions or in MetaTrader 5. Market orders may slip and a stop does not guarantee the final loss.';
+      +'Close positions anytime from Open Positions, Portfolio → Live MT5 positions, or MetaTrader 5. Market orders may slip and a stop does not guarantee the final loss.';
     if(btn)btn.textContent='Waiting for '+environmentLabel+' confirmation…';
     const confirmed=await askConfirm('Confirm Exness '+environmentLabel+' order',details,'Place '+environmentLabel+' order');
     if(!confirmed){toast('Cancelled','No Exness order was sent.');return;}
     if(btn)btn.textContent='Sending '+environmentLabel+' order…';
     const intentId=Date.now().toString(36)+Math.random().toString(36).slice(2,16);
-    const result=await bridge.placeBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl:cleanSl,tp:cleanTp,
+    const result=await bridge.placeBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,lots:explicitLots,strictMinVolume,maxSlippagePoints,sl:cleanSl,tp:cleanTp,
       previewId:preview.preview_id,intentId,manualConfirmed:true});
     if(result.type!=='filled'||result.demo!==demo||result.environment!==environment)throw new Error('The bridge did not verify a fill on the expected '+environmentLabel+' account. Inspect MT5 positions/history before retrying.');
+    if(typeof recordPlatformAudit==='function')recordPlatformAudit('MANUAL_ORDER','MT5_'+state.side,{symbol:I.s,ticket:result.ticket,lots:result.lots,price:result.price,environment});
     toast(environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots · buffered risk '+fmtAcctMoney(result.estimated_buffered_risk,result.currency),'ok');
-    notify('Exness '+environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots. Close anytime from Portfolio → Live MT5 positions or in MT5.',{tag:'mt5-manual-order',kind:'ok'});
+    notify('Exness '+environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots.',{tag:'mt5-manual-order',kind:'ok',broker:'MT5',accountMode:environmentLabel,symbol:I.s,direction:state.side,status:'EXECUTED'});
     await refreshMt5Snapshot(false);
   }catch(e){
     const message=String(e.message||e);
@@ -2610,6 +2663,14 @@ async function placeOrder(){
   if(!I){toast('Market unavailable','Select a supported chart symbol before placing an order.','warn');return;}
   const amt=parseFloat($('#orderAmount').value);
   if(!amt||amt<1){ toast('Invalid amount','Enter at least $1 to place an order.','err'); return; }
+  if(typeof preValidateManualTicketDirection==='function'){
+    const dirGate=await preValidateManualTicketDirection(I.s,state.side);
+    if(!dirGate.ok){
+      toast('Order blocked · Signal direction changed',dirGate.reason,'err');
+      notify('AI Trade Supervisor blocked stale order',dirGate.reason,{tag:'sup-block',kind:'err',symbol:I.s,status:'INVALIDATED'});
+      return;
+    }
+  }
   const sl=parseFloat($('#orderSL').value), tp=parseFloat($('#orderTP').value), tp2=parseFloat($('#orderTP2').value);
   if(state.broker?.type==='mt5'){
     if(!['demo','real'].includes(state.broker.account?.environment)||state.broker.account?.demo!==(state.broker.account?.environment==='demo')){
@@ -6382,7 +6443,11 @@ async function autoTradeCycle(){
     }
     const candidate=sigs[0], source=String(candidate.data_source||candidate.source||'source unavailable');
     atScanInfo={at:Date.now(),checked:results.length,best:{symbol:candidate.symbol,signal:candidate.signal,confidence:candidate.confidence||0,source}};
-    atStatusUI('scan','🔍 analysis-only · '+candidate.symbol+' '+candidate.signal+' '+(candidate.confidence||0)+'%','Sniper entry is blocked. Source: '+source+' · no order placed.');
+    if(typeof isSniperExecutionArmedNow==='function'&&isSniperExecutionArmedNow()){
+      await autoEntry(candidate,results);
+      return;
+    }
+    atStatusUI('scan','🔍 analysis-only · '+candidate.symbol+' '+candidate.signal+' '+(candidate.confidence||0)+'%','Sniper execution is OFF (monitoring only). Source: '+source+' · no order placed.');
     return;
   }catch(e){
     const msg=String(e&&e.message||e||'Signal scan unavailable');
@@ -6391,8 +6456,11 @@ async function autoTradeCycle(){
     if(atFails>=3){atFails=0;atCooldownUntil=Date.now()+60000;notify('Sniper scan paused','Three consecutive scan failures. Analysis will retry in one minute; no entry was placed.',{tag:'auto-scan',kind:'warn'});}
   }finally{ atBusy=false; }
 }
-async function autoEntry(_sig,_path){
-  throw new Error('Sniper entries are disabled; the Sniper is analysis-only. No broker order was sent.');
+async function autoEntry(sig,_allResults){
+  if(typeof executeSupervisedSniperEntry!=='function'||!isSniperExecutionArmedNow()){
+    throw new Error('Sniper execution is disarmed for this account; explicitly enable Arm Sniper Execution on a verified connected broker account first. No broker order was sent.');
+  }
+  return executeSupervisedSniperEntry(sig);
 }
 
 
@@ -7083,6 +7151,1451 @@ async function loadPipelineFlow(){
   }catch(e){
     div.innerHTML='<div class="tiny" style="color:var(--amber)">Pipeline unavailable: '+escHtml(String(e.message||e))+'</div>';
   }
+}
+
+/* ============================================================================
+ * SHELRICKTECH INSTITUTIONAL TERMINAL CONTROLLER (Sections 3–20)
+ * Account Top Bar · Notification Centre · TradingView Command Centre ·
+ * 7-TF Confluence · AI Trade Supervisor · Automated Sniper & Dynamic Net-Profit
+ * Target Auto-Closure · Open Positions · Pending Orders · Trade History ·
+ * AI Market Intelligence · Backtesting Lab · Security & Audit Trail
+ * ============================================================================ */
+
+const sniperRuntime = createSniperRuntime();
+const SNIPER_CFG_STORAGE_KEY = 'aurum_sniper_v2';
+const AUDIT_STORAGE_KEY = 'aurum_audit_trail_v2';
+
+function loadSniperExecConfig() {
+  try {
+    const raw = localStorage.getItem(SNIPER_CFG_STORAGE_KEY);
+    return normalizeSniperConfig(raw ? JSON.parse(raw) : {});
+  } catch {
+    return normalizeSniperConfig({});
+  }
+}
+let sniperExecConfig = loadSniperExecConfig();
+let mt5PendingOrdersCache = [];
+let mt5DealsHistoryCache = [];
+const activeSignalEnvelopes = {};
+let lastMtfConfluenceBySym = {};
+let tvCmdState = { symbol: 'XAU/USD', interval: '15', layout: 'single' };
+
+try {
+  const savedAudit = JSON.parse(localStorage.getItem(AUDIT_STORAGE_KEY) || '[]');
+  if (Array.isArray(savedAudit)) {
+    savedAudit.slice(0, 150).reverse().forEach((e) => sniperRuntime.auditEvents.unshift(e));
+  }
+} catch {}
+
+function recordPlatformAudit(category, action, detail = {}) {
+  const actor = state.user || 'local-operator';
+  const entry = sniperRuntime.recordAudit(category, action, detail, actor);
+  try {
+    localStorage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(sniperRuntime.auditEvents.slice(0, 200)));
+  } catch {}
+  if (state.view === 'security') renderSecurityAuditView();
+  return entry;
+}
+
+function saveSniperExecConfig() {
+  try { localStorage.setItem(SNIPER_CFG_STORAGE_KEY, JSON.stringify(sniperExecConfig)); } catch {}
+}
+
+function getActiveBrokerIdentity() {
+  if (state.broker?.type === 'mt5' && state.broker.account) {
+    const acct = state.broker.account;
+    const env = acct.environment === 'demo' ? 'demo' : acct.environment === 'real' ? 'real' : null;
+    if (!env) return { connected: false, broker: null, accountId: null, environment: null, authKey: null };
+    const id = String(acct.login || readMt5Identity()?.login || 'mt5');
+    return {
+      connected: true,
+      broker: 'mt5',
+      brokerLabel: 'EXNESS MT5',
+      accountId: id,
+      environment: env,
+      currency: acct.currency || 'USD',
+      balance: Number(acct.balance),
+      equity: Number(acct.equity),
+      freeMargin: Number(acct.margin_free),
+      marginLevel: Number(acct.margin_level),
+      dailyRealizedPl: acct.daily_realized_pl != null ? Number(acct.daily_realized_pl) : null,
+      syncTsSec: acct.ts || Math.floor((state.mt5LastSnapshotAt || Date.now()) / 1000),
+      authKey: buildAccountAuthKey('mt5', id, env),
+    };
+  }
+  const dh = state.derivHealth;
+  const proxyReady = !!(dh && dh.authorized && dh.tradingEnabled);
+  if (state.broker?.type === 'deriv' && state.broker.mode !== 'cloud_readonly') {
+    const acct = state.broker.account || {};
+    const isDemo = !!(acct.is_virtual || /^VR/i.test(acct.loginid || '') || /demo|virtual/i.test(acct.account_type || ''));
+    const env = isDemo ? 'demo' : 'real';
+    const id = String(acct.loginid || acct.account_id || 'deriv');
+    return {
+      connected: true,
+      broker: 'deriv',
+      brokerLabel: 'DERIV',
+      accountId: id,
+      environment: env,
+      currency: acct.currency || 'USD',
+      balance: Number.isFinite(Number(state.balance)) ? Number(state.balance) : Number(acct.balance),
+      equity: Number.isFinite(Number(state.balance)) ? Number(state.balance) : Number(acct.balance),
+      freeMargin: Number.isFinite(Number(state.balance)) ? Number(state.balance) : null,
+      marginLevel: null,
+      dailyRealizedPl: typeof todayRealizedPl === 'function' ? todayRealizedPl() : null,
+      syncTsSec: Math.floor(Date.now() / 1000),
+      authKey: buildAccountAuthKey('deriv', id, env),
+    };
+  }
+  if (proxyReady) {
+    const env = dh.demo ? 'demo' : 'real';
+    const id = String(dh.loginid || 'deriv-proxy');
+    return {
+      connected: true,
+      broker: 'deriv',
+      brokerLabel: 'DERIV PROXY',
+      accountId: id,
+      environment: env,
+      currency: dh.currency || 'USD',
+      balance: Number.isFinite(Number(dh.balance)) ? Number(dh.balance) : Number(state.balance),
+      equity: Number.isFinite(Number(dh.balance)) ? Number(dh.balance) : Number(state.balance),
+      freeMargin: Number.isFinite(Number(dh.balance)) ? Number(dh.balance) : null,
+      marginLevel: null,
+      dailyRealizedPl: typeof todayRealizedPl === 'function' ? todayRealizedPl() : null,
+      syncTsSec: Math.floor(Date.now() / 1000),
+      authKey: buildAccountAuthKey('deriv', id, env),
+    };
+  }
+  return { connected: false, broker: null, brokerLabel: 'Disconnected', accountId: null, environment: null, authKey: null };
+}
+
+function isSniperExecutionArmedNow() {
+  if (isCloudflareReadonlyMode() || sniperExecConfig.emergencyHalted || !sniperExecConfig.execEnabled) return false;
+  const ident = getActiveBrokerIdentity();
+  if (!ident.connected || !ident.authKey) return false;
+  return sniperExecConfig.authorizedKey === ident.authKey;
+}
+
+/* ---------- 1. Permanently Visible Live Account Status Top Bar (Section 3) ---------- */
+function updateAccountTopBar() {
+  const ident = getActiveBrokerIdentity();
+  const dot = $('#topBarBrokerDot');
+  const txt = $('#topBarBrokerText');
+  const modeBadge = $('#topBarModeBadge');
+  const balEl = $('#topBarBalance');
+  const eqEl = $('#topBarEquity');
+  const fmEl = $('#topBarFreeMargin');
+  const mlEl = $('#topBarMarginLevel');
+  const opEl = $('#topBarOpenPl');
+  const dpEl = $('#topBarDailyPl');
+  const cntEl = $('#topBarCounts');
+  const syncEl = $('#topBarSyncTs');
+  const sniperBadge = $('#topBarSniperBadge');
+
+  const mt5List = Array.isArray(state.mt5LivePositions) ? state.mt5LivePositions : [];
+  const appOpenList = Array.isArray(state.positions) ? state.positions : [];
+  const openCount = ident.broker === 'mt5' ? mt5List.length : appOpenList.length;
+  const pendCount = ident.broker === 'mt5' ? mt5PendingOrdersCache.length : 0;
+
+  // Sidebar open/pending badges
+  const openNavBadge = $('#navOpenPosBadge');
+  if (openNavBadge) { openNavBadge.textContent = String(openCount); openNavBadge.style.display = openCount > 0 ? '' : 'none'; }
+  const pendNavBadge = $('#navPendingBadge');
+  if (pendNavBadge) { pendNavBadge.textContent = String(pendCount); pendNavBadge.style.display = pendCount > 0 ? '' : 'none'; }
+
+  if (!ident.connected) {
+    // Pause Sniper safely on broker disconnect (never force-close open positions)
+    if (sniperExecConfig.execEnabled) {
+      sniperExecConfig.execEnabled = false;
+      saveSniperExecConfig();
+      recordPlatformAudit('SNIPER_SAFETY_PAUSE', 'BROKER_DISCONNECTED', { note: 'Broker disconnected; Sniper paused safely without closing open positions.' });
+      syncSniperUiControls();
+    }
+    if (dot) dot.className = 'dot off';
+    if (txt) txt.textContent = 'Broker: Disconnected';
+    if (modeBadge) { modeBadge.className = 'badge gray'; modeBadge.textContent = 'NO ACCOUNT'; }
+    if (balEl) balEl.textContent = '—';
+    if (eqEl) eqEl.textContent = '—';
+    if (fmEl) fmEl.textContent = '—';
+    if (mlEl) mlEl.textContent = '—';
+    if (opEl) { opEl.textContent = '—'; opEl.className = 'v'; }
+    if (dpEl) { dpEl.textContent = '—'; dpEl.className = 'v'; }
+    if (cntEl) cntEl.textContent = '0 / 0';
+    if (syncEl) syncEl.textContent = 'Sync: Disconnected · no sample balance shown';
+  } else {
+    const syncAgeSec = ident.syncTsSec ? Math.max(0, Math.floor(Date.now() / 1000) - ident.syncTsSec) : 0;
+    const isStale = syncAgeSec > 45;
+    if (dot) dot.className = isStale ? 'dot warn' : 'dot live';
+    if (txt) txt.textContent = `${ident.brokerLabel} · ${ident.accountId}`;
+    if (modeBadge) {
+      modeBadge.className = ident.environment === 'real' ? 'badge sell' : 'badge buy';
+      modeBadge.textContent = ident.environment.toUpperCase();
+    }
+    const ccy = ident.currency || 'USD';
+    if (balEl) balEl.textContent = Number.isFinite(ident.balance) ? fmtAcctMoney(ident.balance, ccy) : '—';
+
+    let floatingNet = 0;
+    if (ident.broker === 'mt5') {
+      floatingNet = mt5List.reduce((s, p) => s + Number(p.net_profit ?? p.profit ?? 0), 0);
+    } else {
+      floatingNet = appOpenList.reduce((s, p) => s + Number(typeof posPnl === 'function' ? (posPnl(p) || 0) : 0), 0);
+    }
+    const eqVal = Number.isFinite(ident.equity) ? ident.equity : (Number.isFinite(ident.balance) ? ident.balance + floatingNet : NaN);
+    if (eqEl) eqEl.textContent = Number.isFinite(eqVal) ? fmtAcctMoney(eqVal, ccy) : '—';
+    if (fmEl) fmEl.textContent = Number.isFinite(ident.freeMargin) ? fmtAcctMoney(ident.freeMargin, ccy) : '—';
+    if (mlEl) mlEl.textContent = Number.isFinite(ident.marginLevel) && ident.marginLevel > 0 ? `${ident.marginLevel.toFixed(1)}%` : '—';
+    if (opEl) {
+      opEl.textContent = openCount > 0 ? fmtAcctMoney(floatingNet, ccy, true) : '$0.00';
+      opEl.className = 'v ' + (floatingNet > 0 ? 'up' : floatingNet < 0 ? 'down' : '');
+    }
+    if (dpEl) {
+      const dpl = ident.dailyRealizedPl;
+      dpEl.textContent = Number.isFinite(dpl) ? fmtAcctMoney(dpl, ccy, true) : '—';
+      dpEl.className = 'v ' + (dpl > 0 ? 'up' : dpl < 0 ? 'down' : '');
+    }
+    if (cntEl) cntEl.textContent = `${openCount} / ${pendCount}`;
+    if (syncEl) {
+      const iso = new Date((ident.syncTsSec || Math.floor(Date.now() / 1000)) * 1000).toISOString().slice(11, 19);
+      syncEl.textContent = isStale ? `STALE (${syncAgeSec}s ago · ${iso} UTC)` : `Synced ${iso} UTC`;
+    }
+    // Verify account lock if Sniper was armed for a different account
+    if (sniperExecConfig.execEnabled && sniperExecConfig.authorizedKey !== ident.authKey) {
+      sniperExecConfig.execEnabled = false;
+      saveSniperExecConfig();
+      recordPlatformAudit('SNIPER_SAFETY_PAUSE', 'ACCOUNT_CHANGED', { previous: sniperExecConfig.authorizedKey, current: ident.authKey });
+      toast('Sniper disarmed safely', 'Active broker account changed — re-authorize Sniper explicitly for this account if desired.', 'warn');
+      syncSniperUiControls();
+    }
+  }
+
+  if (sniperBadge) {
+    const armed = isSniperExecutionArmedNow();
+    const profitOn = sniperExecConfig.autoProfitCloseEnabled;
+    if (sniperExecConfig.emergencyHalted) {
+      sniperBadge.className = 'badge sell';
+      sniperBadge.textContent = 'EMERGENCY HALTED';
+    } else if (armed && profitOn) {
+      sniperBadge.className = 'badge buy';
+      sniperBadge.textContent = `SNIPER ON · +$${Number(sniperExecConfig.netProfitTargetUsd).toFixed(2)} NET`;
+    } else if (armed) {
+      sniperBadge.className = 'badge buy';
+      sniperBadge.textContent = 'SNIPER ARMED';
+    } else if (profitOn) {
+      sniperBadge.className = 'badge gold';
+      sniperBadge.textContent = `AUTO-CLOSE +$${Number(sniperExecConfig.netProfitTargetUsd).toFixed(2)} NET`;
+    } else {
+      sniperBadge.className = 'badge gray';
+      sniperBadge.textContent = 'SNIPER OFF';
+    }
+  }
+}
+
+/* ---------- 2. Signal Notification Centre UI (Section 9) ---------- */
+function renderNotificationDrawer() {
+  const badge = $('#notifBadge');
+  const unread = unreadNotificationCount();
+  if (badge) {
+    badge.textContent = unread > 99 ? '99+' : String(unread);
+    badge.classList.toggle('hidden', unread === 0);
+  }
+  const listEl = $('#notifDrawerList');
+  if (!listEl) return;
+  const items = listNotifications({
+    status: $('#notifFilterStatus')?.value || 'ALL',
+    broker: $('#notifFilterBroker')?.value || 'ALL',
+    unreadOnly: Boolean($('#notifUnreadOnlyChk')?.checked),
+  });
+  if (!items.length) {
+    listEl.innerHTML = '<div class="empty"><b>No matching notifications</b>Adjust filters or wait for new setups and trade updates.</div>';
+    return;
+  }
+  listEl.innerHTML = items.map((n) => {
+    const cls = n.direction === 'BUY' ? 'buy' : n.direction === 'SELL' ? 'sell' : n.status === 'INVALIDATED' ? 'sell' : 'neutral';
+    const ts = new Date(n.createdAtMs).toISOString().replace('T', ' ').slice(11, 19) + ' UTC';
+    return `<div class="notif-card ${n.read ? '' : 'unread'}" data-ntf-id="${escHtml(n.id)}" data-ntf-sym="${escHtml(n.symbol || '')}">
+      <div class="row between wrap" style="gap:6px">
+        <b>${escHtml(n.title)}</b>
+        <span class="badge ${cls}">${escHtml(n.status)}</span>
+      </div>
+      <div class="muted tiny" style="margin-top:4px;line-height:1.45">${escHtml(n.body)}</div>
+      <div class="row between wrap tiny faint mono" style="margin-top:6px">
+        <span>${escHtml([n.symbol, n.timeframe, n.strength != null ? n.strength + '/100' : '', n.broker !== 'ALL' ? n.broker : ''].filter(Boolean).join(' · ') || 'System')}</span>
+        <span>${ts}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function initNotificationCentreUi() {
+  const drawer = $('#notifDrawer');
+  $('#notifBellBtn')?.addEventListener('click', () => {
+    drawer?.classList.toggle('open');
+    renderNotificationDrawer();
+  });
+  $('#notifCloseBtn')?.addEventListener('click', () => drawer?.classList.remove('open'));
+  $('#notifMarkAllBtn')?.addEventListener('click', () => { markAllNotificationsRead(); renderNotificationDrawer(); });
+  $('#notifClearBtn')?.addEventListener('click', () => { clearResolvedNotifications(); renderNotificationDrawer(); });
+  ['#notifFilterStatus', '#notifFilterBroker', '#notifUnreadOnlyChk'].forEach((sel) => {
+    $(sel)?.addEventListener('change', renderNotificationDrawer);
+  });
+  $('#notifDrawerList')?.addEventListener('click', (ev) => {
+    const card = ev.target.closest('[data-ntf-id]');
+    if (!card) return;
+    markNotificationRead(card.dataset.ntfId);
+    const sym = card.dataset.ntfSym;
+    if (sym && bySym[sym]) {
+      setChartSymbol(sym);
+      drawer?.classList.remove('open');
+      goto('trade');
+    } else {
+      renderNotificationDrawer();
+    }
+  });
+  subscribeNotifications(() => renderNotificationDrawer());
+  renderNotificationDrawer();
+}
+
+/* ---------- 3. TradingView Command Centre (Section 10) ---------- */
+function mountCommandTvWorkspace() {
+  const sel = $('#tvCmdSymbol');
+  if (sel && !sel.options.length) {
+    const seen = new Set();
+    const allItems = [...(tv.TV_COMMAND_INSTRUMENTS || []), ...INSTR.map((i) => ({ s: i.s, label: `${i.n} · ${i.s}`, cat: i.c }))];
+    for (const item of allItems) {
+      if (seen.has(item.s) || !tv.tvSymbol(item.s)) continue;
+      seen.add(item.s);
+      const opt = document.createElement('option');
+      opt.value = item.s;
+      opt.textContent = item.label;
+      sel.appendChild(opt);
+    }
+    sel.value = tvCmdState.symbol;
+  }
+  const container = $('#tvCommandMount');
+  if (container && typeof tv.mountCommandTvLayout === 'function') {
+    tv.mountCommandTvLayout(container, tvCmdState);
+  }
+  updateTvCommandMeta();
+}
+
+function updateTvCommandMeta() {
+  const metaEl = $('#tvCmdMeta');
+  if (!metaEl) return;
+  const sym = tvCmdState.symbol;
+  const I = bySym[sym];
+  const ident = getActiveBrokerIdentity();
+  const brokerPx = I && I.p != null ? `${fmtPx(I.p, I.d)} (${ident.connected ? ident.brokerLabel : 'Deriv live stream'})` : 'display-only symbol (no broker stream mapped)';
+  metaEl.textContent = `Active chart: ${sym} (${tv.tvSymbol(sym) || 'unmapped'}) · Layout: ${tvCmdState.layout.toUpperCase()} · Timeframe: ${tvCmdState.interval === 'D' ? '1D' : tvCmdState.interval + 'm'} · Chart provider: TradingView official widget (display-only) · Live feed quote: ${brokerPx}`;
+}
+
+function initTradingViewCommandCentreUi() {
+  $('#tvCmdSymbol')?.addEventListener('change', (e) => {
+    tvCmdState.symbol = e.target.value;
+    $$('#tvQuickSymbols .chip').forEach((b) => b.classList.toggle('active', b.dataset.tvSym === tvCmdState.symbol));
+    mountCommandTvWorkspace();
+  });
+  $('#tvCmdTf')?.addEventListener('change', (e) => {
+    tvCmdState.interval = e.target.value;
+    mountCommandTvWorkspace();
+  });
+  $('#tvCmdLayout')?.addEventListener('change', (e) => {
+    tvCmdState.layout = e.target.value;
+    mountCommandTvWorkspace();
+  });
+  $('#tvQuickSymbols')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-tv-sym]');
+    if (!btn) return;
+    tvCmdState.symbol = btn.dataset.tvSym;
+    if ($('#tvCmdSymbol')) $('#tvCmdSymbol').value = tvCmdState.symbol;
+    $$('#tvQuickSymbols .chip').forEach((b) => b.classList.toggle('active', b === btn));
+    mountCommandTvWorkspace();
+  });
+  $('#tvSendToTicketBtn')?.addEventListener('click', () => {
+    if (bySym[tvCmdState.symbol]) setChartSymbol(tvCmdState.symbol);
+    goto('trade');
+  });
+  $('#tvAnalyzeMtfBtn')?.addEventListener('click', () => {
+    if ($('#mtfSymSelect') && bySym[tvCmdState.symbol]) $('#mtfSymSelect').value = tvCmdState.symbol;
+    goto('signals');
+    evaluateAndRenderMtfMatrix(tvCmdState.symbol);
+  });
+}
+
+/* ---------- 4. Pre-Order Direction Validation & AI Trade Supervisor Banner (Sections 7 & 19) ---------- */
+function getOrStampEnvelopeForSymbol(sym) {
+  const scan = state.mktScan?.[sym];
+  if (!scan || scan.error) return null;
+  const I = bySym[sym];
+  const prev = activeSignalEnvelopes[sym];
+  if (prev && prev.signal === scan.signal && prev.entry === scan.entry) {
+    return prev;
+  }
+  if (prev && (prev.signal === 'BUY' || prev.signal === 'SELL') && scan.signal !== prev.signal) {
+    updateNotificationStatusBySignal(sym, prev.signal, 'INVALIDATED', `Direction changed to ${scan.signal}`);
+  }
+  const env = stampSignalEnvelope({
+    symbol: sym,
+    signal: scan.signal,
+    confidence: scan.confidence,
+    entry: scan.entry,
+    stop_loss: scan.stop_loss,
+    tp1: scan.tp1,
+    tp2: scan.tp2,
+  }, {
+    bid: I?.bid ?? I?.p ?? null,
+    ask: I?.ask ?? I?.p ?? null,
+    timeframe: '5m',
+  });
+  activeSignalEnvelopes[sym] = env;
+  return env;
+}
+
+async function preValidateManualTicketDirection(sym, intendedSide) {
+  const I = bySym[sym];
+  const prevScan = state.mktScan?.[sym];
+  // Only enforce direction-reversal block when a directional signal was active for this symbol
+  if (prevScan && (prevScan.signal === 'BUY' || prevScan.signal === 'SELL')) {
+    try {
+      const freshList = await scanSignalsPreferred([sym]);
+      const fresh = freshList && freshList[0];
+      if (fresh && !fresh.error) {
+        state.mktScan[sym] = fresh;
+        getOrStampEnvelopeForSymbol(sym);
+        if ((fresh.signal === 'BUY' || fresh.signal === 'SELL') && fresh.signal !== prevScan.signal && prevScan.signal === intendedSide) {
+          const reason = `Signal direction changed on live re-check from ${prevScan.signal} to ${fresh.signal} on ${sym}. Stale ${intendedSide} execution was blocked.`;
+          recordPlatformAudit('SUPERVISOR_BLOCK', 'DIRECTION_REVERSED', { symbol: sym, intendedSide, freshSignal: fresh.signal });
+          return { ok: false, reason };
+        }
+      }
+    } catch {}
+  }
+  if (I && I.p != null) {
+    const tickAge = I.tickAt ? Date.now() - I.tickAt : 0;
+    if (I.tickAt && tickAge > 60_000 && state.broker?.type !== 'mt5') {
+      return { ok: false, reason: `Live quote for ${sym} is stale (${Math.round(tickAge / 1000)}s old). Wait for fresh feed tick.` };
+    }
+  }
+  return { ok: true };
+}
+
+function refreshTicketSupervisorBanner() {
+  const banner = $('#ticketSupervisorBanner');
+  const badge = $('#ticketSupVerdict');
+  const txt = $('#ticketSupText');
+  const cdEl = $('#ticketSignalCountdown');
+  if (!banner || !badge || !txt) return;
+
+  const sym = state.chart?.sym || 'XAU/USD';
+  const I = bySym[sym];
+  const ident = getActiveBrokerIdentity();
+  const env = getOrStampEnvelopeForSymbol(sym);
+  const mktOpen = I ? marketStatus(I.c, new Date(), I.s).open : true;
+  const reqUsd = parseFloat($('#orderAmount')?.value || '10') || 10;
+  const reqLots = parseFloat($('#orderLots')?.value || '') || null;
+  const strictMin = Boolean($('#strictMinLotChk')?.checked);
+
+  const newsWin = checkHighImpactNewsWindow(state.calendar || [], sym, {
+    beforeMin: sniperExecConfig.newsWindowBeforeMin,
+    afterMin: sniperExecConfig.newsWindowAfterMin,
+  });
+
+  const sup = evaluateTradeSupervisor({
+    intendedSide: state.side,
+    symbol: sym,
+    signalEnvelope: env,
+    latestRecalculatedSignal: state.mktScan?.[sym]?.signal || null,
+    brokerConnected: ident.connected,
+    activeBroker: ident.broker,
+    activeAccountId: ident.accountId,
+    activeEnvironment: ident.environment,
+    marketOpen: mktOpen,
+    liveBid: I?.bid ?? I?.p ?? null,
+    liveAsk: I?.ask ?? I?.p ?? null,
+    quoteTsMs: I?.tickAt || (I?.p != null ? Date.now() : null),
+    freeMargin: ident.freeMargin,
+    requestedLots: reqLots,
+    requestedUsd: reqUsd,
+    strictMinVolume: strictMin,
+    openPositionsCount: ident.broker === 'mt5' ? (state.mt5LivePositions?.length || 0) : (state.positions?.length || 0),
+    maxConcurrentPositions: 25,
+    dailyRealizedPl: ident.dailyRealizedPl || 0,
+    maxDailyLossUsd: typeof lossGuardLimit === 'function' ? lossGuardLimit() : 0,
+    highImpactNewsActive: newsWin.active,
+    highImpactEventTitle: newsWin.title,
+    requireSignalValidation: false,
+  });
+
+  banner.className = 'supervisor-banner ' + (sup.verdict === 'APPROVED' ? 'approved' : sup.verdict === 'REJECTED' ? 'rejected' : 'wait');
+  badge.className = 'badge ' + (sup.verdict === 'APPROVED' ? 'buy' : sup.verdict === 'REJECTED' ? 'sell' : 'wait');
+  badge.textContent = sup.verdict;
+  txt.textContent = sup.reasons[0] || '';
+
+  if (cdEl) {
+    if (env) {
+      const v = getSignalValidityState(env, {
+        liveBid: I?.bid ?? I?.p ?? null,
+        liveAsk: I?.ask ?? I?.p ?? null,
+        latestSignal: state.mktScan?.[sym]?.signal || env.signal,
+      });
+      cdEl.textContent = `Active signal (${env.signal} #v${env.versionId}): ${v.countdownText} — ${v.reason}`;
+    } else {
+      cdEl.textContent = `Signal validity: No active ${sym} scan cached yet (manual execution still checks live quote & limits).`;
+    }
+  }
+}
+
+function initManualTicketEnhancements() {
+  const typeSel = $('#orderTypeSelect');
+  const pendField = $('#pendingEntryField');
+  typeSel?.addEventListener('change', () => {
+    const val = typeSel.value;
+    const isPend = val !== 'MARKET';
+    pendField?.classList.toggle('hidden', !isPend);
+    if (isPend) {
+      if (val.startsWith('BUY') && typeof setSide === 'function') setSide('BUY');
+      if (val.startsWith('SELL') && typeof setSide === 'function') setSide('SELL');
+      const btn = $('#placeOrderBtn');
+      if (btn) btn.textContent = `Place ${val.replace('_', ' ')} order`;
+    } else {
+      const btn = $('#placeOrderBtn');
+      if (btn) btn.textContent = `Place ${state.side} order`;
+    }
+  });
+  ['#orderAmount', '#orderLots', '#orderSlippage', '#strictMinLotChk'].forEach((s) => {
+    $(s)?.addEventListener('input', refreshTicketSupervisorBanner);
+    $(s)?.addEventListener('change', refreshTicketSupervisorBanner);
+  });
+}
+
+/* ---------- 5. 7-Timeframe Confluence Engine UI (`1m..1D`, Section 8) ---------- */
+async function fetchMultiTimeframeCandles(sym) {
+  const I = bySym[sym];
+  if (!I) throw new Error(`Unknown instrument ${sym}`);
+  if (state.broker?.type === 'mt5') {
+    const mSym = sym.replace('/', '');
+    const [m1, m5, m15, m30, h1, h4, d1] = await Promise.all([
+      bridge.bridgeHistory(mSym, 'M1', 220).then((r) => r.candles || []).catch(() => []),
+      bridge.bridgeHistory(mSym, 'M5', 220).then((r) => r.candles || []).catch(() => []),
+      bridge.bridgeHistory(mSym, 'M15', 220).then((r) => r.candles || []).catch(() => []),
+      bridge.bridgeHistory(mSym, 'M30', 220).then((r) => r.candles || []).catch(() => []),
+      bridge.bridgeHistory(mSym, 'H1', 220).then((r) => r.candles || []).catch(() => []),
+      bridge.bridgeHistory(mSym, 'H4', 220).then((r) => r.candles || []).catch(() => []),
+      bridge.bridgeHistory(mSym, 'D1', 220).then((r) => r.candles || []).catch(() => []),
+    ]);
+    if (m1.length >= 30 || m5.length >= 30) {
+      return { source: 'Exness MT5 local terminal', series: { '1m': m1, '5m': m5, '15m': m15, '30m': m30, '1h': h1, '4h': h4, '1d': d1 } };
+    }
+  }
+  const dCode = (INSTRUMENT_MAP[sym] || {}).deriv;
+  if (!dCode) throw new Error(`No intraday candle feed mapped for ${sym}; connect Exness MT5 for index/commodity candles.`);
+  const pull = async (gran) => {
+    try {
+      if (candleHistory && typeof candleHistory.fetchCandlesByCode === 'function') {
+        const res = await candleHistory.fetchCandlesByCode(dCode, gran, 220);
+        if (Array.isArray(res) && res.length) return res;
+        if (Array.isArray(res?.candles) && res.candles.length) return res.candles;
+      }
+    } catch {}
+    try {
+      const r = await api(`/api/market/candles?symbol=${encodeURIComponent(sym)}&granularity=${gran}&count=220`);
+      if (Array.isArray(r?.candles) && r.candles.length) return r.candles;
+    } catch {}
+    return [];
+  };
+  const [m1, m5, m15, m30, h1, h4, d1] = await Promise.all([
+    pull(60), pull(300), pull(900), pull(1800), pull(3600), pull(14400), pull(86400),
+  ]);
+  if (!m1.length && !m5.length && !m15.length && !h1.length) {
+    throw new Error(`Live candle feed unreachable for ${sym}. Connect Exness MT5 or verify internet access to Deriv public WebSocket.`);
+  }
+  return { source: 'Deriv verified candle feed', series: { '1m': m1, '5m': m5, '15m': m15, '30m': m30, '1h': h1, '4h': h4, '1d': d1 } };
+}
+
+async function evaluateAndRenderMtfMatrix(symOverride) {
+  const sel = $('#mtfSymSelect');
+  const sym = symOverride || sel?.value || 'XAU/USD';
+  const grid = $('#mtfMatrixGrid');
+  const note = $('#mtfConflictNote');
+  if (note) note.textContent = `Loading completed 1m, 5m, 15m, 30m, 1h, 4h & 1D candles for ${sym}…`;
+  try {
+    const { source, series } = await fetchMultiTimeframeCandles(sym);
+    const mtf = computeMultiTimeframeConfluence(series);
+    lastMtfConfluenceBySym[sym] = { mtf, source, atMs: Date.now() };
+
+    if ($('#mtfBuyScore')) $('#mtfBuyScore').textContent = `${mtf.buyConfluence} / 100`;
+    if ($('#mtfSellScore')) $('#mtfSellScore').textContent = `${mtf.sellConfluence} / 100`;
+    if ($('#mtfBuyBar')) $('#mtfBuyBar').style.width = `${mtf.buyConfluence}%`;
+    if ($('#mtfSellBar')) $('#mtfSellBar').style.width = `${mtf.sellConfluence}%`;
+    const vBadge = $('#mtfVerdictBadge');
+    if (vBadge) {
+      vBadge.textContent = `${mtf.verdict} (${mtf.qualityScore}/100)`;
+      vBadge.className = 'badge ' + (mtf.verdict === 'BUY' ? 'buy' : mtf.verdict === 'SELL' ? 'sell' : 'wait');
+    }
+    if ($('#mtfValidityClock')) {
+      const env = getOrStampEnvelopeForSymbol(sym);
+      const val = env ? getSignalValidityState(env) : null;
+      $('#mtfValidityClock').textContent = val ? `Validity: ${val.countdownText}` : `Source: ${source}`;
+    }
+    if (grid) {
+      grid.innerHTML = mtf.frames.map((f) => {
+        if (!f.available) {
+          return `<div class="mtf-cell"><div class="tf">${escHtml(f.timeframe)}</div><div class="sc faint">—</div><span class="badge gray">NO DATA</span></div>`;
+        }
+        const cls = f.direction === 'BUY' ? 'buy' : f.direction === 'SELL' ? 'sell' : 'wait';
+        const rsiTxt = f.indicators?.rsi != null ? `RSI ${f.indicators.rsi.toFixed(0)}` : '';
+        return `<div class="mtf-cell">
+          <div class="tf">${escHtml(f.timeframe)}</div>
+          <div class="sc ${f.direction === 'BUY' ? 'up' : f.direction === 'SELL' ? 'down' : ''}">${f.direction === 'SELL' ? f.sellStrength : f.buyStrength}/100</div>
+          <span class="badge ${cls}">${f.direction}</span>
+          <div class="tiny faint mono" style="margin-top:4px">${escHtml(rsiTxt)} · ${escHtml(f.volatilityRegime || '')}</div>
+        </div>`;
+      }).join('');
+    }
+    if (note) {
+      const conflictTxt = mtf.conflicts.length ? ` · Warnings: ${mtf.conflicts.join(' ')}` : ' · All evaluated timeframes aligned cleanly.';
+      note.textContent = `Source: ${source} · ${mtf.formulaNote}${conflictTxt}`;
+    }
+  } catch (e) {
+    if (note) note.textContent = `7-TF evaluation unavailable: ${e.message || e}`;
+  }
+}
+
+function initMtfConfluenceUi() {
+  const sel = $('#mtfSymSelect');
+  const intelSel = $('#intelSymSelect');
+  const btSel = $('#btSymSelect');
+  [sel, intelSel, btSel].forEach((el) => {
+    if (!el || el.options.length) return;
+    INSTR.filter((i) => i.c !== 'indices' || state.broker?.type === 'mt5').forEach((i) => {
+      const o = document.createElement('option');
+      o.value = i.s;
+      o.textContent = `${i.s} · ${i.n}`;
+      el.appendChild(o);
+    });
+    if (bySym['XAU/USD']) el.value = 'XAU/USD';
+  });
+  $('#mtfRefreshBtn')?.addEventListener('click', () => evaluateAndRenderMtfMatrix());
+  $('#mtfTradeBtn')?.addEventListener('click', () => {
+    const s = $('#mtfSymSelect')?.value;
+    if (s && bySym[s]) setChartSymbol(s);
+    goto('trade');
+  });
+}
+
+/* ---------- 6. Automated Sniper Execution & Dynamic Monetary Net-Profit Closure (Sections 5 & 6) ---------- */
+function syncSniperUiControls() {
+  const armed = isSniperExecutionArmedNow();
+  const ident = getActiveBrokerIdentity();
+  if ($('#sniperExecToggle')) $('#sniperExecToggle').checked = armed;
+  if ($('#autoProfitCloseChk')) $('#autoProfitCloseChk').checked = Boolean(sniperExecConfig.autoProfitCloseEnabled);
+  if ($('#netProfitTargetInput')) $('#netProfitTargetInput').value = Number(sniperExecConfig.netProfitTargetUsd).toFixed(2);
+  $$('#profitPresetRow .profit-preset-btn').forEach((b) => {
+    b.classList.toggle('active', Math.abs(Number(b.dataset.profitPreset) - Number(sniperExecConfig.netProfitTargetUsd)) < 1e-6);
+  });
+  if ($('#sniperMinScore')) $('#sniperMinScore').value = sniperExecConfig.minStrength;
+  if ($('#sniperSizingMode')) $('#sniperSizingMode').value = sniperExecConfig.sizingMode;
+  if ($('#sniperFixedUsd')) $('#sniperFixedUsd').value = sniperExecConfig.fixedUsd;
+  if ($('#sniperFixedLots')) $('#sniperFixedLots').value = sniperExecConfig.fixedLots;
+  if ($('#sniperMaxPos')) $('#sniperMaxPos').value = sniperExecConfig.maxConcurrentPositions;
+  if ($('#sniperMaxDaily')) $('#sniperMaxDaily').value = sniperExecConfig.maxDailyTrades;
+  if ($('#sniperDailyProfit')) $('#sniperDailyProfit').value = sniperExecConfig.dailyProfitTargetUsd;
+  if ($('#sniperDailyLoss')) $('#sniperDailyLoss').value = sniperExecConfig.maxDailyLossUsd;
+  if ($('#sniperMaxDd')) $('#sniperMaxDd').value = sniperExecConfig.maxDrawdownPct;
+  if ($('#sniperMaxExp')) $('#sniperMaxExp').value = sniperExecConfig.maxExposureUsd;
+  if ($('#sniperSessionFilter')) $('#sniperSessionFilter').value = sniperExecConfig.sessionFilter;
+  if ($('#sniperCooldownSec')) $('#sniperCooldownSec').value = sniperExecConfig.cooldownSec;
+  if ($('#sniperNewsPauseChk')) $('#sniperNewsPauseChk').checked = Boolean(sniperExecConfig.pauseOnHighImpactNews);
+  if ($('#sniperNewsPreMin')) $('#sniperNewsPreMin').value = sniperExecConfig.newsWindowBeforeMin;
+  if ($('#sniperNewsPostMin')) $('#sniperNewsPostMin').value = sniperExecConfig.newsWindowAfterMin;
+
+  const authBadge = $('#sniperAuthBadge');
+  const supBanner = $('#sniperLiveVerdict');
+  const supBadge = $('#sniperSupBadge');
+  const supDetail = $('#sniperSupDetail');
+  if (sniperExecConfig.emergencyHalted) {
+    if (authBadge) { authBadge.className = 'badge sell'; authBadge.textContent = 'EMERGENCY HALTED'; }
+    if (supBanner) supBanner.className = 'supervisor-banner rejected';
+    if (supBadge) { supBadge.className = 'badge sell'; supBadge.textContent = 'HALTED'; }
+    if (supDetail) supDetail.textContent = 'Emergency STOP ALL was triggered. Toggle Arm Sniper Execution to clear halt when ready.';
+  } else if (armed && ident.connected) {
+    if (authBadge) { authBadge.className = 'badge buy'; authBadge.textContent = `ARMED · ${ident.brokerLabel} ${ident.environment.toUpperCase()}`; }
+    if (supBanner) supBanner.className = 'supervisor-banner approved';
+    if (supBadge) { supBadge.className = 'badge buy'; supBadge.textContent = 'ARMED & SUPERVISED'; }
+    if (supDetail) supDetail.textContent = `Authorized on ${ident.brokerLabel} (${ident.accountId} · ${ident.environment.toUpperCase()}). Min confluence ${sniperExecConfig.minStrength}/100 · Dynamic net profit close: ${sniperExecConfig.autoProfitCloseEnabled ? '+$' + sniperExecConfig.netProfitTargetUsd.toFixed(2) : 'OFF'}.`;
+  } else {
+    if (authBadge) { authBadge.className = 'badge gray'; authBadge.textContent = 'SNIPER EXECUTION OFF'; }
+    if (supBanner) supBanner.className = 'supervisor-banner';
+    if (supBadge) { supBadge.className = 'badge gray'; supBadge.textContent = 'DISARMED'; }
+    if (supDetail) supDetail.textContent = ident.connected
+      ? `Connected to ${ident.brokerLabel} (${ident.environment.toUpperCase()}). Toggle Arm Sniper Execution above to authorize automated setups on this account.`
+      : 'No authenticated broker connected. Connect Deriv or Exness MT5 below first.';
+  }
+  if ($('#secSniperAuthSummary')) {
+    $('#secSniperAuthSummary').textContent = armed
+      ? `Armed by ${sniperExecConfig.authorizedBy || 'operator'} on ${ident.brokerLabel} (${ident.environment.toUpperCase()})`
+      : 'Sniper Disarmed (manual trading only)';
+  }
+  updateAccountTopBar();
+}
+
+function triggerEmergencyStopAll(sourceLabel = 'UI Button') {
+  sniperExecConfig.execEnabled = false;
+  sniperExecConfig.autoProfitCloseEnabled = false;
+  sniperExecConfig.emergencyHalted = true;
+  saveSniperExecConfig();
+  sniperRuntime.emergencyReset(state.user || 'operator');
+  if (typeof disableAutoTrade === 'function') disableAutoTrade('off', 'EMERGENCY STOP ALL triggered');
+  recordPlatformAudit('EMERGENCY_STOP', 'STOP_ALL_AUTOMATION', { source: sourceLabel });
+  syncSniperUiControls();
+  toast('EMERGENCY STOP ALL', 'All automated Sniper entries, monitoring loops, and auto-closures have been immediately halted.', 'err');
+  notify('EMERGENCY STOP ALL activated', 'All automated Sniper entries and auto-closures are disarmed.', { tag: 'emergency-stop', kind: 'err', status: 'INVALIDATED' });
+}
+
+async function executeSupervisedSniperEntry(candidate) {
+  const ident = getActiveBrokerIdentity();
+  if (!ident.connected || !isSniperExecutionArmedNow()) return;
+  const cdCheck = sniperRuntime.canStartAutoEntry(sniperExecConfig.cooldownSec);
+  if (!cdCheck.ok) {
+    atStatusUI('scan', '⏳ Sniper cooldown', cdCheck.reason);
+    return;
+  }
+  const sessCheck = isTradingSessionAllowed(sniperExecConfig.sessionFilter);
+  if (!sessCheck.ok) {
+    atStatusUI('scan', '⏸ Outside session window', `Waiting for ${sessCheck.session}`);
+    return;
+  }
+
+  const sym = candidate.symbol;
+  const I = bySym[sym];
+  if (!I) return;
+
+  sniperRuntime.beginAutoEntry();
+  try {
+    // CRITICAL PRE-ORDER RE-FETCH & DIRECTION VALIDATION (Section 7)
+    const freshArr = await scanSignalsPreferred([sym]);
+    const freshSig = freshArr && freshArr[0];
+    if (!freshSig || freshSig.error) {
+      sniperRuntime.finishAutoEntry(false);
+      return;
+    }
+    state.mktScan[sym] = freshSig;
+    const envelope = getOrStampEnvelopeForSymbol(sym);
+
+    if ((freshSig.confidence || 0) < sniperExecConfig.minStrength) {
+      sniperRuntime.finishAutoEntry(false);
+      return;
+    }
+
+    let liveBid = I.bid ?? I.p ?? null;
+    let liveAsk = I.ask ?? I.p ?? null;
+    let quoteTsMs = I.tickAt || Date.now();
+    if (ident.broker === 'mt5') {
+      const q = await bridge.quoteBridge([sym.replace('/', '')]).catch(() => null);
+      const q0 = q?.quotes?.[0] || (Array.isArray(q) ? q[0] : null);
+      if (q0) {
+        liveBid = Number(q0.bid);
+        liveAsk = Number(q0.ask);
+        quoteTsMs = q0.time ? q0.time * 1000 : Date.now();
+      }
+    }
+
+    const openList = ident.broker === 'mt5' ? (state.mt5LivePositions || []) : (state.positions || []);
+    const openSymbols = new Set(openList.map((p) => (p.symbol || p.sym || '').replace('/', '')));
+    const symClean = sym.replace('/', '');
+    const newsWin = sniperExecConfig.pauseOnHighImpactNews
+      ? checkHighImpactNewsWindow(state.calendar || [], sym, {
+          beforeMin: sniperExecConfig.newsWindowBeforeMin,
+          afterMin: sniperExecConfig.newsWindowAfterMin,
+        })
+      : { active: false };
+
+    const usdSize = sniperExecConfig.sizingMode === 'risk_pct' && Number.isFinite(ident.equity)
+      ? Math.max(1, (ident.equity * sniperExecConfig.riskPct) / 100)
+      : sniperExecConfig.fixedUsd;
+    const lotSize = sniperExecConfig.sizingMode === 'fixed_lots' ? sniperExecConfig.fixedLots : null;
+
+    const sup = evaluateTradeSupervisor({
+      intendedSide: candidate.signal,
+      symbol: symClean,
+      signalEnvelope: envelope,
+      latestRecalculatedSignal: freshSig.signal,
+      brokerConnected: ident.connected,
+      expectedBroker: ident.broker,
+      activeBroker: ident.broker,
+      expectedAccountId: ident.accountId,
+      activeAccountId: ident.accountId,
+      expectedEnvironment: ident.environment,
+      activeEnvironment: ident.environment,
+      marketOpen: marketStatus(I.c, new Date(), I.s).open,
+      liveBid,
+      liveAsk,
+      quoteTsMs,
+      freeMargin: ident.freeMargin,
+      requestedLots: lotSize,
+      requestedUsd: usdSize,
+      strictMinVolume: sniperExecConfig.strictMinVolume,
+      openPositionsCount: openList.length,
+      maxConcurrentPositions: sniperExecConfig.maxConcurrentPositions,
+      dailyTradesCount: atSession?.entries || 0,
+      maxDailyTrades: sniperExecConfig.maxDailyTrades,
+      dailyRealizedPl: ident.dailyRealizedPl || 0,
+      maxDailyLossUsd: sniperExecConfig.maxDailyLossUsd,
+      dailyProfitTargetUsd: sniperExecConfig.dailyProfitTargetUsd,
+      maxDrawdownPct: sniperExecConfig.maxDrawdownPct,
+      maxExposureUsd: sniperExecConfig.maxExposureUsd,
+      duplicateSignalIds: sniperRuntime.executedSignals,
+      openSymbols,
+      preventSameSymbolDuplicate: sniperExecConfig.preventDuplicateSymbol,
+      highImpactNewsActive: newsWin.active,
+      highImpactEventTitle: newsWin.title,
+      requireSignalValidation: true,
+    });
+
+    if (sup.verdict !== 'APPROVED') {
+      recordPlatformAudit('SNIPER_SUPERVISOR_GATE', sup.verdict, { symbol: sym, intended: candidate.signal, reasons: sup.reasons });
+      atStatusUI('scan', `🛡 Supervisor ${sup.verdict} · ${sym}`, sup.reasons[0] || '');
+      sniperRuntime.finishAutoEntry(false);
+      return;
+    }
+
+    if (ident.broker === 'mt5') {
+      const intentId = 'snp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 14);
+      const fill = await bridge.placeBridgeOrder({
+        environment: ident.environment,
+        symbol: symClean,
+        side: freshSig.signal,
+        volume: usdSize,
+        lots: lotSize,
+        strictMinVolume: sniperExecConfig.strictMinVolume,
+        maxSlippagePoints: sniperExecConfig.maxSlippagePoints,
+        sl: Number(freshSig.stop_loss) || 0,
+        tp: Number(freshSig.tp1) || 0,
+        direct: true,
+        intentId,
+        manualConfirmed: true,
+      });
+      if (fill?.type !== 'filled') throw new Error(fill?.message || 'MT5 Sniper fill was not confirmed.');
+      if (atSession) atSession.entries = (atSession.entries || 0) + 1;
+      sniperRuntime.finishAutoEntry(true, envelope?.signalId);
+      recordPlatformAudit('SNIPER_EXECUTION', 'MT5_FILLED', { symbol: sym, side: freshSig.signal, ticket: fill.ticket, lots: fill.lots, price: fill.price, environment: ident.environment });
+      notify(`Sniper ${ident.environment.toUpperCase()} filled`, `${freshSig.signal} ${sym} · #${fill.ticket} · ${fill.lots} lots @ ${fill.price}`, { tag: 'sniper-fill', kind: 'ok', symbol: sym, direction: freshSig.signal, broker: 'MT5', accountMode: ident.environment.toUpperCase(), status: 'EXECUTED', sound: true });
+      await refreshMt5Snapshot(false);
+      return;
+    }
+
+    if (ident.broker === 'deriv') {
+      const prevSide = state.side;
+      state.side = freshSig.signal;
+      const dh = state.derivHealth;
+      const mode = (dh && dh.authorized && dh.tradingEnabled) ? 'proxy' : (state.broker?.mode === 'pat_server' ? 'pat_server' : 'pat');
+      await executeDerivDirect({
+        mode,
+        I,
+        amt: Math.round(usdSize * 100) / 100,
+        sl: Number(freshSig.stop_loss) || null,
+        tp: Number(freshSig.tp1) || null,
+        tp2: Number(freshSig.tp2) || null,
+        px: liveAsk || liveBid || I.p,
+        dur: derivDurationFor(I.s),
+      });
+      state.side = prevSide;
+      if (atSession) atSession.entries = (atSession.entries || 0) + 1;
+      sniperRuntime.finishAutoEntry(true, envelope?.signalId);
+      recordPlatformAudit('SNIPER_EXECUTION', 'DERIV_FILLED', { symbol: sym, side: freshSig.signal, stake: usdSize, environment: ident.environment });
+      return;
+    }
+    sniperRuntime.finishAutoEntry(false);
+  } catch (err) {
+    sniperRuntime.finishAutoEntry(false);
+    recordPlatformAudit('SNIPER_ERROR', 'ORDER_REJECTED', { symbol: sym, error: String(err.message || err) });
+    notify('Sniper order rejected', String(err.message || err), { tag: 'sniper-err', kind: 'err', symbol: sym });
+  }
+}
+
+async function runDynamicProfitTargetWatcher() {
+  if (!sniperExecConfig.autoProfitCloseEnabled || sniperExecConfig.emergencyHalted || isCloudflareReadonlyMode()) return;
+  const ident = getActiveBrokerIdentity();
+  if (!ident.connected) return;
+
+  if (ident.broker === 'mt5') {
+    const list = Array.isArray(state.mt5LivePositions) ? state.mt5LivePositions : [];
+    for (const p of list) {
+      const posKey = `mt5:${p.ticket}`;
+      const check = evaluatePositionProfitTarget({ ...p, posKey }, sniperExecConfig);
+      if (!check.eligible) continue;
+      if (!sniperRuntime.acquireCloseLock(posKey, 20_000)) continue;
+      try {
+        const intentId = 'ptc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 14);
+        const closed = await bridge.closeBridgeOrder({
+          ticket: Number(p.ticket),
+          environment: ident.environment,
+          intentId,
+          manualConfirmed: true,
+        });
+        if (closed?.type === 'closed') {
+          recordPlatformAudit('PROFIT_TARGET_CLOSE', 'MT5_NET_TARGET_HIT', {
+            ticket: p.ticket, symbol: p.symbol, netProfit: check.netProfit, grossProfit: check.grossProfit, costs: check.costs, targetUsd: check.targetUsd, exitPrice: closed.price,
+          });
+          state.history.unshift({
+            id: 'mt5_pt_' + p.ticket + '_' + Date.now(),
+            sym: p.symbol,
+            side: p.side,
+            amt: p.volume,
+            entry: p.price,
+            exit: closed.price,
+            pl: check.netProfit,
+            grossPl: check.grossProfit,
+            costs: check.costs,
+            closedAt: Date.now(),
+            reason: `Net Profit Target (+$${check.targetUsd.toFixed(2)})`,
+          });
+          save();
+          toast('Net profit target banked!', `#${p.ticket} ${p.symbol} closed @ ${closed.price} · Net +$${check.netProfit.toFixed(2)} (target +$${check.targetUsd.toFixed(2)})`, 'ok');
+          notify('Dynamic Profit Target Closed', `${p.symbol} #${p.ticket} banked +$${check.netProfit.toFixed(2)} net profit (after fees/swap). Scanning next setup.`, {
+            tag: 'profit-target-' + p.ticket, kind: 'ok', symbol: p.symbol, broker: 'MT5', accountMode: ident.environment.toUpperCase(), status: 'CLOSED', sound: true,
+          });
+          await refreshMt5Snapshot(false);
+        }
+      } catch (e) {
+        recordPlatformAudit('PROFIT_TARGET_ERROR', 'MT5_CLOSE_FAILED', { ticket: p.ticket, error: String(e.message || e) });
+      } finally {
+        sniperRuntime.releaseCloseLock(posKey);
+      }
+    }
+  } else if (ident.broker === 'deriv') {
+    const list = Array.isArray(state.positions) ? [...state.positions] : [];
+    for (const p of list) {
+      if (!p.contract_id) continue;
+      const posKey = `deriv:${p.contract_id}`;
+      const livePl = typeof posPnl === 'function' ? Number(posPnl(p) || 0) : 0;
+      const check = evaluatePositionProfitTarget({ posKey, profit: livePl, net_profit: livePl }, sniperExecConfig);
+      if (!check.eligible) continue;
+      if (!sniperRuntime.acquireCloseLock(posKey, 20_000)) continue;
+      try {
+        if (typeof closePosition === 'function') {
+          await closePosition(p.id, `Net Profit Target (+$${check.targetUsd.toFixed(2)})`);
+          recordPlatformAudit('PROFIT_TARGET_CLOSE', 'DERIV_NET_TARGET_HIT', { contractId: p.contract_id, symbol: p.sym, netProfit: check.netProfit, targetUsd: check.targetUsd });
+        }
+      } catch {} finally {
+        sniperRuntime.releaseCloseLock(posKey);
+      }
+    }
+  }
+}
+
+function initSniperAndProfitTargetEngine() {
+  const readRulesFromInputs = () => {
+    sniperExecConfig = normalizeSniperConfig({
+      ...sniperExecConfig,
+      minStrength: Number($('#sniperMinScore')?.value || 75),
+      sizingMode: $('#sniperSizingMode')?.value || 'fixed_usd',
+      fixedUsd: Number($('#sniperFixedUsd')?.value || 10),
+      fixedLots: Number($('#sniperFixedLots')?.value || 0.01),
+      maxConcurrentPositions: Number($('#sniperMaxPos')?.value || 3),
+      maxDailyTrades: Number($('#sniperMaxDaily')?.value || 10),
+      dailyProfitTargetUsd: Number($('#sniperDailyProfit')?.value || 50),
+      maxDailyLossUsd: Number($('#sniperDailyLoss')?.value || 30),
+      maxDrawdownPct: Number($('#sniperMaxDd')?.value || 10),
+      maxExposureUsd: Number($('#sniperMaxExp')?.value || 5000),
+      sessionFilter: $('#sniperSessionFilter')?.value || 'ALL',
+      cooldownSec: Number($('#sniperCooldownSec')?.value || 60),
+      pauseOnHighImpactNews: Boolean($('#sniperNewsPauseChk')?.checked),
+      newsWindowBeforeMin: Number($('#sniperNewsPreMin')?.value || 15),
+      newsWindowAfterMin: Number($('#sniperNewsPostMin')?.value || 15),
+      netProfitTargetUsd: Number($('#netProfitTargetInput')?.value || 3),
+    });
+    saveSniperExecConfig();
+    syncSniperUiControls();
+  };
+
+  $('#sniperExecToggle')?.addEventListener('change', (e) => {
+    const wantOn = e.target.checked;
+    const ident = getActiveBrokerIdentity();
+    if (wantOn) {
+      if (isCloudflareReadonlyMode()) {
+        e.target.checked = false;
+        toast('Read-only hosted mode', 'Automated Sniper execution is available only on the local trading app (http://127.0.0.1:8788/app).', 'warn');
+        return;
+      }
+      if (!ident.connected || !ident.authKey) {
+        e.target.checked = false;
+        toast('Connect a broker first', 'Connect and verify Deriv or Exness MT5 (DEMO or REAL) before arming Sniper execution.', 'err');
+        return;
+      }
+      sniperExecConfig.emergencyHalted = false;
+      sniperExecConfig.authorizedKey = ident.authKey;
+      sniperExecConfig.authorizedBy = state.user || 'local-operator';
+      sniperExecConfig.authorizedAt = new Date().toISOString();
+      sniperExecConfig.execEnabled = true;
+      readRulesFromInputs();
+      // Start the Sniper scan timer automatically if not running
+      if (!atTimer && typeof enableAutoTrade === 'function') enableAutoTrade();
+      recordPlatformAudit('SNIPER_AUTH', 'ARMED_FOR_ACCOUNT', { broker: ident.brokerLabel, account: ident.accountId, environment: ident.environment });
+      toast('Sniper armed for ' + ident.environment.toUpperCase(), `Authorized on ${ident.brokerLabel} (${ident.accountId}). AI Trade Supervisor active.`, 'ok');
+    } else {
+      sniperExecConfig.execEnabled = false;
+      saveSniperExecConfig();
+      recordPlatformAudit('SNIPER_AUTH', 'DISARMED_BY_USER', { account: ident.accountId });
+      syncSniperUiControls();
+      toast('Sniper disarmed', 'Automated entries are off; open positions remain untouched.', 'ok');
+    }
+  });
+
+  $('#autoProfitCloseChk')?.addEventListener('change', (e) => {
+    sniperExecConfig.emergencyHalted = false;
+    sniperExecConfig.autoProfitCloseEnabled = Boolean(e.target.checked);
+    sniperExecConfig.netProfitTargetUsd = Math.max(0.25, Number($('#netProfitTargetInput')?.value || 3));
+    saveSniperExecConfig();
+    recordPlatformAudit('PROFIT_TARGET_CONFIG', e.target.checked ? 'ENABLED' : 'DISABLED', { targetUsd: sniperExecConfig.netProfitTargetUsd });
+    syncSniperUiControls();
+    toast('Dynamic net-profit target', e.target.checked ? `Active: open trades auto-close at +$${sniperExecConfig.netProfitTargetUsd.toFixed(2)} net profit.` : 'Dynamic profit-target auto-close turned off.', 'ok');
+  });
+
+  $('#profitPresetRow')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-profit-preset]');
+    if (!btn) return;
+    const v = Number(btn.dataset.profitPreset);
+    if (!Number.isFinite(v) || v <= 0) return;
+    sniperExecConfig.netProfitTargetUsd = v;
+    if ($('#netProfitTargetInput')) $('#netProfitTargetInput').value = v.toFixed(2);
+    saveSniperExecConfig();
+    recordPlatformAudit('PROFIT_TARGET_CONFIG', 'SET_PRESET', { targetUsd: v });
+    syncSniperUiControls();
+  });
+
+  $('#netProfitTargetInput')?.addEventListener('change', (e) => {
+    const v = Math.max(0.25, Number(e.target.value) || 3);
+    sniperExecConfig.netProfitTargetUsd = v;
+    e.target.value = v.toFixed(2);
+    saveSniperExecConfig();
+    recordPlatformAudit('PROFIT_TARGET_CONFIG', 'SET_CUSTOM', { targetUsd: v });
+    syncSniperUiControls();
+  });
+
+  $('#sniperSaveRulesBtn')?.addEventListener('click', () => {
+    readRulesFromInputs();
+    recordPlatformAudit('SNIPER_CONFIG', 'UPDATED_RULES', { minStrength: sniperExecConfig.minStrength, maxDailyLossUsd: sniperExecConfig.maxDailyLossUsd });
+    toast('Sniper rules saved', 'Updated thresholds, daily limits, session & news filters.', 'ok');
+  });
+
+  ['#sniperStopAllBtn', '#topBarEmergencyStop', '#secStopAllBtn'].forEach((id) => {
+    $(id)?.addEventListener('click', () => triggerEmergencyStopAll(id));
+  });
+
+  syncSniperUiControls();
+}
+
+/* ---------- 7. Specialist Views: Open Positions, Pending Orders, History, AI Intel, Backtest, Security ---------- */
+function renderUnifiedOpenPositions() {
+  const tbody = $('#unifiedOpenPosBody');
+  if (!tbody) return;
+  const ident = getActiveBrokerIdentity();
+  const rows = [];
+
+  if (ident.broker === 'mt5' && Array.isArray(state.mt5LivePositions)) {
+    for (const p of state.mt5LivePositions) {
+      const posKey = `mt5:${p.ticket}`;
+      const gross = Number(p.profit || 0);
+      const costs = Number(p.commission || 0) + Number(p.swap || 0) + Number(p.fee || 0);
+      const net = Number(p.net_profit ?? (gross + costs));
+      const targetVal = sniperExecConfig.perPositionTargets?.[posKey] ?? sniperExecConfig.netProfitTargetUsd;
+      rows.push(`<tr>
+        <td class="mono">MT5 #${escHtml(String(p.ticket))} <span class="badge ${ident.environment === 'real' ? 'sell' : 'buy'}">${ident.environment.toUpperCase()}</span></td>
+        <td><b>${escHtml(p.symbol)}</b></td>
+        <td><span class="badge ${p.side === 'BUY' ? 'buy' : 'sell'}">${escHtml(p.side)}</span></td>
+        <td class="num mono">${Number(p.volume).toFixed(2)} lots</td>
+        <td class="num mono">${escHtml(String(p.price))}</td>
+        <td class="num mono">${escHtml(String(p.current_price ?? '—'))}</td>
+        <td class="num mono ${gross >= 0 ? 'up' : 'down'}">${fmtMoney(gross, true)}</td>
+        <td class="num mono">${fmtMoney(costs, true)}</td>
+        <td class="num mono ${net >= 0 ? 'up' : 'down'}"><b>${fmtMoney(net, true)}</b></td>
+        <td><input class="input sm mono" type="number" step="0.25" min="0.25" value="${Number(targetVal).toFixed(2)}" data-pos-target="${escHtml(posKey)}" style="width:84px"></td>
+        <td class="right"><button class="btn danger sm" type="button" data-close-mt5-ticket="${escHtml(String(p.ticket))}">Close</button></td>
+      </tr>`);
+    }
+  }
+  for (const p of state.positions || []) {
+    const posKey = `deriv:${p.contract_id || p.id}`;
+    const pl = typeof posPnl === 'function' ? Number(posPnl(p) || 0) : 0;
+    const targetVal = sniperExecConfig.perPositionTargets?.[posKey] ?? sniperExecConfig.netProfitTargetUsd;
+    rows.push(`<tr>
+      <td class="mono">DERIV #${escHtml(String(p.contract_id || p.id))}</td>
+      <td><b>${escHtml(p.sym)}</b></td>
+      <td><span class="badge ${p.side === 'BUY' ? 'buy' : 'sell'}">${escHtml(p.side)}</span></td>
+      <td class="num mono">${fmtMoney(p.amt)}</td>
+      <td class="num mono">${escHtml(String(p.entry ?? '—'))}</td>
+      <td class="num mono">${escHtml(String(bySym[p.sym]?.p ?? '—'))}</td>
+      <td class="num mono ${pl >= 0 ? 'up' : 'down'}">${fmtMoney(pl, true)}</td>
+      <td class="num mono">$0.00</td>
+      <td class="num mono ${pl >= 0 ? 'up' : 'down'}"><b>${fmtMoney(pl, true)}</b></td>
+      <td><input class="input sm mono" type="number" step="0.25" min="0.25" value="${Number(targetVal).toFixed(2)}" data-pos-target="${escHtml(posKey)}" style="width:84px"></td>
+      <td class="right"><button class="btn danger sm" type="button" data-close-app-pos="${escHtml(String(p.id))}">Close</button></td>
+    </tr>`);
+  }
+  tbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="11" class="faint center">No open positions on the active broker account.</td></tr>';
+}
+
+async function refreshAndRenderPendingOrders() {
+  if (state.broker?.type === 'mt5') {
+    const res = await bridge.bridgePendingOrders().catch(() => null);
+    if (res && Array.isArray(res.list)) mt5PendingOrdersCache = res.list;
+  } else {
+    mt5PendingOrdersCache = [];
+  }
+  updateAccountTopBar();
+  const tbody = $('#pendingOrdersBody');
+  if (!tbody) return;
+  if (!mt5PendingOrdersCache.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="faint center">No active pending limit or stop orders.</td></tr>';
+    return;
+  }
+  const env = state.broker?.account?.environment || 'demo';
+  tbody.innerHTML = mt5PendingOrdersCache.map((o) => {
+    const ts = o.time_setup ? new Date(o.time_setup * 1000).toISOString().replace('T', ' ').slice(0, 19) : '—';
+    return `<tr>
+      <td class="mono">#${o.ticket}</td>
+      <td><b>${escHtml(o.symbol)}</b></td>
+      <td><span class="badge ${o.side === 'BUY' ? 'buy' : 'sell'}">${escHtml(o.order_type)}</span></td>
+      <td class="num mono">${Number(o.volume).toFixed(2)}</td>
+      <td class="num mono">${o.price_open}</td>
+      <td class="num mono">${o.sl || '—'}</td>
+      <td class="num mono">${o.tp || '—'}</td>
+      <td class="mono tiny">${ts}</td>
+      <td class="right"><button class="btn danger sm" type="button" data-cancel-pending="${o.ticket}" data-pend-env="${env}">Cancel</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function renderUnifiedTradeHistory(syncBroker = false) {
+  if (syncBroker && state.broker?.type === 'mt5') {
+    const res = await bridge.bridgeDealsHistory(30).catch(() => null);
+    if (res && Array.isArray(res.deals)) mt5DealsHistoryCache = res.deals.filter((d) => d.entry_kind !== 'IN');
+  }
+  const combined = [];
+  for (const d of mt5DealsHistoryCache) {
+    const costs = Number(d.commission || 0) + Number(d.swap || 0) + Number(d.fee || 0);
+    combined.push({
+      tsMs: (d.time || 0) * 1000,
+      source: `MT5 Deal #${d.deal}`,
+      symbol: d.symbol,
+      side: d.side,
+      size: `${Number(d.volume).toFixed(2)} lots`,
+      price: d.price,
+      gross: Number(d.profit || 0),
+      costs,
+      net: Number(d.net_profit ?? (Number(d.profit || 0) + costs)),
+    });
+  }
+  for (const h of state.history || []) {
+    const gross = Number(h.grossPl ?? h.pl ?? 0);
+    const costs = Number(h.costs || 0);
+    const net = Number(h.pl ?? (gross + costs));
+    combined.push({
+      tsMs: h.closedAt || h.t || Date.now(),
+      source: h.reason || 'Workspace',
+      symbol: h.sym || h.symbol || '—',
+      side: h.side || '—',
+      size: typeof h.amt === 'number' ? fmtMoney(h.amt) : String(h.amt || '—'),
+      price: h.exit ?? h.entry ?? '—',
+      gross,
+      costs,
+      net,
+    });
+  }
+  combined.sort((a, b) => b.tsMs - a.tsMs);
+
+  const wins = combined.filter((x) => x.net > 0);
+  const losses = combined.filter((x) => x.net < 0);
+  const grossWinSum = wins.reduce((s, x) => s + x.net, 0);
+  const grossLossSum = Math.abs(losses.reduce((s, x) => s + x.net, 0));
+  const netSum = combined.reduce((s, x) => s + x.net, 0);
+
+  if ($('#thCount')) $('#thCount').textContent = String(combined.length);
+  if ($('#thWinRate')) $('#thWinRate').textContent = combined.length ? `${((wins.length / combined.length) * 100).toFixed(1)}%` : '—';
+  if ($('#thProfitFactor')) $('#thProfitFactor').textContent = grossLossSum > 0 ? (grossWinSum / grossLossSum).toFixed(2) : (wins.length ? '∞' : '—');
+  if ($('#thNetPl')) {
+    $('#thNetPl').textContent = fmtMoney(netSum, true);
+    $('#thNetPl').className = 'value ' + (netSum > 0 ? 'up' : netSum < 0 ? 'down' : '');
+  }
+
+  const tbody = $('#unifiedHistBody');
+  if (!tbody) return;
+  if (!combined.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="faint center">No closed trade executions recorded yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = combined.slice(0, 150).map((r) => {
+    const ts = new Date(r.tsMs).toISOString().replace('T', ' ').slice(0, 19);
+    return `<tr>
+      <td class="mono tiny">${ts}</td>
+      <td class="tiny">${escHtml(r.source)}</td>
+      <td><b>${escHtml(r.symbol)}</b></td>
+      <td><span class="badge ${r.side === 'BUY' ? 'buy' : r.side === 'SELL' ? 'sell' : 'gray'}">${escHtml(r.side)}</span></td>
+      <td class="num mono">${escHtml(r.size)}</td>
+      <td class="num mono">${escHtml(String(r.price))}</td>
+      <td class="num mono ${r.gross >= 0 ? 'up' : 'down'}">${fmtMoney(r.gross, true)}</td>
+      <td class="num mono">${fmtMoney(r.costs, true)}</td>
+      <td class="num mono ${r.net >= 0 ? 'up' : 'down'}"><b>${fmtMoney(r.net, true)}</b></td>
+    </tr>`;
+  }).join('');
+}
+
+async function refreshMarketIntelligenceView() {
+  const sym = $('#intelSymSelect')?.value || 'XAU/USD';
+  const I = bySym[sym];
+  if ($('#intelInterpretation')) $('#intelInterpretation').textContent = `Synthesizing multi-timeframe facts & scenarios for ${sym}…`;
+  try {
+    let cached = lastMtfConfluenceBySym[sym];
+    if (!cached || Date.now() - cached.atMs > 60_000) {
+      const { source, series } = await fetchMultiTimeframeCandles(sym);
+      cached = { mtf: computeMultiTimeframeConfluence(series), source, atMs: Date.now() };
+      lastMtfConfluenceBySym[sym] = cached;
+    }
+    const brief = buildMarketIntelligenceBrief({
+      symbol: sym,
+      quote: I && I.p != null ? { mid: I.p, bid: I.bid ?? I.p, ask: I.ask ?? I.p, tsMs: I.tickAt || Date.now() } : null,
+      mtf: cached.mtf,
+      calendarEvents: state.calendar || [],
+      headlines: state.newsItems || [],
+      dataSource: cached.source,
+    });
+    if ($('#intelFreshBadge')) {
+      $('#intelFreshBadge').textContent = brief.freshness;
+      $('#intelFreshBadge').className = 'badge ' + (brief.freshness.startsWith('LIVE') ? 'buy' : 'wait');
+    }
+    if ($('#intelVerdictBadge')) {
+      $('#intelVerdictBadge').textContent = `${brief.verdict} (${brief.qualityScore}/100)`;
+      $('#intelVerdictBadge').className = 'badge ' + (brief.verdict === 'BUY' ? 'buy' : brief.verdict === 'SELL' ? 'sell' : 'gold');
+    }
+    if ($('#intelFactsList')) {
+      $('#intelFactsList').innerHTML = brief.observedFacts.map((f) => `<li>${escHtml(f)}</li>`).join('');
+    }
+    if ($('#intelInterpretation')) $('#intelInterpretation').textContent = brief.interpretation;
+    if ($('#intelLimitations')) $('#intelLimitations').textContent = `Source: ${brief.dataSource} · ${brief.limitations}`;
+    if ($('#intelBullish')) $('#intelBullish').textContent = brief.bullishScenario;
+    if ($('#intelBearish')) $('#intelBearish').textContent = brief.bearishScenario;
+  } catch (e) {
+    if ($('#intelInterpretation')) $('#intelInterpretation').textContent = `Intelligence synthesis unavailable: ${e.message || e}`;
+  }
+}
+
+async function runHistoricalStrategyBacktest() {
+  const sym = $('#btSymSelect')?.value || 'XAU/USD';
+  const gran = Number($('#btTfSelect')?.value || 300);
+  const minScore = Number($('#btMinScore')?.value || 65);
+  const riskUsd = Math.max(1, Number($('#btRiskUsd')?.value || 10));
+  const costUsd = Math.max(0, Number($('#btCostUsd')?.value || 0.25));
+  const dCode = (INSTRUMENT_MAP[sym] || {}).deriv;
+  if ($('#btDisclaimer')) $('#btDisclaimer').textContent = `Fetching real historical candles for ${sym}…`;
+  try {
+    let candles = [];
+    if (state.broker?.type === 'mt5') {
+      const tfName = gran === 900 ? 'M15' : gran === 3600 ? 'H1' : 'M5';
+      const r = await bridge.bridgeHistory(sym.replace('/', ''), tfName, 300).catch(() => null);
+      candles = r?.candles || [];
+    }
+    if (candles.length < 80 && dCode) {
+      if (candleHistory && typeof candleHistory.fetchCandlesByCode === 'function') {
+        const res = await candleHistory.fetchCandlesByCode(dCode, gran, 300).catch(() => null);
+        candles = Array.isArray(res) ? res : (res?.candles || []);
+      }
+      if (candles.length < 80) {
+        const r = await api(`/api/market/candles?symbol=${encodeURIComponent(sym)}&granularity=${gran}&count=300`).catch(() => null);
+        if (Array.isArray(r?.candles)) candles = r.candles;
+      }
+    }
+    if (candles.length < 80) throw new Error(`Fewer than 80 historical candles returned for ${sym}.`);
+
+    let equity = 0, peak = 0, maxDd = 0, wins = 0, losses = 0, grossWin = 0, grossLoss = 0;
+    const eqSeries = [0];
+    for (let i = 55; i < candles.length - 4; i++) {
+      const slice = candles.slice(i - 55, i + 1);
+      const res = evaluateSingleTimeframe(slice, 'BT');
+      if (!res.available || (res.direction !== 'BUY' && res.direction !== 'SELL') || res.score < minScore) continue;
+      const atr = res.indicators?.atr || 0;
+      if (!(atr > 0)) continue;
+      const entry = candles[i + 1].open;
+      const dir = res.direction === 'BUY' ? 1 : -1;
+      const slDist = atr * 1.2;
+      const tpDist = atr * 1.8; // 1.5 R:R
+      let outcomeR = 0;
+      let resolved = false;
+      for (let j = i + 1; j < Math.min(candles.length, i + 12); j++) {
+        const bar = candles[j];
+        const hitSl = dir === 1 ? bar.low <= entry - slDist : bar.high >= entry + slDist;
+        const hitTp = dir === 1 ? bar.high >= entry + tpDist : bar.low <= entry - tpDist;
+        if (hitSl && hitTp) { outcomeR = -1; resolved = true; break; } // conservative bar-intrabar assumption
+        if (hitSl) { outcomeR = -1; resolved = true; break; }
+        if (hitTp) { outcomeR = 1.5; resolved = true; break; }
+      }
+      if (!resolved) {
+        const exitPx = candles[Math.min(candles.length - 1, i + 11)].close;
+        outcomeR = ((exitPx - entry) * dir) / slDist;
+      }
+      const netPl = outcomeR * riskUsd - costUsd;
+      equity += netPl;
+      if (equity > peak) peak = equity;
+      if (peak - equity > maxDd) maxDd = peak - equity;
+      if (netPl > 0) { wins++; grossWin += netPl; } else { losses++; grossLoss += Math.abs(netPl); }
+      eqSeries.push(equity);
+      i += 3; // non-overlapping cooldown
+    }
+
+    const total = wins + losses;
+    if ($('#btTrades')) $('#btTrades').textContent = String(total);
+    if ($('#btBarsMeta')) $('#btBarsMeta').textContent = `${candles.length} real bars replayed`;
+    if ($('#btWinRate')) $('#btWinRate').textContent = total ? `${((wins / total) * 100).toFixed(1)}%` : '0%';
+    if ($('#btPf')) $('#btPf').textContent = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : (wins ? '∞' : '0.00');
+    if ($('#btExpectancy')) $('#btExpectancy').textContent = `Expectancy: ${total ? fmtMoney(equity / total, true) : '—'}/trade`;
+    if ($('#btMaxDd')) $('#btMaxDd').textContent = fmtMoney(-maxDd);
+    if ($('#btNetPl')) $('#btNetPl').textContent = `Net P&L: ${fmtMoney(equity, true)}`;
+    if ($('#btDisclaimer')) $('#btDisclaimer').textContent = `Walk-forward replay on ${candles.length} verified ${sym} candles with $${costUsd.toFixed(2)}/trade cost deducted. Historical simulation — not a guarantee of live results.`;
+
+    const cvs = $('#btEquityCanvas');
+    if (cvs && cvs.getContext) {
+      const ctx = cvs.getContext('2d');
+      const w = (cvs.width = cvs.clientWidth || 640);
+      const h = (cvs.height = 200);
+      ctx.clearRect(0, 0, w, h);
+      const minV = Math.min(...eqSeries, 0);
+      const maxV = Math.max(...eqSeries, 1);
+      const span = maxV - minV || 1;
+      ctx.strokeStyle = equity >= 0 ? '#1ec98a' : '#f05262';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      eqSeries.forEach((v, idx) => {
+        const x = (idx / Math.max(1, eqSeries.length - 1)) * (w - 24) + 12;
+        const y = h - 16 - ((v - minV) / span) * (h - 32);
+        if (idx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+  } catch (e) {
+    if ($('#btDisclaimer')) $('#btDisclaimer').textContent = `Backtest error: ${e.message || e}`;
+  }
+}
+
+function renderSecurityAuditView() {
+  const tbody = $('#securityAuditBody');
+  if (!tbody) return;
+  const events = sniperRuntime.auditEvents;
+  if (!events.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="faint center">No security or execution events recorded in this session yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = events.slice(0, 120).map((ev) => {
+    const ts = ev.tsIso.replace('T', ' ').slice(0, 19);
+    const det = JSON.stringify(ev.detail || {});
+    return `<tr>
+      <td class="mono tiny">${escHtml(ts)}</td>
+      <td class="tiny">${escHtml(ev.actor)}</td>
+      <td><span class="badge ${ev.category.includes('STOP') || ev.category.includes('ERROR') ? 'sell' : ev.category.includes('EXECUTION') || ev.category.includes('CLOSE') ? 'buy' : 'gold'}">${escHtml(ev.category)}</span></td>
+      <td><b>${escHtml(ev.action)}</b></td>
+      <td class="tiny mono faint" style="max-width:440px;overflow:hidden;text-overflow:ellipsis">${escHtml(det)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function initSpecialistViewsAndSettingsNav() {
+  $('#openPosRefreshBtn')?.addEventListener('click', async () => {
+    if (state.broker?.type === 'mt5') await refreshMt5Snapshot(false);
+    renderUnifiedOpenPositions();
+  });
+  $('#unifiedOpenPosBody')?.addEventListener('change', (e) => {
+    const inp = e.target.closest('[data-pos-target]');
+    if (!inp) return;
+    const key = inp.dataset.posTarget;
+    const val = Math.max(0.25, Number(inp.value) || sniperExecConfig.netProfitTargetUsd);
+    inp.value = val.toFixed(2);
+    sniperExecConfig.perPositionTargets[key] = val;
+    saveSniperExecConfig();
+    recordPlatformAudit('POSITION_PROFIT_TARGET', 'OVERRIDE_NET_TARGET', { position: key, targetUsd: val });
+    toast('Position net target updated', `${key} will auto-close at +$${val.toFixed(2)} net profit when Auto-Close is enabled.`, 'ok');
+  });
+  $('#unifiedOpenPosBody')?.addEventListener('click', async (e) => {
+    const mt5Btn = e.target.closest('[data-close-mt5-ticket]');
+    if (mt5Btn && typeof closeMt5BrokerPosition === 'function') {
+      const tk = Number(mt5Btn.dataset.closeMt5Ticket);
+      const posObj = (state.mt5LivePositions || []).find((x) => Number(x.ticket) === tk) || { ticket: tk };
+      await closeMt5BrokerPosition(posObj, false);
+      renderUnifiedOpenPositions();
+      return;
+    }
+    const appBtn = e.target.closest('[data-close-app-pos]');
+    if (appBtn && typeof closePosition === 'function') {
+      await closePosition(appBtn.dataset.closeAppPos, 'manual');
+      renderUnifiedOpenPositions();
+    }
+  });
+
+  $('#pendingRefreshBtn')?.addEventListener('click', () => refreshAndRenderPendingOrders());
+  $('#pendingOrdersBody')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-cancel-pending]');
+    if (!btn) return;
+    const ticket = Number(btn.dataset.cancelPending);
+    const environment = btn.dataset.pendEnv || 'demo';
+    btn.disabled = true;
+    try {
+      const res = await bridge.cancelBridgePendingOrder({ ticket, environment, manualConfirmed: true });
+      if (res?.type !== 'pending_cancelled') throw new Error(res?.message || 'Cancel rejected');
+      recordPlatformAudit('PENDING_CANCEL', 'MT5_CANCELLED', { ticket, environment });
+      toast('Pending order cancelled', `MT5 order #${ticket} removed.`, 'ok');
+      await refreshAndRenderPendingOrders();
+    } catch (err) {
+      toast('Cancel failed', String(err.message || err), 'err');
+      btn.disabled = false;
+    }
+  });
+
+  $('#histSyncBrokerBtn')?.addEventListener('click', () => renderUnifiedTradeHistory(true));
+  $('#histExportCsvBtn')?.addEventListener('click', () => {
+    const rows = [['Time_UTC', 'Source', 'Symbol', 'Side', 'Net_PL_USD']];
+    (state.history || []).forEach((h) => rows.push([new Date(h.closedAt || Date.now()).toISOString(), h.reason || 'Workspace', h.sym || '', h.side || '', String(h.pl || 0)]));
+    const blob = new Blob([rows.map((r) => r.join(',')).join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `shelricktech-trade-history-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  });
+
+  $('#intelRefreshBtn')?.addEventListener('click', () => refreshMarketIntelligenceView());
+  $('#intelSymSelect')?.addEventListener('change', () => refreshMarketIntelligenceView());
+  $('#btRunBtn')?.addEventListener('click', () => runHistoricalStrategyBacktest());
+
+  $('#secExportAuditBtn')?.addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(sniperRuntime.auditEvents, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `shelricktech-audit-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+  });
+
+  $('#settingsSubnav')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-set-jump]');
+    if (!btn) return;
+    $$('#settingsSubnav .chip').forEach((c) => c.classList.toggle('active', c === btn));
+    const el = document.getElementById(btn.dataset.setJump);
+    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
+try {
+  initNotificationCentreUi();
+  initTradingViewCommandCentreUi();
+  initManualTicketEnhancements();
+  initMtfConfluenceUi();
+  initSniperAndProfitTargetEngine();
+  initSpecialistViewsAndSettingsNav();
+  updateAccountTopBar();
+  setInterval(() => {
+    try {
+      updateAccountTopBar();
+      if (state.view === 'trade') refreshTicketSupervisorBanner();
+      if (state.view === 'positions') renderUnifiedOpenPositions();
+      runDynamicProfitTargetWatcher();
+    } catch {}
+  }, 2000);
+} catch (initErr) {
+  console.error('Institutional controller init error:', initErr);
 }
 
 /* Startup marker for the guard script in index.html: reaching this line means
