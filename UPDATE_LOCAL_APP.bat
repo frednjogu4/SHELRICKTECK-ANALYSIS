@@ -9,8 +9,10 @@ echo ============================================================
 echo  Fredrick TRADING - One-Click Local App Updater
 echo  Target URL: http://127.0.0.1:8788/app
 echo  Downloads latest verified release from GitHub (main),
-echo  preserves local tokens/MT5/data, restarts API + bridge,
-echo  and verifies the live Build ID on port 8788.
+echo  backs up current files, preserves local tokens/MT5/data,
+echo  restarts API + bridge, verifies the live Build ID on port 8788,
+echo  and restores the previous version automatically on failure.
+echo  Usage: UPDATE_LOCAL_APP.bat [--dry-run] [--no-restart] [--target "C:\path"]
 echo ============================================================
 echo.
 
@@ -40,6 +42,7 @@ if ($rawArgs -match '--target\s+"([^"]+)"') {
   $explicitTarget = $Matches[1]
 }
 $skipRestart = $rawArgs -match '(^|\s)--no-restart(\s|$)'
+$dryRun = $rawArgs -match '(^|\s)--dry-run(\s|$)'
 
 $zipUrl = if ($env:AURUM_UPDATE_ZIP_URL) {
   $env:AURUM_UPDATE_ZIP_URL
@@ -256,6 +259,55 @@ function Test-AurumApiHealth {
   }
 }
 
+function Restart-AndVerifyServices([string]$root, [string]$mode, [string]$expectedId) {
+  Write-Host "[5/6] Restarting local services for http://127.0.0.1:8788/app..."
+  $hasStartAll = Test-Path -LiteralPath (Join-Path $root 'START_ALL_LOCAL.bat') -PathType Leaf
+  $hasCmdCentre = Test-Path -LiteralPath (Join-Path $root 'START_LOCAL_MARKET_COMMAND_CENTRE.bat') -PathType Leaf
+  $tokenPath = Join-Path $root 'bridge\bridge_token.txt'
+  $pyRuntimePath = Join-Path $root 'bridge\python_runtime.txt'
+  $autoStartBat = Join-Path $root 'bridge\AUTO_START.bat'
+
+  if ($mode -eq 'wrangler' -or (-not $hasStartAll -and $hasCmdCentre)) {
+    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $root 'START_LOCAL_MARKET_COMMAND_CENTRE.bat') + '"') -WorkingDirectory $root
+  } else {
+    $canAutoStart = $false
+    if ((Test-Path -LiteralPath $tokenPath -PathType Leaf) -and (Test-Path -LiteralPath $pyRuntimePath -PathType Leaf) -and (Test-Path -LiteralPath $autoStartBat -PathType Leaf)) {
+      $savedPy = (Get-Content -LiteralPath $pyRuntimePath -TotalCount 1 -ErrorAction SilentlyContinue)
+      if ($savedPy -and (Test-Path -LiteralPath $savedPy.Trim() -PathType Leaf)) {
+        $canAutoStart = $true
+      }
+    }
+    if ($canAutoStart) {
+      $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + $autoStartBat + '"') -WorkingDirectory (Join-Path $root 'bridge') -Wait -PassThru -WindowStyle Hidden
+      if ($p.ExitCode -ne 0) {
+        Write-Host "      Background auto-start returned $($p.ExitCode); running full START_ALL_LOCAL.bat..."
+        Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $root 'START_ALL_LOCAL.bat') + '"') -WorkingDirectory $root
+      }
+    } else {
+      Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $root 'START_ALL_LOCAL.bat') + '"') -WorkingDirectory $root
+    }
+  }
+
+  Write-Host "[6/6] Verifying live http://127.0.0.1:8788/build.json matches Build ID $expectedId..."
+  $liveId = ''
+  $deadline = (Get-Date).AddSeconds(60)
+  while ((Get-Date) -lt $deadline) {
+    try {
+      $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8788/build.json' -Headers @{ 'Cache-Control' = 'no-cache' } -TimeoutSec 3
+      if ($resp.StatusCode -eq 200 -and $resp.Content) {
+        $b = $resp.Content | ConvertFrom-Json
+        if ($b -and $b.id) {
+          $liveId = [string]$b.id
+          if ($liveId -eq $expectedId) { break }
+        }
+      }
+    } catch {}
+    Start-Sleep -Seconds 1
+  }
+  return $liveId
+}
+
+
 $targetRoot = Find-TargetAurumRoot
 $oldBuildJsonPath = Join-Path $targetRoot 'bridge\pwa\build.json'
 $oldBuildId = 'none (pre-repair package)'
@@ -269,6 +321,17 @@ if (Test-Path -LiteralPath $oldBuildJsonPath -PathType Leaf) {
 Write-Host "[1/6] Located local package folder:"
 Write-Host "      $targetRoot"
 Write-Host "      Current installed Build ID: $oldBuildId"
+
+$transcriptOn = $false
+try {
+  $logDir = Join-Path $targetRoot 'logs'
+  New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+  $logFile = Join-Path $logDir ('aurum-update-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
+  Start-Transcript -Path $logFile -Force | Out-Null
+  $transcriptOn = $true
+  Write-Host "Update log: $logFile"
+} catch {}
+
 
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('aurum-local-update-' + [guid]::NewGuid().ToString('N').Substring(0, 10))
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
@@ -291,6 +354,7 @@ try {
   if (-not (Test-Path -LiteralPath $zipFile -PathType Leaf) -or ((Get-Item -LiteralPath $zipFile).Length -lt 50000)) {
     throw "Downloaded archive is missing or unexpectedly small. Aborting without changing local files."
   }
+  Write-Host ("      Downloaded archive SHA-256: " + (Get-FileSha256 $zipFile))
 
   Expand-Archive -LiteralPath $zipFile -DestinationPath $extractDir -Force
   $subDirs = @(Get-ChildItem -LiteralPath $extractDir -Directory)
@@ -329,6 +393,15 @@ try {
     throw "Release consistency check failed: bridge\app.html and bridge\pwa\sw.js do not match Build ID $newBuildId."
   }
   Write-Host "      Verified incoming release Build ID: $newBuildId"
+  try {
+    $newPkg = Get-Content -LiteralPath (Join-Path $srcRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($newPkg -and $newPkg.version -and $newBuildObj.version -and ([string]$newPkg.version -ne [string]$newBuildObj.version)) {
+      throw "Downloaded release failed verification: package.json version $($newPkg.version) does not match build.json version $($newBuildObj.version)."
+    }
+  } catch {
+    if ($_.Exception.Message -match 'failed verification') { throw }
+  }
+
 
   # Snapshot hashes of local-only files so we prove nothing secret/local was touched
   $preservedBefore = @{}
@@ -339,59 +412,11 @@ try {
     }
   }
 
-  $launchMode = 'bridge'
-  if (-not $skipRestart) {
-    Write-Host "[3/6] Stopping old local AURUM server/bridge processes (MT5 is NEVER stopped)..."
-    foreach ($port in @(8788, 8787)) {
-      foreach ($procId in (Get-ListeningPids $port)) {
-        $info = Get-ProcInfo $procId
-        if (-not $info) { continue }
-        if ($info.Name -match '^(?i)terminal(64)?(\.exe)?$') { continue }
-        if ($info.CommandLine -match 'mt5_bridge\.py' -or $info.WindowTitle -match 'Exness MT5 Bridge') {
-          $launchMode = 'bridge'
-          Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-        } elseif ($info.CommandLine -match 'wrangler' -or $info.Name -match '^(?i)workerd') {
-          $launchMode = 'wrangler'
-          Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-        } else {
-          throw "Port $port is occupied by non-AURUM process PID $procId ($($info.Name)). Close it manually before updating."
-        }
-      }
-    }
-
-    $port4100IsAurum = Test-AurumApiHealth
-    foreach ($procId in (Get-ListeningPids 4100)) {
-      $info = Get-ProcInfo $procId
-      if (-not $info) { continue }
-      if ($info.Name -match '^(?i)terminal(64)?(\.exe)?$') { continue }
-      $isAurumNode = ($info.CommandLine -match 'server[\\/]server\.js') -or
-                     ($info.WindowTitle -match 'Fredrick AURUM Local API') -or
-                     ($port4100IsAurum -and $info.Name -match '^(?i)node(\.exe)?$')
-      if ($isAurumNode) {
-        $parentId = $info.ParentPid
-        Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-        if ($parentId -gt 0) {
-          $pInfo = Get-ProcInfo $parentId
-          if ($pInfo -and ($pInfo.CommandLine -match 'RUN_LOCAL_API\.bat' -or $pInfo.WindowTitle -match 'Fredrick AURUM Local API')) {
-            Stop-Process -Id $parentId -Force -ErrorAction SilentlyContinue
-          }
-        }
-      }
-    }
-
-    $waitUntil = (Get-Date).AddSeconds(10)
-    while ((Get-Date) -lt $waitUntil) {
-      if ((Get-ListeningPids 8788).Count -eq 0 -and (Get-ListeningPids 4100).Count -eq 0) { break }
-      Start-Sleep -Milliseconds 300
-    }
-  } else {
-    Write-Host "[3/6] Skipping service stop (--no-restart)."
-  }
-
-  Write-Host "[4/6] Updating application, bridge, PWA, and local API files..."
-  $copiedCount = 0
+  # Build the copy plan first (the same approved file lists as before) so a
+  # timestamped backup exists BEFORE anything is overwritten, and so a dry
+  # run can report exactly what would change without touching the install.
   $selfFull = if ($env:AURUM_UPDATER_BAT) { [System.IO.Path]::GetFullPath($env:AURUM_UPDATER_BAT) } else { '' }
-
+  $copyPlan = New-Object System.Collections.Generic.List[object]
   foreach ($rootFile in $packageRootFiles) {
     $srcPath = Join-Path $srcRoot $rootFile
     if (Test-Path -LiteralPath $srcPath -PathType Leaf) {
@@ -399,11 +424,9 @@ try {
       if ($selfFull -and ([System.IO.Path]::GetFullPath($dstPath) -ieq $selfFull) -and ((Get-FileSha256 $srcPath) -eq (Get-FileSha256 $dstPath))) {
         continue
       }
-      [System.IO.File]::Copy($srcPath, $dstPath, $true)
-      $copiedCount++
+      $copyPlan.Add([PSCustomObject]@{ Src = $srcPath; Dst = $dstPath; Rel = $rootFile })
     }
   }
-
   foreach ($tree in $packageTrees) {
     $srcTree = Join-Path $srcRoot $tree
     if (-not (Test-Path -LiteralPath $srcTree -PathType Container)) { continue }
@@ -418,114 +441,239 @@ try {
       }
       if ($skipDir) { continue }
       $dstFile = Join-Path $targetRoot ($rel -replace '/', '\')
-      $dstParent = Split-Path -Parent $dstFile
+      $copyPlan.Add([PSCustomObject]@{ Src = $f.FullName; Dst = $dstFile; Rel = $rel })
+    }
+  }
+
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $backupDir = Join-Path $targetRoot ('backups\aurum-backup-' + $stamp)
+  $createdRels = New-Object System.Collections.Generic.List[string]
+  $servicesStopped = $false
+
+  if ($dryRun) {
+    Write-Host "[DRY RUN] No files will be changed and no service will be stopped."
+    Write-Host "      Target folder:    $targetRoot"
+    Write-Host "      Current Build ID: $oldBuildId"
+    Write-Host "      Incoming Build ID: $newBuildId"
+    Write-Host "      Files that would be copied: $($copyPlan.Count)"
+    Write-Host "      Backup that would be created: $backupDir"
+    Write-Host "      Preserved untouched: bridge_token.txt, terminal_path.txt, python_runtime.txt, server\data, logs, node_modules, .env"
+    Write-Host "      Services that would restart: local API (4100) and bridge (8788). MT5 is never stopped."
+    Write-Host "[DRY RUN] Done. Run UPDATE_LOCAL_APP.bat without --dry-run to apply."
+    return
+  }
+
+  $launchMode = 'bridge'
+  try {
+    if (-not $skipRestart) {
+      Write-Host "[3/6] Stopping old local AURUM server/bridge processes (MT5 is NEVER stopped)..."
+      foreach ($port in @(8788, 8787)) {
+        foreach ($procId in (Get-ListeningPids $port)) {
+          $info = Get-ProcInfo $procId
+          if (-not $info) { continue }
+          if ($info.Name -match '^(?i)terminal(64)?(\.exe)?$') { continue }
+          if ($info.CommandLine -match 'mt5_bridge\.py' -or $info.WindowTitle -match 'Exness MT5 Bridge') {
+            $launchMode = 'bridge'
+            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+          } elseif ($info.CommandLine -match 'wrangler' -or $info.Name -match '^(?i)workerd') {
+            $launchMode = 'wrangler'
+            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+          } else {
+            throw "Port $port is occupied by non-AURUM process PID $procId ($($info.Name)). Close it manually before updating."
+          }
+        }
+      }
+
+      $port4100IsAurum = Test-AurumApiHealth
+      foreach ($procId in (Get-ListeningPids 4100)) {
+        $info = Get-ProcInfo $procId
+        if (-not $info) { continue }
+        if ($info.Name -match '^(?i)terminal(64)?(\.exe)?$') { continue }
+        $isAurumNode = ($info.CommandLine -match 'server[\\/]server\.js') -or
+                       ($info.WindowTitle -match 'Fredrick AURUM Local API') -or
+                       ($port4100IsAurum -and $info.Name -match '^(?i)node(\.exe)?$')
+        if ($isAurumNode) {
+          $parentId = $info.ParentPid
+          Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+          if ($parentId -gt 0) {
+            $pInfo = Get-ProcInfo $parentId
+            if ($pInfo -and ($pInfo.CommandLine -match 'RUN_LOCAL_API\.bat' -or $pInfo.WindowTitle -match 'Fredrick AURUM Local API')) {
+              Stop-Process -Id $parentId -Force -ErrorAction SilentlyContinue
+            }
+          }
+        }
+      }
+
+      $waitUntil = (Get-Date).AddSeconds(10)
+      while ((Get-Date) -lt $waitUntil) {
+        if ((Get-ListeningPids 8788).Count -eq 0 -and (Get-ListeningPids 4100).Count -eq 0) { break }
+        Start-Sleep -Milliseconds 300
+      }
+      $servicesStopped = $true
+    } else {
+      Write-Host "[3/6] Skipping service stop (--no-restart)."
+    }
+
+    Write-Host "[4/6] Backing up current files, then updating application, bridge, PWA, and local API files..."
+    New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+    $backedUpCount = 0
+    foreach ($entry in $copyPlan) {
+      if (Test-Path -LiteralPath $entry.Dst -PathType Leaf) {
+        $backupFile = Join-Path $backupDir ($entry.Rel -replace '/', '\')
+        $backupParent = Split-Path -Parent $backupFile
+        if (-not (Test-Path -LiteralPath $backupParent -PathType Container)) {
+          New-Item -ItemType Directory -Force -Path $backupParent | Out-Null
+        }
+        [System.IO.File]::Copy($entry.Dst, $backupFile, $true)
+        $backedUpCount++
+      } else {
+        $createdRels.Add($entry.Rel)
+      }
+    }
+    $manifestLines = @(
+      'AURUM local update backup',
+      ('Created: ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')),
+      ('Target: ' + $targetRoot),
+      ('Previous Build ID: ' + $oldBuildId),
+      ('Incoming Build ID: ' + $newBuildId),
+      ('Files backed up: ' + $backedUpCount),
+      ('Files newly created by the update: ' + $createdRels.Count)
+    )
+    [System.IO.File]::WriteAllLines((Join-Path $backupDir 'manifest.txt'), $manifestLines)
+    Write-Host "      Backup written to $backupDir ($backedUpCount files)"
+
+    $copiedCount = 0
+    foreach ($entry in $copyPlan) {
+      $dstParent = Split-Path -Parent $entry.Dst
       if (-not (Test-Path -LiteralPath $dstParent -PathType Container)) {
         New-Item -ItemType Directory -Force -Path $dstParent | Out-Null
       }
-      [System.IO.File]::Copy($f.FullName, $dstFile, $true)
+      [System.IO.File]::Copy($entry.Src, $entry.Dst, $true)
       $copiedCount++
     }
-  }
 
-  # Ensure UPDATE_LOCAL_APP.bat itself is always installed inside the target package folder
-  $installedUpdater = Join-Path $targetRoot 'UPDATE_LOCAL_APP.bat'
-  if (-not (Test-Path -LiteralPath $installedUpdater -PathType Leaf) -and $selfFull -and (Test-Path -LiteralPath $selfFull -PathType Leaf)) {
-    [System.IO.File]::Copy($selfFull, $installedUpdater, $true)
-  }
-
-  # Verify local-only files were preserved byte-for-byte
-  foreach ($kv in $preservedBefore.GetEnumerator()) {
-    $pFull = Join-Path $targetRoot ($kv.Key -replace '/', '\')
-    $afterHash = Get-FileSha256 $pFull
-    if ($afterHash -ne $kv.Value) {
-      throw "Safety check failed: local file $($kv.Key) changed unexpectedly."
+    # Ensure UPDATE_LOCAL_APP.bat itself is always installed inside the target package folder
+    $installedUpdater = Join-Path $targetRoot 'UPDATE_LOCAL_APP.bat'
+    if (-not (Test-Path -LiteralPath $installedUpdater -PathType Leaf) -and $selfFull -and (Test-Path -LiteralPath $selfFull -PathType Leaf)) {
+      [System.IO.File]::Copy($selfFull, $installedUpdater, $true)
     }
-  }
 
-  # Create Desktop one-click updater shortcut for future releases
-  try {
-    $desk = [Environment]::GetFolderPath('Desktop')
-    if ($desk -and (Test-Path -LiteralPath $desk -PathType Container)) {
-      $wsh = New-Object -ComObject WScript.Shell
-      $lnk = $wsh.CreateShortcut((Join-Path $desk 'Fredrick TRADING - Update Local App.lnk'))
-      $lnk.TargetPath = $installedUpdater
-      $lnk.WorkingDirectory = $targetRoot
-      $lnk.Save()
+    # Verify local-only files were preserved byte-for-byte
+    foreach ($kv in $preservedBefore.GetEnumerator()) {
+      $pFull = Join-Path $targetRoot ($kv.Key -replace '/', '\')
+      $afterHash = Get-FileSha256 $pFull
+      if ($afterHash -ne $kv.Value) {
+        throw "Safety check failed: local file $($kv.Key) changed unexpectedly."
+      }
     }
-  } catch {}
 
-  Write-Host "      Synchronized $copiedCount canonical files into $targetRoot"
+    # Create Desktop one-click updater shortcut for future releases
+    try {
+      $desk = [Environment]::GetFolderPath('Desktop')
+      if ($desk -and (Test-Path -LiteralPath $desk -PathType Container)) {
+        $wsh = New-Object -ComObject WScript.Shell
+        $lnk = $wsh.CreateShortcut((Join-Path $desk 'Fredrick TRADING - Update Local App.lnk'))
+        $lnk.TargetPath = $installedUpdater
+        $lnk.WorkingDirectory = $targetRoot
+        $lnk.Save()
+      }
+    } catch {}
 
-  if (-not $skipRestart) {
-    Write-Host "[5/6] Restarting local services for http://127.0.0.1:8788/app..."
-    $hasStartAll = Test-Path -LiteralPath (Join-Path $targetRoot 'START_ALL_LOCAL.bat') -PathType Leaf
-    $hasCmdCentre = Test-Path -LiteralPath (Join-Path $targetRoot 'START_LOCAL_MARKET_COMMAND_CENTRE.bat') -PathType Leaf
-    $tokenPath = Join-Path $targetRoot 'bridge\bridge_token.txt'
-    $pyRuntimePath = Join-Path $targetRoot 'bridge\python_runtime.txt'
-    $autoStartBat = Join-Path $targetRoot 'bridge\AUTO_START.bat'
+    Write-Host "      Synchronized $copiedCount canonical files into $targetRoot"
 
-    if ($launchMode -eq 'wrangler' -or (-not $hasStartAll -and $hasCmdCentre)) {
-      Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $targetRoot 'START_LOCAL_MARKET_COMMAND_CENTRE.bat') + '"') -WorkingDirectory $targetRoot
+    if (-not $skipRestart) {
+      $liveId = Restart-AndVerifyServices $targetRoot $launchMode $newBuildId
+      if ($liveId -ne $newBuildId) {
+        throw "Port 8788 did not report Build ID $newBuildId within 60 seconds (got: '$liveId'). Check the bridge/API console window."
+      }
+
+      $apiStatus = 'not checked (Wrangler dashboard mode)'
+      if ($launchMode -eq 'bridge') {
+        $apiStatus = if (Test-AurumApiHealth) { 'HTTP 200 (ok)' } else { 'starting' }
+      }
+
+      Write-Host ""
+      Write-Host "============================================================"
+      Write-Host " [OK] http://127.0.0.1:8788/app IS NOW UP TO DATE"
+      Write-Host " Folder updated:    $targetRoot"
+      Write-Host " Previous Build ID: $oldBuildId"
+      Write-Host " Live Build ID:     $liveId (matches GitHub main & staging)"
+      Write-Host " Backup:            $backupDir"
+      Write-Host " Local API (4100):  $apiStatus"
+      Write-Host " Preserved intact:  bridge_token.txt, terminal_path.txt, server\data, MT5"
+      Write-Host " Desktop shortcut:  Fredrick TRADING - Update Local App"
+      Write-Host "============================================================"
     } else {
-      $canAutoStart = $false
-      if ((Test-Path -LiteralPath $tokenPath -PathType Leaf) -and (Test-Path -LiteralPath $pyRuntimePath -PathType Leaf) -and (Test-Path -LiteralPath $autoStartBat -PathType Leaf)) {
-        $savedPy = (Get-Content -LiteralPath $pyRuntimePath -TotalCount 1 -ErrorAction SilentlyContinue)
-        if ($savedPy -and (Test-Path -LiteralPath $savedPy.Trim() -PathType Leaf)) {
-          $canAutoStart = $true
-        }
-      }
-      if ($canAutoStart) {
-        $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + $autoStartBat + '"') -WorkingDirectory (Join-Path $targetRoot 'bridge') -Wait -PassThru -WindowStyle Hidden
-        if ($p.ExitCode -ne 0) {
-          Write-Host "      Background auto-start returned $($p.ExitCode); running full START_ALL_LOCAL.bat..."
-          Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $targetRoot 'START_ALL_LOCAL.bat') + '"') -WorkingDirectory $targetRoot
-        }
-      } else {
-        Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $targetRoot 'START_ALL_LOCAL.bat') + '"') -WorkingDirectory $targetRoot
-      }
+      Write-Host "[5/6] Skipped service restart (--no-restart)."
+      Write-Host "[6/6] Offline file update verified: $targetRoot is at Build ID $newBuildId."
     }
-
-    Write-Host "[6/6] Verifying live http://127.0.0.1:8788/build.json matches Build ID $newBuildId..."
-    $liveId = ''
-    $deadline = (Get-Date).AddSeconds(60)
-    while ((Get-Date) -lt $deadline) {
+  } catch {
+    $updateError = $_
+    Write-Host "[X] Update failed: $($updateError.Exception.Message)"
+    if (Test-Path -LiteralPath $backupDir -PathType Container) {
+      Write-Host "[ROLLBACK] Restoring previous files from $backupDir..."
       try {
-        $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8788/build.json' -Headers @{ 'Cache-Control' = 'no-cache' } -TimeoutSec 3
-        if ($resp.StatusCode -eq 200 -and $resp.Content) {
-          $b = $resp.Content | ConvertFrom-Json
-          if ($b -and $b.id) {
-            $liveId = [string]$b.id
-            if ($liveId -eq $newBuildId) { break }
+        foreach ($entry in $copyPlan) {
+          $backupFile = Join-Path $backupDir ($entry.Rel -replace '/', '\')
+          if (Test-Path -LiteralPath $backupFile -PathType Leaf) {
+            $dstParent = Split-Path -Parent $entry.Dst
+            if (-not (Test-Path -LiteralPath $dstParent -PathType Container)) {
+              New-Item -ItemType Directory -Force -Path $dstParent | Out-Null
+            }
+            [System.IO.File]::Copy($backupFile, $entry.Dst, $true)
+          } elseif ($createdRels.Contains($entry.Rel)) {
+            if (Test-Path -LiteralPath $entry.Dst -PathType Leaf) {
+              Remove-Item -LiteralPath $entry.Dst -Force -ErrorAction SilentlyContinue
+            }
           }
         }
-      } catch {}
-      Start-Sleep -Seconds 1
+        Write-Host "[ROLLBACK] Previous files restored."
+        if (-not $skipRestart) {
+          $restoredId = $oldBuildId
+          try {
+            $rb = Get-Content -LiteralPath (Join-Path $targetRoot 'bridge\pwa\build.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($rb -and $rb.id) { $restoredId = [string]$rb.id }
+          } catch {}
+          Write-Host "[ROLLBACK] Restarting previous version and verifying Build ID $restoredId..."
+          try {
+            $rolledId = Restart-AndVerifyServices $targetRoot $launchMode $restoredId
+            if ($rolledId -eq $restoredId) {
+              Write-Host "[ROLLBACK] Previous version is live again (Build ID $rolledId)."
+            } else {
+              Write-Host "[ROLLBACK] Files restored, but the previous version did not confirm live within 60 seconds (got: '$rolledId'). Run START_ALL_LOCAL.bat manually."
+            }
+          } catch {
+            Write-Host "[ROLLBACK] Restart attempt failed: $($_.Exception.Message). Run START_ALL_LOCAL.bat manually."
+          }
+        }
+      } catch {
+        Write-Host "[ROLLBACK] Restore failed: $($_.Exception.Message). Your backup is kept at $backupDir - restore it manually, then run START_ALL_LOCAL.bat."
+      }
+    } elseif ($servicesStopped -and (-not $skipRestart)) {
+      Write-Host "[ROLLBACK] No files were changed, but services were stopped. Restarting the current version..."
+      try {
+        $currentId = $oldBuildId
+        try {
+          $cb = Get-Content -LiteralPath (Join-Path $targetRoot 'bridge\pwa\build.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($cb -and $cb.id) { $currentId = [string]$cb.id }
+        } catch {}
+        $backId = Restart-AndVerifyServices $targetRoot $launchMode $currentId
+        if ($backId -eq $currentId) {
+          Write-Host "[ROLLBACK] Current version is live again (Build ID $backId)."
+        } else {
+          Write-Host "[ROLLBACK] Restart did not confirm live within 60 seconds (got: '$backId'). Run START_ALL_LOCAL.bat manually."
+        }
+      } catch {
+        Write-Host "[ROLLBACK] Restart attempt failed: $($_.Exception.Message). Run START_ALL_LOCAL.bat manually."
+      }
+    } else {
+      Write-Host "[ROLLBACK] No backup was created and no files were changed by this run."
     }
-
-    if ($liveId -ne $newBuildId) {
-      throw "Port 8788 did not report Build ID $newBuildId within 60 seconds (got: '$liveId'). Check the bridge/API console window."
-    }
-
-    $apiStatus = 'not checked (Wrangler dashboard mode)'
-    if ($launchMode -eq 'bridge') {
-      $apiStatus = if (Test-AurumApiHealth) { 'HTTP 200 (ok)' } else { 'starting' }
-    }
-
-    Write-Host ""
-    Write-Host "============================================================"
-    Write-Host " [OK] http://127.0.0.1:8788/app IS NOW UP TO DATE"
-    Write-Host " Folder updated:    $targetRoot"
-    Write-Host " Previous Build ID: $oldBuildId"
-    Write-Host " Live Build ID:     $liveId (matches GitHub main & staging)"
-    Write-Host " Local API (4100):  $apiStatus"
-    Write-Host " Preserved intact:  bridge_token.txt, terminal_path.txt, server\data, MT5"
-    Write-Host " Desktop shortcut:  Fredrick TRADING - Update Local App"
-    Write-Host "============================================================"
-  } else {
-    Write-Host "[5/6] Skipped service restart (--no-restart)."
-    Write-Host "[6/6] Offline file update verified: $targetRoot is at Build ID $newBuildId."
+    throw $updateError
   }
+
 } finally {
+  if ($transcriptOn) { try { Stop-Transcript | Out-Null } catch {} }
   if (Test-Path -LiteralPath $tempDir) {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
   }

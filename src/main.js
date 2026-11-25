@@ -43,12 +43,12 @@ import { emaSeries, findLevels } from '../server/lib/indicators.js';
 import { splitBestPick, dailyBarText, sharedDailyBarText, contextOnlyDailyReading } from './bestpick.js';
 import { headlineConcerns, eventConcerns, eventTime, currenciesOf, marketsForCurrency, eatClock, eatDay, eatDayBounds, eatStamp, standAside, exposureFor, exposureForCurrency, releaseMeasuredText, trendWords, STAND_ASIDE } from './newsimpact.js';
 import { buildScheduledNewsAlerts } from './schedulednews.js';
-import { initCommandCentre } from './commandcentre.js';
 import { buildExposureReconcile, renderExposureReconcile } from './exposurereconcile.js';
 
-/* The new unified Overview has its own structure; the legacy initializer safely no-ops without its old KPI anchor. */
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => initCommandCentre(), { once: true });
-else initCommandCentre();
+/* The unified Overview (view-overview in index.html) is the ONE Market
+   Command Centre. The legacy src/commandcentre.js overlay was removed: its
+   KPI anchor no longer exists in the page, so it never mounted, and keeping
+   a second "Market Command Centre" module only risked a duplicate dashboard. */
 
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));

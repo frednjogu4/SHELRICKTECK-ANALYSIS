@@ -52,6 +52,26 @@ export function buildRevision(distDir = join(REPO_ROOT, 'dist'), root = REPO_ROO
   return { id: contentId(Buffer.from(html, 'utf8')), version: appVersion(root) };
 }
 
+/**
+ * Optional deployment metadata for dist/build.json: { git, builtAt }.
+ *
+ * The committed build.json stays content-only ({ id, version }) so a rebuild
+ * of the same sources is byte-identical and CI's freshness check stays quiet.
+ * A deployment (Cloudflare staging via the deploy workflow) sets
+ * AURUM_GIT_SHA (and optionally AURUM_BUILD_TIME) so the deployed manifest
+ * names the exact commit and build time; the Worker passes both through when
+ * serving /build.json. The local bridge adds the same fields at runtime from
+ * its own checkout, so local and staging always report the same commit.
+ */
+export function releaseExtras(env = process.env) {
+  const extras = {};
+  const sha = String((env && env.AURUM_GIT_SHA) || '').trim();
+  if (/^[0-9a-f]{7,40}$/i.test(sha)) extras.git = sha.slice(0, 8);
+  const builtAt = String((env && env.AURUM_BUILD_TIME) || '').trim();
+  if (builtAt) extras.builtAt = builtAt;
+  return extras;
+}
+
 /** The meta tag a revision injects into the page. */
 export function buildMetaTags(rev) {
   return `<meta name="aurum-build" content="${rev.id}">`;

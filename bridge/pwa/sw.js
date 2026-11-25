@@ -13,7 +13,7 @@
  *    requests are NEVER cached: live API responses, WebSocket data and
  *    authentication traffic must not be stored.
  */
-const VERSION = 'aurum-local-b133b1e9616c7';
+const VERSION = 'aurum-local-b166dedea9b63';
 const VERSION_PREFIX = 'aurum-local-';
 const SHELL = ['/app', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png'];
 

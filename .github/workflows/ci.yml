@@ -59,9 +59,10 @@ jobs:
 
       - name: Committed dist/ matches a fresh build
         run: |
-          if ! git diff --quiet -- dist; then
-            echo "::warning title=dist/ is out of date::dist/index.html or dist/AURUM_Workspace.html in Git differs from a fresh build. Run 'npm run build' and commit the result."
-            git diff --stat -- dist
+          if ! git diff --quiet -- dist bridge/app.html bridge/pwa; then
+            echo "::error title=dist/ is out of date::The committed build differs from a fresh build. Run 'npm run build' and commit the result so local and staging never silently serve an old dashboard."
+            git diff --stat -- dist bridge/app.html bridge/pwa
+            exit 1
           fi
 
   bridge:

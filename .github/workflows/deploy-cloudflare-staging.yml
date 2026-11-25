@@ -55,6 +55,11 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           WRANGLER_SEND_METRICS: 'false'
+          # Baked into dist/build.json by postbuild so staging /build.json
+          # names the exact deployed commit and build time (the Worker cannot
+          # learn them at runtime on a Workers deploy).
+          AURUM_GIT_SHA: ${{ github.sha }}
+          AURUM_BUILD_TIME: ${{ github.event.repository.updated_at }}
         run: |
           if output=$(npm run cf:deploy:staging 2>&1); then
             printf '%s\n' "$output"

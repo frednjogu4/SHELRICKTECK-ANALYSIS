@@ -609,9 +609,9 @@ body[data-view="overview"] .mob-order-bar{display:none}
 .strength-pct{font-size:20px; font-variant-numeric:tabular-nums}
 .strength-track{height:10px; border-radius:99px; background:var(--surface-3); border:1px solid var(--border); overflow:hidden}
 .strength-track i{display:block; height:100%; width:0; border-radius:99px; transition:width .5s ease}
-#strengthBuyBar{background:var(--green)}
-#strengthSellBar{background:var(--red)}
-#strengthNeutralBar{background:var(--amber); opacity:.8}
+.strength-track i[data-s="buyBar"]{background:var(--green)}
+.strength-track i[data-s="sellBar"]{background:var(--red)}
+.strength-track i[data-s="neutralBar"]{background:var(--text-3)}
 @media (prefers-reduced-motion: reduce){.strength-track i{transition:none}}
 .sig-levels{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0}
 .sig-levels div{background:var(--surface-2); border:1px solid var(--border-soft); border-radius:6px; padding:7px 9px; text-align:center}

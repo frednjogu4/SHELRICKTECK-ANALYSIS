@@ -20,7 +20,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyDist } from './verify-dist.mjs';
 import { PC_PAGE_COPIES, refreshPcPage } from './pc-page.mjs';
-import { buildRevision, injectBuildMeta, injectSwVersion } from './build-revision.mjs';
+import { buildRevision, injectBuildMeta, injectSwVersion, releaseExtras } from './build-revision.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
@@ -42,7 +42,9 @@ const rev = buildRevision(dist, root);
 const stamped = [];
 if (writeIfChanged(join(dist, 'index.html'), injectBuildMeta(readFileSync(join(dist, 'index.html'), 'utf8'), rev))) stamped.push('index.html');
 if (writeIfChanged(join(dist, 'sw.js'), injectSwVersion(readFileSync(join(dist, 'sw.js'), 'utf8'), rev.id))) stamped.push('sw.js');
-if (writeIfChanged(join(dist, 'build.json'), JSON.stringify({ id: rev.id, version: rev.version }, null, 2) + '\n')) stamped.push('build.json');
+/* Committed builds stay content-only; deployments (AURUM_GIT_SHA set by the
+ * staging workflow) additionally name the commit and build time. */
+if (writeIfChanged(join(dist, 'build.json'), JSON.stringify({ id: rev.id, version: rev.version, ...releaseExtras() }, null, 2) + '\n')) stamped.push('build.json');
 console.log(`postbuild: build revision ${rev.id} (${rev.version || 'no version'})${stamped.length ? ' stamped ' + stamped.join(', ') : ' already stamped'}`);
 
 writeIfChanged(join(dist, 'AURUM_Workspace.html'), readFileSync(join(dist, 'index.html')));

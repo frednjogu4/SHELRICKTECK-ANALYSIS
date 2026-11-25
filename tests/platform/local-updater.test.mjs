@@ -125,3 +125,29 @@ test('updater file lists match scripts/refresh_local_update_packages.py', () => 
   assert.deepEqual(psFiles.slice().sort(), pyFiles.slice().sort());
   assert.ok(pyFiles.includes('UPDATE_LOCAL_APP.bat'));
 });
+
+test('updater backs up before overwriting, rolls back on failure, supports dry-run and logs the run', () => {
+  const ps = rawText.slice(rawText.indexOf(MARKER));
+
+  // Timestamped backup created before any file is replaced.
+  assert.match(ps, /backups\\aurum-backup-/);
+  assert.match(ps, /manifest\.txt/);
+  assert.match(ps, /Backup written to/);
+  // Rollback restores backed-up files and removes newly created ones.
+  assert.match(ps, /\[ROLLBACK\] Restoring previous files/);
+  assert.match(ps, /createdRels\.Contains/);
+  assert.match(ps, /Previous version is live again/);
+  // Dry run reports the plan without stopping services or copying.
+  assert.match(ps, /--dry-run/);
+  assert.match(ps, /\[DRY RUN\] No files will be changed/);
+  // Readable update log under logs/ (a preserved directory).
+  assert.match(ps, /Start-Transcript/);
+  assert.match(ps, /aurum-update-/);
+  assert.match(ps, /Stop-Transcript/);
+  // Download integrity: archive hash is recorded and the extracted
+  // package.json version must match build.json before anything is copied.
+  assert.match(ps, /Downloaded archive SHA-256/);
+  assert.match(ps, /package\.json version/);
+  // A non-AURUM occupant of 8788 aborts instead of being killed.
+  assert.match(ps, /occupied by non-AURUM process/);
+});
