@@ -43,6 +43,7 @@ PACKAGE_ROOT_FILES = (
     "SETUP_AND_RUN_LOCAL.bat",
     "RUN_LOCAL_API.bat",
     "START_LOCAL_API.bat",
+    "UPDATE_LOCAL_APP.bat",
     "LOCAL_HOSTING_README.md",
     "LOCAL_HOST_ONLY.txt",
     "LOCAL_UPDATE_NOTES.txt",

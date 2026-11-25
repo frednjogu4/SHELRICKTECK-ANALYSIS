@@ -149,9 +149,24 @@ pressed, in both places, so two screens agree when both were read at the same
 
 ### Bringing the PC app up to date
 
-A merge changes the website within minutes. It does not change the trading PC:
-the PC runs the files in its own package folder (the folder that holds
-`START_ALL_LOCAL.bat`), and those change only when someone replaces them.
+A merge changes the website within minutes. It does not change the trading PC
+automatically: `http://127.0.0.1:8788/app` runs from the package folder on the
+PC (the folder that holds `START_ALL_LOCAL.bat`).
+
+**One-click update (recommended):** double-click **`UPDATE_LOCAL_APP.bat`**
+(or the **Fredrick TRADING - Update Local App** shortcut it places on your
+Desktop after the first run). Even if run from `Downloads`, it finds the active
+local package folder serving port `8788`, downloads the latest `main` archive
+from GitHub, verifies the incoming Build ID, stops only the old local AURUM API
+(`4100`) and bridge (`8787`/`8788`) while leaving Exness MT5 untouched,
+synchronizes `bridge\`, `server\`, `src\`, `scripts\`, `public\`, `cloudflare\`
+and root launchers while preserving `bridge\bridge_token.txt`,
+`bridge\terminal_path.txt`, `bridge\python_runtime.txt`, `server\data\`,
+`node_modules\` and `logs\`, restarts the local services, and confirms live on
+`http://127.0.0.1:8788/build.json` that the active Build ID matches GitHub
+`main`.
+
+**Manual ZIP update (alternative):**
 
 1. On GitHub, open the repository, press **Code**, then **Download ZIP**, and
    extract the ZIP.
