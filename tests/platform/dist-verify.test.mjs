@@ -15,6 +15,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const script = join(root, 'scripts', 'verify-dist.mjs');
 
 const BUILT_HTML = '<!doctype html><html><head><script type="module" crossorigin>' + '/* bundle */'.repeat(200) + '</script></head><body></body></html>';
+const FIXTURE_ID = 'bfixture00001';
+const STAMPED_HTML = BUILT_HTML.replace('<head>', `<head><meta name="aurum-build" content="${FIXTURE_ID}">`);
+const FIXTURE_SW = `const VERSION = 'aurum-local-${FIXTURE_ID}';\nself.addEventListener("fetch", () => {});`;
+const FIXTURE_BUILD = JSON.stringify({ id: FIXTURE_ID, version: '1.0.0' });
 const HEADERS = '/*\n' + REQUIRED_ASSET_HEADERS.map((name) => `  ${name}: value`).join('\n') + '\n';
 const MANIFEST = JSON.stringify({ name: 'x', start_url: '/app', icons: [{ src: '/icons/icon-192.png' }, { src: '/icons/icon-512.png' }, { src: '/icons/icon-maskable-512.png' }] });
 
@@ -23,11 +27,12 @@ function makeDist(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, 'icons'));
   for (const name of REQUIRED_FILES) {
-    const content = name.endsWith('.html') ? BUILT_HTML
+    const content = name.endsWith('.html') ? STAMPED_HTML
       : name === '_headers' ? HEADERS
         : name === 'manifest.webmanifest' ? MANIFEST
-          : name === 'sw.js' ? 'self.addEventListener("fetch", () => {});'
-            : 'PNG';
+          : name === 'build.json' ? FIXTURE_BUILD
+            : name === 'sw.js' ? FIXTURE_SW
+              : 'PNG';
     writeFileSync(join(dir, name), content);
   }
   return dir;

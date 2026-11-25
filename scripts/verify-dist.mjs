@@ -23,6 +23,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const REQUIRED_FILES = Object.freeze([
   'index.html',
   'AURUM_Workspace.html',
+  'build.json',
   'sw.js',
   'manifest.webmanifest',
   '_headers',
@@ -97,6 +98,23 @@ export function verifyDist(distDir = join(REPO_ROOT, 'dist')) {
     }
     if (present.has('AURUM_Workspace.html') && read('AURUM_Workspace.html') !== html) {
       problems.push('AURUM_Workspace.html differs from index.html — it is stale; rebuild with "npm run build"');
+    }
+    /* Build revision: the page, build.json and the service worker must all
+       name the SAME release, or the app cannot detect what is newest. */
+    const meta = html.match(/<meta name="aurum-build" content="([^"]+)">/);
+    if (!meta) problems.push('index.html carries no <meta name="aurum-build"> revision tag — the build is not stamped');
+    if (present.has('build.json')) {
+      let bj = null;
+      try { bj = JSON.parse(read('build.json')); } catch (error) { problems.push(`build.json is not valid JSON (${error.message})`); }
+      if (bj) {
+        if (!bj.id) problems.push('build.json has no id');
+        if (meta && bj.id !== meta[1]) problems.push(`build.json id ${bj.id} differs from the page meta ${meta[1]} — mixed build; rebuild with "npm run build"`);
+        if (present.has('sw.js')) {
+          const swv = read('sw.js').match(/const VERSION = '([^']+)'/);
+          if (!swv) problems.push('sw.js carries no VERSION constant');
+          else if (meta && swv[1] !== `aurum-local-${meta[1]}`) problems.push(`sw.js VERSION ${swv[1]} does not match the page revision — mixed build`);
+        }
+      }
     }
   }
 

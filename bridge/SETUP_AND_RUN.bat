@@ -106,6 +106,21 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+echo [3.6/4] Checking the local UI release...
+if not exist "%~dp0app.html" (
+  echo [X] app.html is missing next to this file; the local package cannot serve the app.
+  echo     Extract the complete latest ZIP and run this file from the extracted folder.
+  pause
+  exit /b 1
+)
+if not exist "%~dp0pwa\build.json" (
+  echo [!] pwa\build.json is missing - the UI release cannot be verified.
+  echo     Re-extract the latest ZIP, or run "npm run build" in the repository.
+)
+set "AURUM_BUILD_ID="
+for /f "usebackq delims=" %%I in (`%PY% -c "import json;print(json.load(open(r'%~dp0pwa\build.json').get('id') or ''))" 2\>nul`) do set "AURUM_BUILD_ID=%%I"
+if defined AURUM_BUILD_ID echo        Local UI release: %AURUM_BUILD_ID% (the same id appears in Settings - Build and delivery)
+if not defined AURUM_BUILD_ID echo [!] Local UI release id could not be read from pwa\build.json.
 echo [3.5/4] Checking MT5; starting Exness MT5 only if no terminal is open...
 if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt"
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0START_MT5_IF_CLOSED.ps1" -PathFile "%~dp0terminal_path.txt"

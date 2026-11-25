@@ -6,6 +6,9 @@
   "description": "AURUM trading workspace — hybrid build (dev project + single-file export)",
   "scripts": {
     "dev": "vite",
+    "dev:local": "node scripts/dev-local.mjs",
+    "sync:local": "node scripts/pc-page.mjs",
+    "verify:local": "node scripts/pc-page.mjs --check",
     "api": "node server/server.js",
     "build": "vite build && node scripts/postbuild.mjs",
     "website": "node server/websiteserver.js",

@@ -665,6 +665,32 @@ function createReadOnlyWorker({
      asset layer before this Worker runs, so a request arriving here matched
      no static file: plain app paths such as /app get the single-page shell,
      everything else gets a real 404 instead of a 200 HTML page. */
+  /* /build.json runs through the Worker (wrangler.jsonc run_worker_first) so
+     the static manifest of this deployment can carry runtime metadata the
+     build cannot know (deployed commit when the platform provides it). */
+  async function serveBuildInfo(request, env, url) {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return responseText('Method not allowed', 405, { allow: 'GET, HEAD' });
+    }
+    const assets = env.ASSETS;
+    if (!assets || typeof assets.fetch !== 'function') {
+      return responseJson({ error: 'assets_unavailable' }, 503);
+    }
+    const res = await assets.fetch(new Request(new URL('/build.json', url)));
+    if (!res.ok) {
+      return responseJson({ error: 'build_manifest_missing', detail: 'build.json is not in this deployment. Run npm run build and redeploy.' }, 404);
+    }
+    let info = {};
+    try { info = await res.json(); } catch { return responseJson({ error: 'build_manifest_unreadable' }, 500); }
+    info.service = 'cloudflare-staging';
+    const sha = (typeof env.CF_PAGES_COMMIT_SHA === 'string' && env.CF_PAGES_COMMIT_SHA) || null;
+    if (sha) info.git = String(sha).slice(0, 8);
+    return new Response(JSON.stringify(info) + '\n', {
+      status: 200,
+      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }
+    });
+  }
+
   async function serveApp(request, env, url) {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return responseText('Method not allowed', 405, { allow: 'GET, HEAD' });
@@ -692,6 +718,10 @@ function createReadOnlyWorker({
         path = url.pathname;
         if (path === '/api' || path.startsWith('/api/')) {
           const response = await handleApi(request, bindings, url);
+          return request.method === 'HEAD' ? withoutBody(response) : response;
+        }
+        if (path === '/build.json') {
+          const response = await serveBuildInfo(request, bindings, url);
           return request.method === 'HEAD' ? withoutBody(response) : response;
         }
         return await serveApp(request, bindings, url);

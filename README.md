@@ -59,8 +59,11 @@ entered by the user in the app at runtime, per browser session.
 | `npm test` | `tests/smoke.mjs` (jsdom, mocked feed+API), then every `*.test.mjs`/`*.test.js` in `server/tests/`, `tests/` and `tests/platform/` (node:test) — includes the 12-pattern recognition battery. Outbound connections are blocked while the tests run (see below) |
 | `npm run test:server` / `npm run test:platform` | Only the `server/tests/` group / only the Cloudflare and tooling group in `tests/platform/` |
 | `npm run test:worker` | The Worker in the real Cloudflare runtime (`wrangler dev`, local only). Needs `npm run build` first |
-| `npm run build` | Single-file HTML (vite-plugin-singlefile), copy to `dist/AURUM_Workspace.html`, check that `dist/` is complete, then copy the built page and its icons into `bridge/` for the PC app (see [Bringing the PC app up to date](#bringing-the-pc-app-up-to-date)) |
+| `npm run build` | Single-file HTML (vite-plugin-singlefile), stamp the content-addressed release id into `index.html` + `sw.js` + `build.json`, copy to `dist/AURUM_Workspace.html`, verify dist is complete and self-consistent, then copy the page/manifest/service worker/build manifest into `bridge/` for the PC app (see [Bringing the PC app up to date](#bringing-the-pc-app-up-to-date)) |
 | `npm run verify` | Build → `npm test` → `npm run test:worker` → Wrangler deploy dry-run. One command to run before any deployment |
+| `npm run dev:local` | Watch mode for http://127.0.0.1:8788/app: `vite build --watch` + automatic `postbuild` sync of `bridge/app.html`/`bridge/pwa/`, release id stamped per change, `.dev-watch.json` marker so /build.json reports `LOCAL DEV (watch)`; the open tab shows NEW VERSION AVAILABLE and refreshes when safe |
+| `npm run sync:local` | Copy the current `dist/` release into `bridge/` (same copies postbuild refreshes) |
+| `npm run verify:local` | Fail loudly when any file the PC bridge serves differs from `dist/` |
 | `npm run verify:dist` | Check an existing `dist/` (required files, security headers file, nothing secret-looking) without rebuilding |
 | `npm run cf:dev` | Build, then run the Cloudflare Worker and the site locally on http://localhost:8790 |
 | `npm run cf:dry-run` | Build, bundle the Worker and print its bindings. Uploads nothing |
@@ -162,9 +165,17 @@ the PC runs the files in its own package folder (the folder that holds
 3. Close the minimised window **Fredrick AURUM Local API**, or restart the PC.
    `START_LOCAL_API.bat` leaves a server that is already running alone, so
    without this step the new page would talk to the old server.
-4. Run `START_ALL_LOCAL.bat`.
-5. In the browser tab of the app press Ctrl+F5. The icon follows at the second
-   load: the service worker shows the stored one first and renews it behind.
+4. Run `START_ALL_LOCAL.bat`. The setup now checks `app.html`, prints the
+   release id it is about to serve (`Local UI release: b...`), and refuses to
+   start if the package is missing its page.
+5. Reload the app tab. The bridge sends the page with
+   `Cache-Control: no-cache` and an ETag, so a plain reload (Ctrl+R) always
+   revalidates and shows the new build - no more hard-reload rituals. In the
+   running app, **Settings -> Build & delivery** shows the same release id
+   (Build ID, git commit when the package sits in a checkout, environment,
+   service-worker version, API/bridge health). While a newer release arrives
+   with the tab open, a **NEW VERSION AVAILABLE** banner offers Refresh and
+   reloads by itself only when no form, modal or input is in use.
 
 Copy the whole folder, not single files: the page (`bridge\app.html`), the
 bridge (`bridge\mt5_bridge.py`) and the server (`server\`) belong together.

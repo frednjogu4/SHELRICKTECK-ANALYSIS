@@ -21,6 +21,32 @@ test('service worker caches only the app shell and never caches API or bridge tr
   assert.doesNotMatch(sw, /cache\.addAll\([^)]*\/api\//);
 });
 
+test('service worker release lifecycle: no-store navigation, release-keyed caches, version probe uncached', () => {
+  const sw = read('../public/sw.js');
+  /* The id is stamped by scripts/postbuild.mjs on every build. */
+  assert.match(sw, /const VERSION = 'aurum-local-dev'/);
+  assert.match(sw, /const VERSION_PREFIX = 'aurum-local-'/);
+  /* Online navigations bypass the HTTP cache — the stale-shell fix. */
+  assert.match(sw, /fetch\(e\.request, \{ cache: 'no-store' \}\)/);
+  /* activate() deletes the caches of every older release, nothing else. */
+  assert.match(sw, /k\.startsWith\(VERSION_PREFIX\) && k !== VERSION/);
+  /* Background refresh revalidates instead of trusting the HTTP cache. */
+  assert.match(sw, /fetch\(e\.request, \{ cache: 'no-cache' \}\)/);
+  /* The update probe itself is never cached. */
+  assert.match(sw, /pathname === '\/build\.json'/);
+});
+
+test('the local bridge revalidates /app and serves /build.json without caching', () => {
+  const bridge = read('../bridge/mt5_bridge.py');
+  assert.match(bridge, /"Cache-Control", "no-cache, must-revalidate"/);
+  assert.match(bridge, /def _app_etag\(/);
+  assert.match(bridge, /If-None-Match/);
+  assert.match(bridge, /self\.send_response\(304\)/);
+  assert.match(bridge, /if path == "\/build\.json":/);
+  assert.match(bridge, /"Cache-Control", "no-store"/);
+  assert.match(bridge, /"service": "mt5-bridge"/);
+});
+
 test('local bridge serves only the fixed PWA asset allowlist', () => {
   const bridge = read('../bridge/mt5_bridge.py');
   assert.match(bridge, /_PWA_FILES\s*=\s*\{/);

@@ -19,6 +19,7 @@ import { planPosition } from './sizer.js';
 import { analyzeTimeframe, confirmMultiTimeframe, votesSummary, runDeterministicAnalysis, waitReason } from '../server/lib/analyzer.js';
 import { marketStrength } from '../server/lib/strength.js';
 import { mccProvenance, goldProvenanceRows } from './provenance.js';
+import { initBuildUpdateWatch, fillDiagnostics } from './buildinfo.js';
 import { localDecision } from '../server/lib/localdecision.js';
 import { notify, initNotifications, enableNotifications, notifState, LEVEL_GUIDE } from './notify.js';
 import { getKeys, setKeys, clearKeys, hasAnyKey, keyHeaders } from './vault.js';
@@ -6525,6 +6526,19 @@ let lastActHeal=0;
 /* The app works without the offline shell, so a failed registration is not
    fatal — but it is reported on the console instead of being swallowed. */
 registerServiceWorker();
+/* Release detection + delivery diagnostics (src/buildinfo.js): compares the
+   build id stamped in this page with /build.json, offers NEW VERSION
+   AVAILABLE, refreshes only when it is safe, and fills Settings · Build &
+   delivery with this release's facts. */
+{
+  initBuildUpdateWatch();
+  const refill = () => fillDiagnostics({ bridgeStatus: () => bridge.bridgeStatus() });
+  refill();
+  try {
+    const settingsBtn = document.querySelector('.nav-item[data-view="settings"]');
+    if (settingsBtn) settingsBtn.addEventListener('click', () => setTimeout(refill, 150));
+  } catch (_e) { /* diagnostics stay as of load if the nav hook is missing */ }
+}
 {
   let deferred = null;
   window.addEventListener('beforeinstallprompt', (e) => {

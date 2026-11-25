@@ -1,25 +1,51 @@
 #!/usr/bin/env node
-/*
- * Post-build step for `npm run build`.
+/* Post-build step for `npm run build`.
  *
- * 1. Copies dist/index.html to dist/AURUM_Workspace.html (the standalone
+ * 1. Computes the build revision (content id of the built page — see
+ *    scripts/build-revision.mjs) and injects it into dist/index.html as
+ *    <meta name="aurum-build">, into dist/sw.js as the release-keyed cache
+ *    VERSION, and into dist/build.json (served to every client as
+ *    /build.json so the app can detect a newer release).
+ * 2. Copies dist/index.html to dist/AURUM_Workspace.html (the standalone
  *    single-file copy the project has always shipped). This used to be a
- *    shell `cp`, which does not exist in the default Windows npm shell.
- * 2. Verifies that dist/ is complete, so an incomplete build fails here
- *    instead of being deployed.
- * 3. Copies the built page and its static files into bridge/, where the PC
- *    app serves them from (scripts/pc-page.mjs), so the PC app and the website
- *    are the same build.
+ *    shell `cp`, which does not exist on the default Windows npm shell.
+ * 3. Verifies that dist/ is complete AND carries a self-consistent revision,
+ *    so an incomplete or mixed build fails here instead of being deployed.
+ * 4. Copies the built page and its static files into bridge/, where the PC
+ *    app serves them from (scripts/pc-page.mjs), so the PC app and the
+ *    website are the same build. A missing source file fails the run.
  */
-import { copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyDist } from './verify-dist.mjs';
 import { PC_PAGE_COPIES, refreshPcPage } from './pc-page.mjs';
+import { buildRevision, injectBuildMeta, injectSwVersion } from './build-revision.mjs';
 
-const dist = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'dist');
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const dist = join(root, 'dist');
 
-copyFileSync(join(dist, 'index.html'), join(dist, 'AURUM_Workspace.html'));
+/* Write only when the bytes actually change: scripts/dev-local.mjs watches
+ * this directory, and a rewrite of identical bytes would wake the watcher
+ * for nothing. */
+function writeIfChanged(file, data) {
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
+  try {
+    if (readFileSync(file).equals(buf)) return false;
+  } catch { /* missing file: fall through and write */ }
+  writeFileSync(file, buf);
+  return true;
+}
+
+/* 1. Revision: hash the un-tagged page, then inject everywhere. */
+const rev = buildRevision(dist, root);
+const stamped = [];
+if (writeIfChanged(join(dist, 'index.html'), injectBuildMeta(readFileSync(join(dist, 'index.html'), 'utf8'), rev))) stamped.push('index.html');
+if (writeIfChanged(join(dist, 'sw.js'), injectSwVersion(readFileSync(join(dist, 'sw.js'), 'utf8'), rev.id))) stamped.push('sw.js');
+if (writeIfChanged(join(dist, 'build.json'), JSON.stringify({ id: rev.id, version: rev.version }, null, 2) + '\n')) stamped.push('build.json');
+console.log(`postbuild: build revision ${rev.id} (${rev.version || 'no version'})${stamped.length ? ' stamped ' + stamped.join(', ') : ' already stamped'}`);
+
+writeIfChanged(join(dist, 'AURUM_Workspace.html'), readFileSync(join(dist, 'index.html')));
 
 const result = verifyDist(dist);
 if (!result.ok) {
