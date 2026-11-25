@@ -1222,6 +1222,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
           <div class="grid" style="gap:16px">
             <div class="card ticket" id="ticketCard">
               <div class="card-head"><h3>Order ticket</h3><span class="badge gray" id="ticketMode">No broker</span></div>
+              <div id="ticketPatAccounts" data-pat-accounts style="display:none;margin-bottom:10px"></div>
               <div class="side-seg">
                 <button class="side-btn sel-buy" id="sideBuy" type="button">BUY<span class="px" id="bidPx">—</span></button>
                 <button class="side-btn" id="sideSell" type="button">SELL<span class="px" id="askPx">—</span></button>
@@ -1272,8 +1273,12 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
                 <div class="card-head" style="margin-bottom:6px"><h3 style="font-size:14px">Position sizer (adaptive, formula shown)</h3></div>
                 <div id="sizePlanBody" class="tiny">Pick a market and set a stop-loss — the size plan appears here. Nothing is assumed: missing inputs are listed, never invented.</div>
               </div>
+              <div class="row between" id="ticketOneClickRow" style="margin:8px 0;padding:6px 10px;border-radius:8px;background:var(--surface-2);border:1px solid var(--border)">
+                <span class="tiny"><b>⚡ 1-click live execution</b> <span class="faint" id="ticketOneClickSub">(instant order on click)</span></span>
+                <label class="switch" title="Execute manual Exness &amp; Deriv orders immediately without a separate preview modal"><input type="checkbox" id="ticketOneClickChk"><i></i></label>
+              </div>
               <button class="btn buy lg" id="placeOrderBtn" style="width:100%">Place BUY order</button>
-              <p class="hint">Deriv orders use their existing gated path. Exness orders run only in the local app on a broker-verified <b>REAL or DEMO</b> account — each one needs a fresh MT5 risk preview and your explicit confirmation. App-side closes and all automated entries remain disabled; manage positions in MT5. Stop risk is estimated, not guaranteed. Risk: <b id="riskTxt">—</b> if stop-loss is hit.</p>
+              <p class="hint">Manual live (<b>REAL and DEMO</b>) order execution and position closing are enabled on the local app (<span class="mono">http://127.0.0.1:8788/app</span>) for both <b>Exness MT5</b> and <b>Deriv</b>. In 1-click mode, pressing Place sends the order immediately; turn 1-click off to inspect a quote/risk preview modal first. Automated Sniper entries remain analysis-only. Stop risk is estimated, not guaranteed. Risk: <b id="riskTxt">—</b> if stop-loss is hit.</p>
             </div>
             <div class="card">
               <div class="card-head"><h3>Instrument info</h3></div>
@@ -1770,12 +1775,15 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
 
         <div class="card section-gap" id="mt5PositionsCard" style="display:none">
           <div class="card-head">
-            <div><h3>Live MT5 positions</h3><div class="sub">Read-only snapshot from the connected terminal; includes trades opened on MT5 mobile or desktop.</div></div>
-            <button class="btn ghost sm" id="mt5RefreshBtn">Refresh MT5</button>
+            <div><h3>Live MT5 positions</h3><div class="sub">Live snapshot from the connected Exness terminal; includes trades opened on MT5 mobile or desktop, with manual in-app closing.</div></div>
+            <div class="row" style="gap:8px">
+              <button class="btn danger sm hidden" id="mt5CloseAllBtn" type="button">Close all MT5</button>
+              <button class="btn ghost sm" id="mt5RefreshBtn">Refresh MT5</button>
+            </div>
           </div>
           <div class="sub" id="mt5PositionsMeta">Waiting for the first live MT5 snapshot.</div>
           <div class="tbl-wrap hidden" id="mt5PositionsWrap" style="margin-top:10px">
-            <table class="tbl"><thead><tr><th>Ticket</th><th>Symbol</th><th>Side</th><th>Lots</th><th>Open price</th><th>Floating P&amp;L</th><th>Stop loss</th><th>Take profit</th></tr></thead><tbody id="mt5PositionsBody"></tbody></table>
+            <table class="tbl"><thead><tr><th>Ticket</th><th>Symbol</th><th>Side</th><th>Lots</th><th>Open price</th><th>Floating P&amp;L</th><th>Stop loss</th><th>Take profit</th><th class="right">Action</th></tr></thead><tbody id="mt5PositionsBody"></tbody></table>
           </div>
           <div class="hint hidden" id="mt5PositionsEmpty" style="margin-top:10px"></div>
         </div>
@@ -1819,7 +1827,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
         </div>
         <div class="notice warn" style="margin-bottom:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-          <div><b>Exness REAL and DEMO orders are manual-only.</b> Each order requires a fresh MT5 preview and your explicit per-order confirmation. The local bridge verifies the exact account mode and rechecks live quotes, broker sizing, buffered stop risk, margin, daily realized loss, and open positions. Hard caps: 0.5% buffered risk per order, 2% daily loss, one open position, at least 1.2 reward:risk, and no more than 80% of free margin. Automated entries and app-side closes stay disabled. Stops and risk estimates cannot guarantee the final loss; manage or close positions directly in MT5. Credentials stay on this PC/local bridge; use the exact same account and server on PC and phone.</div>
+          <div><b>Exness REAL &amp; DEMO and Deriv REAL &amp; DEMO manual live trading are enabled on the local app (<span class="mono">http://127.0.0.1:8788/app</span>).</b> On the local bridge app, 1-click direct order execution and in-app position closing are active by default (you can switch back to preview/confirmation modals anytime in Settings or on the Order ticket). The local MT5 bridge verifies the exact account mode, fresh ticks, free margin, daily loss guard, and single-send idempotency before every order or close. Automated Sniper/bot entries remain disabled (analysis-only), and Cloudflare staging remains read-only. Credentials stay on this PC/local bridge; use the exact same account and server on PC and phone.</div>
         </div>
 
         <div class="grid c3" id="connGrid">
@@ -1857,7 +1865,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               <div><h3>Live markets only</h3><div class="sub">Browse &amp; analyse &middot; trading locked</div></div>
             </div>
             <div class="status-line" id="liveStatus"><span class="dot live"></span> Active — no broker</div>
-            <p class="hint" style="margin-top:10px">Real prices, TradingView charts, news and AI analysis all work. Deriv keeps its existing gated route. Exness order entry requires the local app and a verified demo account; live Exness orders remain disabled.</p>
+            <p class="hint" style="margin-top:10px">Real prices, TradingView charts, news and AI analysis all work without signing in. Connect Deriv (PAT or Classic token) or Exness MT5 on the local app (<span class="mono">http://127.0.0.1:8788/app</span>) to enable manual REAL and DEMO 1-click order execution and position closing.</p>
             <button class="btn conn-btn" data-conn="live" disabled>Always on without a broker</button>
           </div>
         </div>
@@ -2003,8 +2011,12 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
                 <div class="row"><input class="range" id="riskRange" type="range" min="1" max="10" step="0.5" value="2"><b class="mono" id="riskVal">2.0%</b></div>
               </div>
               <div class="set-row">
-                <div><div class="t">Confirm before closing positions</div><div class="d">Ask for confirmation when closing or flattening.</div></div>
-                <label class="switch"><input type="checkbox" id="confirmChk" checked><i></i></label>
+                <div><div class="t">Direct 1-click order execution</div><div class="d">Execute manual Exness (REAL &amp; DEMO) and Deriv (REAL &amp; DEMO) orders immediately without a separate preview modal (enabled by default on the local 8788 app).</div></div>
+                <label class="switch"><input type="checkbox" id="oneClickChk"><i></i></label>
+              </div>
+              <div class="set-row">
+                <div><div class="t">Confirm before closing positions</div><div class="d">Ask for confirmation when closing or flattening positions.</div></div>
+                <label class="switch"><input type="checkbox" id="confirmChk"><i></i></label>
               </div>
               <div class="set-row" id="securitySection">
                 <div><div class="t">Security &amp; execution safeguards</div><div class="d">Existing controls remain unchanged; this overview only links to them.</div></div>

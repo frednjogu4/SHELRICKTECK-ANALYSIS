@@ -45,10 +45,14 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         b._LOCKED_LOGIN, b._LOCKED_SERVER = 43210, "ExnessDemoServer"
         b._MT5_PREVIEWS.clear()
         b._MT5_ORDER_REPLIES.clear()
+        b._MT5_CLOSE_REPLIES.clear()
         b._MT5_ORDER_UNCERTAIN = False
         b.MT5_MANUAL_ORDER_EXECUTION_ENABLED = True
+        b.MT5_MANUAL_CLOSE_ENABLED = True
         m.ACCOUNT_TRADE_MODE_DEMO = 0
         m.ACCOUNT_TRADE_MODE_REAL = 2
+        m.POSITION_TYPE_BUY = 0
+        m.POSITION_TYPE_SELL = 1
         m.ORDER_TYPE_BUY = 0
         m.ORDER_TYPE_SELL = 1
         m.TRADE_ACTION_DEAL = 1
@@ -92,9 +96,81 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.assertEqual(order["type"], "error")
         self.assertIn("Explicit per-order confirmation is required", order["message"])
         self.assertEqual(close["type"], "error")
-        self.assertIn("closing is disabled", close["message"])
+        self.assertIn("Explicit per-close confirmation is required", close["message"])
         self.fake_mt5.order_send.assert_not_called()
         self.fake_mt5.PositionClose.assert_not_called()
+
+    def test_direct_one_click_real_and_demo_orders_execute_with_optional_sl_tp_and_mode_verification(self):
+        # REAL 1-click order without SL/TP succeeds when MT5 account is verified REAL
+        self.fake_mt5.account_info.return_value.trade_mode = self.fake_mt5.ACCOUNT_TRADE_MODE_REAL
+        direct_real = self.bridge.handle_order({
+            "environment": "real", "symbol": "EURUSD", "side": "BUY", "volume": 100.0,
+            "sl": 0, "tp": 0, "direct": True, "confirmed": True,
+            "intent_id": "oneClickReal12345678",
+        })
+        self.assertEqual(direct_real["type"], "filled", direct_real)
+        self.assertTrue(direct_real["direct"])
+        self.assertEqual(direct_real["environment"], "real")
+        self.assertFalse(direct_real["demo"])
+        self.fake_mt5.order_send.assert_called_once()
+        sent = self.fake_mt5.order_send.call_args.args[0]
+        self.assertEqual(sent["sl"], 0.0)
+        self.assertEqual(sent["tp"], 0.0)
+        self.assertIn("AURUM-1C-REAL-", sent["comment"])
+
+        # Replay of same intent_id returns cached fill without resending
+        replay = self.bridge.handle_order({
+            "environment": "real", "symbol": "EURUSD", "side": "BUY", "volume": 100.0,
+            "sl": 0, "tp": 0, "direct": True, "confirmed": True,
+            "intent_id": "oneClickReal12345678",
+        })
+        self.assertEqual(replay, direct_real)
+        self.fake_mt5.order_send.assert_called_once()
+
+        # Wrong account mode (requesting demo on a REAL terminal) is rejected without sending
+        wrong_mode = self.bridge.handle_order({
+            "environment": "demo", "symbol": "EURUSD", "side": "BUY", "volume": 100.0,
+            "sl": 0, "tp": 0, "direct": True, "confirmed": True,
+            "intent_id": "oneClickWrongMode123",
+        })
+        self.assertEqual(wrong_mode["type"], "error")
+        self.assertIn("Selected account mode does not match", wrong_mode["message"])
+        self.fake_mt5.order_send.assert_called_once()
+
+    def test_manual_close_sends_opposite_deal_for_verified_open_position(self):
+        self.fake_mt5.account_info.return_value.trade_mode = self.fake_mt5.ACCOUNT_TRADE_MODE_REAL
+        self.fake_mt5.positions_get.return_value = [
+            types.SimpleNamespace(
+                ticket=7788, symbol="US30Cash", type=self.fake_mt5.POSITION_TYPE_BUY,
+                volume=0.25, price_open=99.5, profit=12.5, sl=98.0, tp=102.0
+            )
+        ]
+        self.fake_mt5.symbol_info_tick.return_value = types.SimpleNamespace(bid=100.2, ask=100.4, time=int(time.time()))
+        self.fake_mt5.order_send.return_value = types.SimpleNamespace(
+            retcode=self.fake_mt5.TRADE_RETCODE_DONE, order=9902, deal=5502, price=100.2, comment="closed"
+        )
+        closed = self.bridge.handle_close({
+            "ticket": 7788, "environment": "real", "confirmed": True,
+            "intent_id": "closeRealPos12345678",
+        })
+        self.assertEqual(closed["type"], "closed", closed)
+        self.assertEqual(closed["ticket"], 7788)
+        self.assertEqual(closed["environment"], "real")
+        self.assertFalse(closed["demo"])
+        self.assertEqual(closed["price"], 100.2)
+        self.fake_mt5.order_send.assert_called_once()
+        close_req = self.fake_mt5.order_send.call_args.args[0]
+        self.assertEqual(close_req["position"], 7788)
+        self.assertEqual(close_req["type"], self.fake_mt5.ORDER_TYPE_SELL)
+        self.assertEqual(close_req["volume"], 0.25)
+
+        # Duplicate close intent replays without sending twice
+        dup = self.bridge.handle_close({
+            "ticket": 7788, "environment": "real", "confirmed": True,
+            "intent_id": "closeRealPos12345678",
+        })
+        self.assertEqual(dup, closed)
+        self.fake_mt5.order_send.assert_called_once()
 
     def test_wrong_explicit_mode_is_rejected_before_preview_or_order_send(self):
         self.fake_mt5.account_info.return_value.trade_mode = self.fake_mt5.ACCOUNT_TRADE_MODE_REAL

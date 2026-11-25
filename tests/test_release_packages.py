@@ -13,7 +13,7 @@ class LocalUpdatePackageParityTests(unittest.TestCase):
         page = (ROOT / "dist" / "index.html").read_bytes()
         bridge = (ROOT / "bridge" / "mt5_bridge.py").read_bytes()
         self.assertIn(b"MT5_MANUAL_ORDER_EXECUTION_ENABLED = True", bridge)
-        self.assertIn(b"App-side Exness position closing is disabled", bridge)
+        self.assertIn(b"MT5_MANUAL_CLOSE_ENABLED = True", bridge)
         digest = hashlib.sha256(page).hexdigest().encode()
         for package in PACKAGES:
             prefix = Path(package).stem + "/"

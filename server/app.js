@@ -758,12 +758,16 @@ export function createApp({ store, config, feed, derivConn = null, patDeps = {} 
     const { amount } = req.body || {};
     const pat = derivPatOf(req);
     if (!pat) return res.status(401).json({ error: 'no_pat', hint: 'Connect your Deriv account first.' });
-    /* classic path executes FROM THE BROWSER, so real-money execution must be
-       explicitly enabled by the operator (server cannot verify fills itself). */
+    /* classic path executes FROM THE BROWSER: allowed on loopback (127.0.0.1 / ::1)
+       by default for the local trading app unless explicitly set to 'false', and
+       gated behind DERIV_ALLOW_BROWSER_EXEC=true on non-loopback hosts. */
     const realMode = String(process.env.ENVIRONMENT || 'demo').toLowerCase() === 'real';
-    const browserExecAllowed = String(process.env.DERIV_ALLOW_BROWSER_EXEC || 'false').toLowerCase() === 'true';
+    const rawBrowserExec = String(process.env.DERIV_ALLOW_BROWSER_EXEC || '').trim().toLowerCase();
+    const remoteIp = String(req.socket?.remoteAddress || req.ip || '');
+    const isLoopback = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
+    const browserExecAllowed = rawBrowserExec ? rawBrowserExec === 'true' : isLoopback;
     if (realMode && !browserExecAllowed) {
-      return res.status(403).json({ error: 'classic_exec_disabled', detail: 'Classic (browser-executed) orders are disabled for REAL accounts. Use the PAT tab (server-executed) or set DERIV_ALLOW_BROWSER_EXEC=true on the server.' });
+      return res.status(403).json({ error: 'classic_exec_disabled', detail: 'Classic (browser-executed) orders are disabled for REAL accounts on remote servers. Use the PAT tab (server-executed) or set DERIV_ALLOW_BROWSER_EXEC=true on the server.' });
     }
     derivLog('classic_gate', { pat: maskSecret(pat), amount: Number(amount) || 0 });
     const u = patUser(req);

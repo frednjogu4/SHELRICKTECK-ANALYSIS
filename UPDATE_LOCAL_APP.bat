@@ -282,7 +282,7 @@ function Start-AurumServices([string]$rootDir, [string]$mode) {
   $pyRuntimePath = Join-Path $rootDir 'bridge\python_runtime.txt'
   $autoStartBat = Join-Path $rootDir 'bridge\AUTO_START.bat'
 
-  if ($mode -eq 'wrangler' -or (-not $hasStartAll -and $hasCmdCentre)) {
+  if (-not $hasStartAll -and $hasCmdCentre) {
     Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $rootDir 'START_LOCAL_MARKET_COMMAND_CENTRE.bat') + '"') -WorkingDirectory $rootDir | Out-Null
   } else {
     $canAutoStart = $false

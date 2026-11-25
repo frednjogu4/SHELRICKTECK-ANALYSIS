@@ -506,6 +506,18 @@ async function run() {
   const patPos = (store.k('positions') || []).find((p) => String(p.contract_id) === '777001');
   check('PAT order placed via confirm gate', !!patPos, JSON.stringify((store.k('positions') || []).slice(-1)).slice(0, 80));
   check('PAT fill path flagged', patPos && patPos.flags && patPos.flags.pat_server === true);
+  {
+    const beforeCount = (store.k('positions') || []).length;
+    $('#ticketOneClickChk').checked = true;
+    $('#ticketOneClickChk').dispatchEvent(new window.Event('change', { bubbles: true }));
+    check('1-click mode updates ticket badge', $('#ticketMode').textContent.includes('1-click'), $('#ticketMode').textContent);
+    $('#orderAmount').value = '25';
+    click($('#placeOrderBtn'));
+    await sleep(200);
+    check('1-click PAT order executes immediately without modal', !$('#tmModal').classList.contains('open') && (store.k('positions') || []).length === beforeCount + 1, 'len=' + (store.k('positions') || []).length);
+    $('#ticketOneClickChk').checked = false;
+    $('#ticketOneClickChk').dispatchEvent(new window.Event('change', { bubbles: true }));
+  }
   click(doc.querySelector('.nav-item[data-view="signals"]'));
   await sleep(60);
   check('backtest card present', !!$('#backtestCard') && !!$('#btRun'));

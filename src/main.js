@@ -198,9 +198,16 @@ const state={
   positions: store.get('positions',[]),
   history: store.get('history',[]),
   bots: store.get('bots',null),
-  settings: Object.assign({
-    theme:'dark', compact:false, defAmt:100, maxRisk:2, confirmClose:true
-  }, store.get('settings',{})),
+  settings: (()=>{
+    const saved=store.get('settings',{})||{};
+    const on8788=isPrivateBridgePage();
+    return Object.assign({
+      theme:'dark', compact:false, defAmt:100, maxRisk:2
+    }, saved, {
+      oneClick: typeof saved.oneClick==='boolean' ? saved.oneClick : on8788,
+      confirmClose: saved.confirmCloseExplicit===true ? !!saved.confirmClose : !on8788
+    });
+  })(),
 
   connections: store.get('connections',{deriv:false,mt5:false}),
   chart:{ sym:'EUR/USD' },
@@ -697,7 +704,7 @@ function switchDerivAccount(accountId){
   b.accountId=acct.account_id; b.account=acct;
   b.environment=/demo|virtual/i.test(acct.account_type)?'demo':'real';
   state.balance=acct.balance!=null?Number(acct.balance):null;
-  save(); updateSessionInfo(); renderPortfolio(); renderPatAccounts();
+  save(); updateSessionInfo(); renderPortfolio(); renderPatAccounts(); updateTradeHeader();
   toast('Account switched',(b.environment==='demo'?'DEMO':'REAL')+' account · '+acct.currency+' · balance '+(acct.balance!=null?acct.balance:'—'),'ok');
   if(wasDemo&&b.environment==='real')notify('Real account selected','Orders now execute on your REAL Deriv account within the server-side limits (max stake, max open trades, daily loss).',{tag:'trade',kind:'err'});
 }
@@ -820,7 +827,7 @@ async function connectMt5(url,login,password,server,token){
       exposure, so P/L is identical at any leverage — leverage only changes
       how much margin is locked. Show the real numbers where you connect. */
     const lv=account&&account.leverage;
-    if(lv)toast(account?.environment==='demo'?'Exness DEMO account verified':account?.environment==='real'?'Exness REAL account verified':'Exness account mode unverified','MT5 reports leverage 1:'+lv+'; leverage never multiplies your P/L in this app. Only a broker-verified REAL/DEMO mode can reach the manual order preview; every order requires strict local risk checks and explicit confirmation. Automation and app-side closes remain disabled.','ok');
+    if(lv)toast(account?.environment==='demo'?'Exness DEMO account verified':account?.environment==='real'?'Exness REAL account verified':'Exness account mode unverified','MT5 reports leverage 1:'+lv+'; leverage never multiplies your P/L in this app. Manual live ('+(account?.environment==='demo'?'DEMO':'REAL')+') 1-click order execution and in-app position closing are active on this local bridge. Automated Sniper entries remain disabled.','ok');
   }
   state.balance=account.balance!=null?Number(account.balance):null;
   state.connections.mt5=true; save();
@@ -903,6 +910,8 @@ async function configureCloudflareReadonlyUi(){
   const note=document.createElement('p'); note.className='hint'; note.id='cloudflareLocalOnlyNotice';
   note.textContent='Exness credentials, quotes, and candles remain PC-local. Connect Exness only from the local app at http://127.0.0.1:8788/app; this Cloudflare page cannot reach your PC bridge.';
   const tabs=$('#authTabDeriv')?.parentElement; if(tabs&&!$('#cloudflareLocalOnlyNotice'))tabs.insertAdjacentElement('afterend',note);
+  const ocRow=$('#ticketOneClickRow'); if(ocRow)ocRow.classList.add('hidden');
+  ['oneClickChk','ticketOneClickChk'].forEach(id=>{const el=document.getElementById(id);if(el){el.checked=false;el.disabled=true;}});
 }
 $('#derivKindClassic').onclick=()=>{derivKind='classic';syncDerivKind();};
 /* auth connect tabs: Deriv <-> MT5/Exness (keeps the login screen to one viewport) */
@@ -992,7 +1001,7 @@ $('#exnessForm').onsubmit=async e=>{
     const connectedAccount=await connectMt5(($('#mt5Url')||{}).value||bridge.localBridgeWs(),login,password,server,($('#mt5Token')||{}).value||'');
     err.style.display='none';
     showApp('Exness','mt5');
-    notify(connectedAccount?.environment==='demo'?'Exness DEMO account verified':connectedAccount?.environment==='real'?'Exness REAL account verified':'Exness account mode unverified',connectedAccount?.environment==='demo'?'DEMO orders are manual only and require a fresh bridge preview, strict local risk checks and explicit confirmation.':connectedAccount?.environment==='real'?'REAL orders are manual only and require a fresh bridge preview, strict local risk checks and explicit confirmation. Automation and app-side closes remain disabled.':'MT5 did not verify REAL or DEMO mode; app order entry remains blocked.','ok');
+    notify(connectedAccount?.environment==='demo'?'Exness DEMO account verified':connectedAccount?.environment==='real'?'Exness REAL account verified':'Exness account mode unverified',connectedAccount?.environment==='demo'?'Manual DEMO 1-click live order execution and in-app position closing are active on this local bridge.':connectedAccount?.environment==='real'?'Manual REAL 1-click live order execution and in-app position closing are active on this local bridge. Automated Sniper entries remain disabled.':'MT5 did not verify REAL or DEMO mode; app order entry remains blocked.','ok');
   }catch(ex){
     const m=String(ex.message||ex);
     const onPc=/localhost|127\.0\.0\.1/.test(location.hostname);
@@ -2332,11 +2341,13 @@ function updateTradeHeader(){
   $('#askPx').textContent=fmtPx(I.p,I.d);
   updateRisk();
   const mode=$('#ticketMode');
+  const ocTag=state.settings.oneClick?' · 1-click':'';
   if(state.broker?.type==='deriv'){
-    const demo=/demo|virtual/i.test(state.broker.account?.account_type||'');
-    mode.textContent='Deriv · '+(demo?'DEMO':'REAL'); mode.className='badge '+(demo?'demo':'buy');
+    const a=state.broker.account||{};
+    const demo=!!a.is_virtual||/^VR/i.test(a.loginid||'')||/demo|virtual/i.test(a.account_type||'');
+    mode.textContent='Deriv · '+(demo?'DEMO':'REAL')+ocTag; mode.className='badge '+(demo?'demo':'buy');
   }
-  else if(state.broker?.type==='mt5'){ const env=state.broker.account?.environment;mode.textContent=env==='demo'?'Exness · DEMO · manual':env==='real'?'Exness · REAL · manual':'Exness · mode unverified';mode.className='badge '+(env==='demo'?'demo':env==='real'?'buy':'gray'); }
+  else if(state.broker?.type==='mt5'){ const env=state.broker.account?.environment;mode.textContent=env==='demo'?'Exness · DEMO'+(state.settings.oneClick?' · 1-click':' · manual'):env==='real'?'Exness · REAL'+(state.settings.oneClick?' · 1-click':' · manual'):'Exness · mode unverified';mode.className='badge '+(env==='demo'?'demo':env==='real'?'buy':'gray'); }
   else { mode.textContent='No broker'; mode.className='badge gray'; }
   renderResaleNote(I);
   const info=$('#instrInfo');
@@ -2355,7 +2366,7 @@ function renderResaleNote(I){
   if(!I){ el.textContent='Early exit (resale): pick a market to see its family guidance.'; return; }
   const r=I.resale||'unknown';
   if(I&&I.c==='indices'){
-    el.innerHTML='<span class="badge buy">CFD — stop anytime ✓</span> Index CFD via your Exness bridge: no expiry; SL/TP execute on Exness\'s server even with this app closed. The app does not close positions — manage or close them directly in MT5. <span class="tiny faint">Quoted live from MT5; market breaks (21:00–22:00 UTC + short daily index breaks) pause closes.</span>';
+    el.innerHTML='<span class="badge buy">CFD — stop anytime ✓</span> Index CFD via your Exness bridge: no expiry; SL/TP execute on Exness\'s server even with this app closed. Close anytime from Portfolio → Live MT5 positions or directly in MT5. <span class="tiny faint">Quoted live from MT5; market breaks (21:00–22:00 UTC + short daily index breaks) pause closes.</span>';
     return;
   }
   const body=r==='usually'
@@ -2467,14 +2478,28 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
     return;
   }
   const demo=acct.demo,environment=demo?'demo':'real',environmentLabel=demo?'DEMO':'REAL';
-  if(!Number.isFinite(sl)||sl<=0||!Number.isFinite(tp)||tp<=0){
-    toast('Stop and target required',environmentLabel+' orders require both a valid stop-loss and take-profit; no order was sent.','warn');
+  const directOneClick=!!state.settings.oneClick&&!isCloudflareReadonlyMode();
+  const cleanSl=Number.isFinite(sl)&&sl>0?sl:0;
+  const cleanTp=Number.isFinite(tp)&&tp>0?tp:0;
+  if(!directOneClick&&(cleanSl<=0||cleanTp<=0)){
+    toast('Stop and target required',environmentLabel+' preview orders require both a valid stop-loss and take-profit (or enable 1-click live execution for optional SL/TP); no order was sent.','warn');
     return;
   }
   const btn=$('#placeOrderBtn');
   const old=btn?btn.textContent:'';
-  if(btn){btn.disabled=true;btn.textContent='Checking '+environmentLabel.toLowerCase()+' risk…';}
+  if(btn){btn.disabled=true;btn.textContent=directOneClick?('Sending '+environmentLabel+' order…'):('Checking '+environmentLabel.toLowerCase()+' risk…');}
   try{
+    if(directOneClick){
+      const intentId=Date.now().toString(36)+Math.random().toString(36).slice(2,16);
+      const result=await bridge.placeBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl:cleanSl,tp:cleanTp,
+        direct:true,intentId,manualConfirmed:true});
+      if(result.type!=='filled'||result.demo!==demo||result.environment!==environment)throw new Error('The bridge did not verify a fill on the expected '+environmentLabel+' account. Inspect MT5 positions/history before retrying.');
+      const riskSuffix=result.estimated_buffered_risk!=null?(' · buffered risk '+fmtAcctMoney(result.estimated_buffered_risk,result.currency)):'';
+      toast(environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots @ '+fmtPx(result.price,I.d)+riskSuffix,'ok');
+      notify('Exness '+environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots. Close anytime from Portfolio → Live MT5 positions or in MT5.',{tag:'mt5-manual-order',kind:'ok'});
+      await refreshMt5Snapshot(false);
+      return;
+    }
     const preview=await bridge.previewBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp});
     if(preview.environment!==environment||preview.demo!==demo||preview.manual_only!==true)throw new Error('The MT5 preview does not match the verified account mode; no order was sent. Reconnect and inspect the terminal account.');
     const risk=fmtAcctMoney(preview.risk_amount,preview.currency);
@@ -2487,18 +2512,18 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
       +preview.side+' '+preview.symbol+' · requested notional '+fmtMoney(preview.requested_usd)+' · estimated '+preview.lots+' lots\n'
       +'Current '+(preview.side==='BUY'?'ask':'bid')+' '+fmtPx(preview.price,I.d)+' · stop '+fmtPx(preview.sl,I.d)+' · target '+fmtPx(preview.tp,I.d)+'\n'
       +'Buffered estimated stop risk '+risk+' ('+Number(preview.risk_pct).toFixed(2)+'% of equity) · target estimate '+reward+' · R:R '+Number(preview.rr).toFixed(2)+' · margin '+margin+'\n\n'
-      +'Bridge hard limits (REAL and DEMO): maximum 0.5% buffered stop-risk per order, 2% account daily loss, one open position, minimum 1.2 reward:risk, and 80% free-margin ceiling. Quote and limits are rechecked by the local MT5 bridge at send time. Preview expires in 30 seconds.\n'
-      +'This app never opens an order automatically and cannot close it. Manage/close the position in MetaTrader 5. Market orders may slip and a stop does not guarantee the final loss.';
+      +'Bridge hard limits (preview mode): maximum 0.5% buffered stop-risk per order, 2% account daily loss, one open position, minimum 1.2 reward:risk, and 80% free-margin ceiling. Quote and limits are rechecked by the local MT5 bridge at send time. Preview expires in 30 seconds.\n'
+      +'This app never opens an order automatically; close positions from Portfolio → Live MT5 positions or in MetaTrader 5. Market orders may slip and a stop does not guarantee the final loss.';
     if(btn)btn.textContent='Waiting for '+environmentLabel+' confirmation…';
     const confirmed=await askConfirm('Confirm Exness '+environmentLabel+' order',details,'Place '+environmentLabel+' order');
     if(!confirmed){toast('Cancelled','No Exness order was sent.');return;}
     if(btn)btn.textContent='Sending '+environmentLabel+' order…';
     const intentId=Date.now().toString(36)+Math.random().toString(36).slice(2,16);
-    const result=await bridge.placeBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp,
+    const result=await bridge.placeBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl:cleanSl,tp:cleanTp,
       previewId:preview.preview_id,intentId,manualConfirmed:true});
     if(result.type!=='filled'||result.demo!==demo||result.environment!==environment)throw new Error('The bridge did not verify a fill on the expected '+environmentLabel+' account. Inspect MT5 positions/history before retrying.');
     toast(environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots · buffered risk '+fmtAcctMoney(result.estimated_buffered_risk,result.currency),'ok');
-    notify('Exness '+environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots. Manage or close it directly in MT5.',{tag:'mt5-manual-order',kind:'ok'});
+    notify('Exness '+environmentLabel+' order filled',state.side+' '+I.s+' · MT5 ticket '+result.ticket+' · '+result.lots+' lots. Close anytime from Portfolio → Live MT5 positions or in MT5.',{tag:'mt5-manual-order',kind:'ok'});
     await refreshMt5Snapshot(false);
   }catch(e){
     const message=String(e.message||e);
@@ -2509,14 +2534,80 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
   }finally{if(btn){btn.disabled=false;btn.textContent=old;}}
 }
 
+async function executeDerivDirect({mode,I,amt,sl,tp,tp2,px,dur}){
+  if(isCloudflareReadonlyMode()){toast('Read-only staging','Order execution is disabled on Cloudflare staging.','warn');return;}
+  if(state.broker?.mode==='cloud_readonly'){toast('Read-only session','This Deriv token has Read-only scope; connect with a Trade-scope token on the local app.','warn');return;}
+  const du=dur||derivDurationFor(I.s);
+  const side=state.side;
+  const btn=$('#placeOrderBtn');
+  const old=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='Sending '+side+' order…';}
+  try{
+    let pos=null;
+    if(mode==='proxy'){
+      const q=await derivProposal({symbol:I.s,side,amount:amt,duration:du.duration,duration_unit:du.duration_unit});
+      const r=await derivConfirm(q.ticket);
+      const o=r.order;
+      const effDur=(q.quote&&q.quote.duration!=null)?{duration:q.quote.duration,duration_unit:q.quote.duration_unit}:du;
+      pos={ id:Date.now()+'_p'+o.contract_id, sym:I.s, side, amt,
+        entry:px, sl:sl==null||isNaN(sl)?null:sl, tp1:tp==null||isNaN(tp)?null:tp, tp2:tp2==null||isNaN(tp2)?null:tp2,
+        t:Date.now(), broker:'deriv', contract_id:o.contract_id, payout:o.payout,
+        dur:effDur, flags:{proxy:true, env:r.environment, demo:!!r.demo} };
+      notify('Trade opened',(r.demo?'DEMO · ':'REAL · ')+'Deriv proxy '+side+' '+I.s+' · stake '+fmtMoney(o.stake)+' · payout '+fmtMoney(o.payout)+' · contract #'+o.contract_id+'.',{tag:'trade',kind:'ok'});
+      toast('Order filled',(r.demo?'DEMO ':'REAL ')+side+' '+fmtMoney(o.stake)+' '+I.s+' · payout '+fmtMoney(o.payout),'ok');
+    }else if(mode==='pat_server'){
+      const q=await patCall(()=>patProposal(state.broker,{symbol:I.s,side,amount:amt,duration:du.duration,duration_unit:du.duration_unit}));
+      const r=await patConfirm(q.ticket);
+      const o=r.order;
+      const effDur=(q.quote&&q.quote.duration!=null)?{duration:q.quote.duration,duration_unit:q.quote.duration_unit}:du;
+      if(o.balance_after!=null){ state.balance=Number(o.balance_after); updateKpis(); updateSessionInfo(); renderPatAccounts(); }
+      const isDemo=/demo|virtual/i.test(state.broker?.account?.account_type||'');
+      pos={ id:Date.now()+'_s'+o.contract_id, sym:I.s, side, amt,
+        entry:px, sl:sl==null||isNaN(sl)?null:sl, tp1:tp==null||isNaN(tp)?null:tp, tp2:tp2==null||isNaN(tp2)?null:tp2,
+        t:Date.now(), broker:'deriv', contract_id:o.contract_id, payout:o.payout,
+        buy_price:o.buy_price||amt, settleAt:Date.now()+effDur.duration*(effDur.duration_unit==='m'?60000:effDur.duration_unit==='h'?3600000:effDur.duration_unit==='d'?86400000:1000),
+        dur:effDur, flags:{pat_server:true} };
+      notify('Trade opened',(isDemo?'DEMO · ':'REAL · ')+'Deriv PAT '+side+' '+I.s+' · stake '+fmtMoney(o.buy_price||amt)+' · payout '+fmtMoney(o.payout)+' · contract #'+o.contract_id+'.',{tag:'trade',kind:'ok'});
+      toast('Order filled',(isDemo?'DEMO ':'REAL ')+side+' '+fmtMoney(o.buy_price||amt)+' '+I.s+(o.balance_after!=null?(' · balance '+fmtMoney(Number(o.balance_after))):'')+' · settles in '+effDur.duration+' '+effDur.duration_unit,'ok');
+    }else{
+      const onceId=Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+      const g=await api('/api/deriv/order',{method:'POST',body:{symbol:I.s,amount:amt,side,duration:du.duration,duration_unit:du.duration_unit,once:onceId},headers:{'x-deriv-pat':state.broker.pat,'x-deriv-appid':state.broker.appId||''}});
+      const gate=await g.json().catch(()=>({}));
+      if(!g.ok)throw new Error(gate.detail||gate.error||'Order rejected by server-side risk limits');
+      const dsym=(INSTRUMENT_MAP[I.s]||{}).deriv; if(!dsym)throw new Error('No Deriv symbol mapped for '+I.s);
+      const pr=await derivWsProposal(state.broker.appId,state.broker.pat,{derivSymbol:dsym,side,amount:amt,duration:du.duration,duration_unit:du.duration_unit});
+      const o=await derivWsBuy(state.broker.appId,state.broker.pat,pr.id,pr.ask_price);
+      const acct=state.broker?.account||{};
+      const isDemo=!!acct.is_virtual||/^VR/i.test(acct.loginid||'');
+      pos={ id:Date.now()+'_d'+o.contract_id, sym:I.s, side, amt,
+        entry:px, sl:sl==null||isNaN(sl)?null:sl, tp1:tp==null||isNaN(tp)?null:tp, tp2:tp2==null||isNaN(tp2)?null:tp2,
+        t:Date.now(), broker:'deriv', contract_id:o.contract_id, payout:o.payout,
+        dur:{duration:du.duration,duration_unit:du.duration_unit}, flags:{pat:true} };
+      api('/api/deriv/fill',{method:'POST',body:{kind:'open',contract_id:o.contract_id,stake:o.buy_price},headers:{'x-aurum-user':state.user||'local'}}).catch(()=>{});
+      notify('Trade opened',(isDemo?'DEMO · ':'REAL · ')+'Deriv '+side+' '+I.s+' · stake '+fmtMoney(o.stake||amt)+' · payout '+fmtMoney(o.payout)+' · '+du.duration+du.duration_unit+' contract.',{tag:'trade',kind:'ok'});
+      toast('Order filled',(isDemo?'DEMO ':'REAL ')+side+' '+fmtMoney(amt)+' '+I.s+' · payout '+fmtMoney(o.payout),'ok');
+    }
+    state.positions.push(pos); save();
+    renderNavCounts(); renderPortfolio();
+  }catch(e){
+    const msg=String(e.message||e);
+    toast('Order not placed',msg,'err');
+    notify('Order failed',msg,{tag:'trade',kind:'err'});
+  }finally{if(btn){btn.disabled=false;btn.textContent=old;}}
+}
+
 async function placeOrder(){
   if(isCloudflareReadonlyMode()){
     toast('Read-only staging','Cloudflare staging is analysis-only. It cannot request trade quotes, buy, or close Deriv contracts. Use the PC-local app for Exness.','warn');
     return;
   }
+  if(state.broker?.mode==='cloud_readonly'){
+    toast('Read-only session','This Deriv token has Read-only scope; connect with a Trade-scope token on http://127.0.0.1:8788/app.','warn');
+    return;
+  }
   if(guardStopIfTripped())return;
   const I=bySym[state.chart.sym];
-  if(!I){toast('Market unavailable','Select a supported chart symbol before requesting an order preview.','warn');return;}
+  if(!I){toast('Market unavailable','Select a supported chart symbol before placing an order.','warn');return;}
   const amt=parseFloat($('#orderAmount').value);
   if(!amt||amt<1){ toast('Invalid amount','Enter at least $1 to place an order.','err'); return; }
   const sl=parseFloat($('#orderSL').value), tp=parseFloat($('#orderTP').value), tp2=parseFloat($('#orderTP2').value);
@@ -2526,17 +2617,22 @@ async function placeOrder(){
     }
     await placeMt5ManualOrder({I,amt,sl,tp});return;
   }
+  /* index CFDs route ONLY through Exness — never Deriv */
+  if(I.c==='indices'&&state.broker?.type!=='mt5'){
+    toast('Index CFDs need Exness','Connect your Exness/MT5 bridge first (Automation → MT5 bridge). Index CFDs are not orderable on Deriv — probe-verified.','err');
+    return;
+  }
   const px=I.p;
   if(px==null){ toast('No live price',I.s+' has no live quote yet — wait for the feed or pick another symbol.','err'); return; }
   if(!isNaN(sl)&&state.side==='BUY'&&sl>=px){ toast('Invalid stop','Stop-loss must be below the entry for a BUY.','err'); return; }
   if(!isNaN(sl)&&state.side==='SELL'&&sl<=px){ toast('Invalid stop','Stop-loss must be above the entry for a SELL.','err'); return; }
 
-  /* Broker gate: Deriv confirmation or a mode-matched, manually confirmed Exness path. */
+  /* Broker gate: Deriv (1-click or confirmation modal) or Exness MT5 path. */
   const dh=state.derivHealth;
   const proxyReady=!!(dh&&dh.authorized&&dh.tradingEnabled);
   if(!proxyReady&&!state.broker){
     const hint=dh&&dh.tokenSet?' The server proxy has a token but trading is OFF — set DERIV_TRADING_ENABLED=true in the server .env.':'';
-    toast('Trading locked','Connect your Deriv account (PAT) or Exness (MT5 bridge) to place orders. Live markets stay available for analysis.'+hint,'err');
+    toast('Trading locked','Connect your Deriv account (PAT or Classic token) or Exness (MT5 bridge) to place orders. Live markets stay available for analysis.'+hint,'err');
     notify('Trading locked','No broker connected — connect Deriv or Exness from the Connect screen or Automation.',{tag:'trade',kind:'err'});
     return;
   }
@@ -2549,19 +2645,19 @@ async function placeOrder(){
     toast('Over server limit','Stake $'+amt.toFixed(2)+' exceeds the server-side limit of $'+lim.maxStakeUsd+' per trade.','err'); return;
   }
 
+  const dur=readDurationSel(I.s);
   if(proxyReady){
-    openTradeModal({mode:'proxy',I,amt,sl,tp,tp2,px,dur:readDurationSel(I.s)}); return;   /* env-token path */
-  }
-  if(state.broker?.type==='deriv'){
-    openTradeModal({mode:state.broker.mode==='pat_server'?'pat_server':'pat',I,amt,sl,tp,tp2,px,dur:readDurationSel(I.s)}); return;
-  }
-
-  /* index CFDs route ONLY through Exness — never Deriv */
-  if(I.c==='indices'&&state.broker?.type!=='mt5'){
-    toast('Index CFDs need Exness','Connect your Exness/MT5 bridge first (Automation → MT5 bridge). Index CFDs are not orderable on Deriv — probe-verified.','err');
+    if(state.settings.oneClick)await executeDerivDirect({mode:'proxy',I,amt,sl,tp,tp2,px,dur});
+    else openTradeModal({mode:'proxy',I,amt,sl,tp,tp2,px,dur});
     return;
   }
-  toast('Trading locked','No supported broker execution path is available. Exness orders require a verified MT5 account, fresh bridge preview and explicit per-order confirmation.','warn');
+  if(state.broker?.type==='deriv'){
+    const mode=state.broker.mode==='pat_server'?'pat_server':'pat';
+    if(state.settings.oneClick)await executeDerivDirect({mode,I,amt,sl,tp,tp2,px,dur});
+    else openTradeModal({mode,I,amt,sl,tp,tp2,px,dur});
+    return;
+  }
+  toast('Trading locked','No supported broker execution path is available. Connect Deriv or Exness MT5 on http://127.0.0.1:8788/app.','warn');
   return;
 }
 
@@ -3214,17 +3310,76 @@ function paintExpiries(){
 /* tick every second on its own timer — the countdown must visibly move even
    when the market feed stalls or the painter loop is busy */
 setInterval(()=>{ try{ if(state.view==='portfolio')paintExpiries(); }catch(e){} },1000);
+const mt5ClosingTickets=new Set();
+async function closeMt5BrokerPosition(p,skipConfirm=false){
+  if(isCloudflareReadonlyMode()){
+    toast('Read-only staging','Cloudflare staging cannot close Exness positions. Use http://127.0.0.1:8788/app or MT5 directly.','warn');
+    return false;
+  }
+  const acct=state.broker?.account;
+  if(state.broker?.type!=='mt5'||!acct||!['demo','real'].includes(acct.environment)||acct.demo!==(acct.environment==='demo')){
+    toast('Verified Exness account required','Reconnect Exness so MT5 verifies REAL or DEMO mode before closing from the app.','warn');
+    return false;
+  }
+  const ticket=Number(p?.ticket);
+  if(!Number.isInteger(ticket)||ticket<=0||mt5ClosingTickets.has(ticket))return false;
+  const environment=acct.environment, envLabel=environment.toUpperCase();
+  if(!skipConfirm&&state.settings.confirmClose){
+    const ok=await askConfirm('Close Exness '+envLabel+' position?','Close MT5 #' + ticket + ' · ' + (p.side||'') + ' ' + (p.symbol||'') + ' · ' + fmtPx(Number(p.volume),2) + ' lots at market?','Close #' + ticket);
+    if(!ok)return false;
+  }
+  mt5ClosingTickets.add(ticket);
+  renderMt5BrokerPositions();
+  try{
+    const intentId='close_'+ticket+'_'+Date.now().toString(36)+Math.random().toString(36).slice(2,10);
+    const res=await bridge.closeBridgeOrder({ticket,environment,intentId,manualConfirmed:true});
+    if(res?.type!=='closed')throw new Error('Bridge did not confirm close for MT5 #' + ticket + '.');
+    const pl=Number.isFinite(Number(res.profit))?Number(res.profit):(Number.isFinite(Number(p.profit))?Number(p.profit):null);
+    state.history.unshift({
+      sym:res.symbol||p.symbol||'MT5', side:res.side||p.side||'BUY',
+      amt:Number(res.volume||p.volume||0), entry:Number(res.entry||p.price||0)||null,
+      exit:Number(res.price)||null, pl, t:Date.now(), broker:'mt5', ticket, at:false
+    });
+    histPersist(); guardRecheckAfterClose(); save();
+    toast(envLabel+' position closed','MT5 #'+ticket+' '+String(res.symbol||p.symbol||'')+' closed @ '+fmtPx(Number(res.price),5)+(pl!=null?(' · P&L '+fmtAcctMoney(pl,res.currency||acct.currency,true)):''),'ok');
+    notify('Exness '+envLabel+' position closed','MT5 #'+ticket+' '+String(res.symbol||p.symbol||'')+' closed.',{tag:'mt5-close',kind:'ok'});
+    await refreshMt5Snapshot(false);
+    renderPortfolio(); updateKpis();
+    return true;
+  }catch(e){
+    const msg=String(e.message||e);
+    toast('MT5 close failed',msg,'err');
+    notify('MT5 close failed','#'+ticket+' — '+msg,{tag:'mt5-close',kind:'err'});
+    return false;
+  }finally{
+    mt5ClosingTickets.delete(ticket);
+    renderMt5BrokerPositions();
+  }
+}
+async function closeAllMt5BrokerPositions(){
+  const list=Array.isArray(state.mt5LivePositions)?state.mt5LivePositions.slice():[];
+  if(!list.length)return;
+  if(state.settings.confirmClose){
+    const ok=await askConfirm('Close all MT5 positions?','Flatten '+list.length+' open Exness MT5 position(s) at market?','Close all MT5');
+    if(!ok)return;
+  }
+  for(const p of list){
+    await closeMt5BrokerPosition(p,true);
+  }
+}
+{ const mca=$('#mt5CloseAllBtn'); if(mca)mca.onclick=()=>void closeAllMt5BrokerPositions(); }
 function renderMt5BrokerPositions(){
   const card=$('#mt5PositionsCard'); if(!card)return;
   const active=state.broker?.type==='mt5';
   card.style.display=active?'block':'none';
   if(!active)return;
-  const meta=$('#mt5PositionsMeta'), body=$('#mt5PositionsBody'), empty=$('#mt5PositionsEmpty'), wrap=$('#mt5PositionsWrap');
+  const meta=$('#mt5PositionsMeta'), body=$('#mt5PositionsBody'), empty=$('#mt5PositionsEmpty'), wrap=$('#mt5PositionsWrap'), closeAll=$('#mt5CloseAllBtn');
   const list=state.mt5LivePositions;
+  if(closeAll)closeAll.classList.toggle('hidden',!Array.isArray(list)||!list.length);
   if(meta){
     if(state.mt5SnapshotFailed)meta.textContent=state.mt5LastSnapshotAt?'Latest refresh failed; showing last confirmed MT5 snapshot.':'MT5 refresh failed; no live position snapshot is available.';
     else if(!Array.isArray(list))meta.textContent='Waiting for the first live MT5 account/positions snapshot.';
-    else meta.textContent='Read-only broker snapshot · '+list.length+' open position'+(list.length===1?'':'s')+' · refreshed '+(state.mt5LastSnapshotAt?new Date(state.mt5LastSnapshotAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—')+' · auto-refresh every '+Math.round(MT5_SNAPSHOT_REFRESH_MS/1000)+'s';
+    else meta.textContent='Live Exness snapshot · '+list.length+' open position'+(list.length===1?'':'s')+' · refreshed '+(state.mt5LastSnapshotAt?new Date(state.mt5LastSnapshotAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—')+' · auto-refresh every '+Math.round(MT5_SNAPSHOT_REFRESH_MS/1000)+'s';
   }
   if(!body||!empty||!wrap)return;
   body.innerHTML='';
@@ -3240,7 +3395,18 @@ function renderMt5BrokerPositions(){
   }
   empty.classList.add('hidden'); wrap.classList.remove('hidden');
   const currency=state.broker?.account?.currency||'';
-  body.innerHTML=list.map(p=>'<tr><td class="mono tiny">'+escHtml(String(p.ticket??'—'))+'</td><td><b>'+escHtml(String(p.symbol||'—'))+'</b></td><td>'+escHtml(String(p.side||'—'))+'</td><td class="num mono">'+fmtPx(p.volume==null?null:Number(p.volume),2)+'</td><td class="num mono">'+fmtPx(p.price==null?null:Number(p.price),5)+'</td><td class="num mono">'+escHtml(fmtAcctMoney(p.profit,currency,true))+'</td><td class="num mono">'+fmtPx(p.sl==null?null:Number(p.sl),5)+'</td><td class="num mono">'+fmtPx(p.tp==null?null:Number(p.tp),5)+'</td></tr>').join('');
+  body.innerHTML=list.map(p=>{
+    const t=Number(p.ticket);
+    const closing=mt5ClosingTickets.has(t);
+    return '<tr><td class="mono tiny">'+escHtml(String(p.ticket??'—'))+'</td><td><b>'+escHtml(String(p.symbol||'—'))+'</b></td><td>'+escHtml(String(p.side||'—'))+'</td><td class="num mono">'+fmtPx(p.volume==null?null:Number(p.volume),2)+'</td><td class="num mono">'+fmtPx(p.price==null?null:Number(p.price),5)+'</td><td class="num mono">'+escHtml(fmtAcctMoney(p.profit,currency,true))+'</td><td class="num mono">'+fmtPx(p.sl==null?null:Number(p.sl),5)+'</td><td class="num mono">'+fmtPx(p.tp==null?null:Number(p.tp),5)+'</td><td class="num"><button type="button" class="btn sm danger mt5-pos-close" data-mt5-ticket="'+escHtml(String(p.ticket??''))+'"'+(closing?' disabled':'')+'>'+(closing?'Closing…':'Close')+'</button></td></tr>';
+  }).join('');
+  body.querySelectorAll('.mt5-pos-close').forEach(btn=>{
+    btn.onclick=()=>{
+      const tk=Number(btn.getAttribute('data-mt5-ticket'));
+      const found=list.find(item=>Number(item.ticket)===tk);
+      if(found)void closeMt5BrokerPosition(found,false);
+    };
+  });
 }
 function updatePortfolioLive(){
   paintExposureReconcile();
@@ -3513,7 +3679,25 @@ $('#riskRange').oninput=e=>{
   $('#riskVal').textContent=state.settings.maxRisk.toFixed(1)+'%';
   save(); updateRisk();
 };
-$('#confirmChk').onchange=e=>{ state.settings.confirmClose=e.target.checked; save(); };
+function syncOneClickUI(){
+  const on=!!state.settings.oneClick&&!isCloudflareReadonlyMode();
+  const c1=$('#oneClickChk'), c2=$('#ticketOneClickChk'), sub=$('#ticketOneClickSub');
+  if(c1)c1.checked=on;
+  if(c2)c2.checked=on;
+  if(sub)sub.textContent=on?'(instant order on click)':'(preview & confirm modal)';
+  updateTradeHeader();
+}
+function setOneClickMode(enabled){
+  if(isCloudflareReadonlyMode())return;
+  state.settings.oneClick=!!enabled;
+  save();
+  syncOneClickUI();
+  toast('1-click live execution',state.settings.oneClick?'ON — manual Exness & Deriv orders execute immediately from the ticket.':'OFF — orders open a preview/confirmation modal before sending.','ok');
+}
+{ const oc1=$('#oneClickChk'), oc2=$('#ticketOneClickChk');
+  if(oc1)oc1.onchange=e=>setOneClickMode(e.target.checked);
+  if(oc2)oc2.onchange=e=>setOneClickMode(e.target.checked); }
+$('#confirmChk').onchange=e=>{ state.settings.confirmClose=e.target.checked; state.settings.confirmCloseExplicit=true; save(); };
 
 /* ---------- Auto-trade (sniper) bindings ---------- */
 const atResaleChk=$('#atResale');
@@ -5010,6 +5194,7 @@ function newsSignalText(it){
     +'Heuristic — not AI, not advice. Verify before trading.';
 }
 function executeNewsSignal(it){
+  if(isCloudflareReadonlyMode()){ toast('Read-only staging','Cloudflare staging cannot execute news orders. Use http://127.0.0.1:8788/app.','warn'); return; }
   if(guardStopIfTripped())return;
   const b=it.bias||{};
   if(!b.pair||!b.dir){ toast('Not orderable','This headline has no orderable market direction.','warn'); return; }
@@ -5023,11 +5208,21 @@ function executeNewsSignal(it){
   state.side=b.dir; syncSide();
   if(proxyReady||state.broker?.type==='deriv'){
     const mode=proxyReady?'proxy':(state.broker.mode==='pat_server'?'pat_server':'pat');
-    openTradeModal({mode,I,amt,sl:null,tp:null,tp2:null,px:(bySym[b.pair]&&bySym[b.pair].p)||null,dur:derivDurationFor(b.pair)});
+    const px=(bySym[b.pair]&&bySym[b.pair].p)||null;
+    const dur=derivDurationFor(b.pair);
+    const inst=bySym[b.pair]||Object.assign({s:b.pair,d:4},I);
+    if(state.settings.oneClick)void executeDerivDirect({mode,I:inst,amt,sl:null,tp:null,tp2:null,px,dur});
+    else openTradeModal({mode,I:inst,amt,sl:null,tp:null,tp2:null,px,dur});
+    return;
+  }
+  if(state.broker?.type==='mt5'&&bySym[b.pair]&&state.settings.oneClick){
+    setChartSymbol(b.pair);
+    const mt5Amt=Math.max(1,parseFloat($('#orderAmount')?.value)||state.settings.defAmt||amt);
+    void placeMt5ManualOrder({I:bySym[b.pair],amt:mt5Amt,sl:NaN,tp:NaN});
     return;
   }
   setChartSymbol(b.pair); goto('trade');
-  toast('Ticket ready',b.dir+' '+b.pair+' preset — the MT5 bridge path confirms inside Chart & Trade.','ok');
+  toast('Ticket ready',b.dir+' '+b.pair+' preset — review or send inside Chart & Trade.','ok');
 }
 async function shareCalBrief(){
   try{
@@ -5890,6 +6085,7 @@ function boot(){
     /* re-login: refresh connection-dependent UI without re-wiring */
     wireFeed();
     renderNavCounts(); renderPortfolio(); renderBots(); connUI();
+    syncOneClickUI(); renderPatAccounts();
     updateKpis(); updateTradeHeader(); updateSessionInfo();
     render(state.view||'overview');
     return;
@@ -5903,6 +6099,8 @@ function boot(){
   $('#riskRange').value=state.settings.maxRisk;
   $('#riskVal').textContent=Number(state.settings.maxRisk).toFixed(1)+'%';
   $('#confirmChk').checked=state.settings.confirmClose;
+  syncOneClickUI();
+  renderPatAccounts();
   renderAutoTrade();
   buildTicker();
   const sel=$('#chartSymbol');

@@ -435,6 +435,27 @@ test('deriv order without PAT is rejected before any network call', async () => 
   assert.equal(d.error, 'no_pat');
 });
 
+test('deriv classic order on loopback succeeds in real mode by default and respects explicit DERIV_ALLOW_BROWSER_EXEC=false', async () => {
+  const prevEnv = process.env.ENVIRONMENT;
+  const prevAllow = process.env.DERIV_ALLOW_BROWSER_EXEC;
+  try {
+    process.env.ENVIRONMENT = 'real';
+    delete process.env.DERIV_ALLOW_BROWSER_EXEC;
+    const okRes = await post('/api/deriv/order', { symbol: 'EUR/USD', amount: 5, side: 'BUY', once: 'real_loopback_1' }, { 'x-deriv-pat': 'classic_tok_1234', 'x-aurum-user': 'real_loopback_tester' });
+    assert.equal(okRes.status, 200);
+    const okData = await okRes.json();
+    assert.equal(okData.approved, true);
+
+    process.env.DERIV_ALLOW_BROWSER_EXEC = 'false';
+    const blockedRes = await post('/api/deriv/order', { symbol: 'EUR/USD', amount: 5, side: 'BUY', once: 'real_loopback_2' }, { 'x-deriv-pat': 'classic_tok_1234', 'x-aurum-user': 'real_loopback_tester' });
+    assert.equal(blockedRes.status, 403);
+    assert.equal((await blockedRes.json()).error, 'classic_exec_disabled');
+  } finally {
+    if (prevEnv === undefined) delete process.env.ENVIRONMENT; else process.env.ENVIRONMENT = prevEnv;
+    if (prevAllow === undefined) delete process.env.DERIV_ALLOW_BROWSER_EXEC; else process.env.DERIV_ALLOW_BROWSER_EXEC = prevAllow;
+  }
+});
+
 test('history is per-user', async () => {
   const a = await (await get('/api/signals/history', { 'x-aurum-user': 'alice' })).json();
   const b = await (await get('/api/signals/history', { 'x-aurum-user': 'bob' })).json();

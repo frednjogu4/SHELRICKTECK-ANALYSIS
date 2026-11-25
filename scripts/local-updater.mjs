@@ -483,7 +483,7 @@ export async function runLocalUpdate({
         throw new Error(decision.reason);
       }
       if (decision.action === 'stop_aurum') {
-        if (decision.mode === 'wrangler') launchMode = 'wrangler';
+        if (decision.mode === 'wrangler' && !existsSync(join(resolvedTarget, 'START_ALL_LOCAL.bat'))) launchMode = 'wrangler';
         toStop.push(item);
       }
     }
