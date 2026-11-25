@@ -1379,6 +1379,75 @@ def _load_app():
     except Exception:
         return None
 
+def _app_etag(app):
+    """Strong ETag of the served page so a replaced app.html revalidates on
+    every reload (root fix for browsers keeping the previous layout)."""
+    import hashlib
+    return '"' + hashlib.sha256(app).hexdigest()[:16] + '"'
+
+def _git_commit():
+    """Short commit of the checkout this package sits in, or None (ZIP package).
+    Never runs a subprocess and never returns anything secret — just a sha."""
+    try:
+        base = _BRIDGE_DIR
+        for _ in range(2):
+            head = os.path.join(base, ".git", "HEAD")
+            if os.path.isfile(head):
+                with open(head, "r", encoding="utf-8", errors="replace") as f:
+                    ref = f.read().strip()
+                if not ref.startswith("ref: "):
+                    return ref[:8] or None
+                name = ref[5:].strip()
+                direct = os.path.join(base, ".git", *name.split("/"))
+                if os.path.isfile(direct):
+                    with open(direct, "r", encoding="utf-8", errors="replace") as f:
+                        sha = f.read().strip()
+                    return sha[:8] or None
+                packed = os.path.join(base, ".git", "packed-refs")
+                if os.path.isfile(packed):
+                    with open(packed, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            parts = line.strip().split()
+                            if len(parts) == 2 and parts[1] == name:
+                                return parts[0][:8]
+                return None
+            base = os.path.dirname(base)
+        return None
+    except Exception:
+        return None
+
+def _build_json():
+    """The release facts of the page this bridge serves: the content id from
+    pwa/build.json (written by npm run build) plus runtime metadata (mtime of
+    app.html = when this PC last received a UI, git sha when in a checkout,
+    and a DEV marker while scripts/dev-local.mjs is watching)."""
+    try:
+        with open(os.path.join(_BRIDGE_DIR, "pwa", "build.json"), "r", encoding="utf-8") as f:
+            base = json.load(f)
+    except Exception:
+        return b'{"error":"build.json missing - run npm run build and re-sync the local package"}', 503
+    mode = "LOCAL"
+    try:
+        marker = os.path.join(os.path.dirname(_BRIDGE_DIR), ".dev-watch.json")
+        if os.path.isfile(marker) and (time.time() - os.path.getmtime(marker)) < 150:
+            mode = "LOCAL DEV (watch)"
+    except OSError:
+        pass
+    built_at = None
+    try:
+        built_at = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(os.path.getmtime(_APP_FILE)))
+    except OSError:
+        pass
+    out = {
+        "id": base.get("id"),
+        "version": base.get("version"),
+        "git": _git_commit(),
+        "builtAt": built_at,
+        "mode": mode,
+        "service": "mt5-bridge",
+    }
+    return json.dumps(out).encode(), 200
+
 def _http_answer(path, hdrs):
     """Non-websocket HTTP: local app, /api proxy, or the UP text."""
     common = [("Access-Control-Allow-Origin", "*"),
@@ -1710,9 +1779,33 @@ def _start_http_app(port=8788):
                 if path in ("/app", "/app/", "/index.html"):
                     app = _load_app()
                     if app:
-                        self._send(200, "text/html; charset=utf-8", app)
+                        etag = _app_etag(app)
+                        inm = (self.headers.get("If-None-Match") or "").strip()
+                        if inm and inm == etag:
+                            # Unchanged page: revalidated copy of what the tab
+                            # already has (the browser then uses its cached body).
+                            self.send_response(304)
+                            self.send_header("ETag", etag)
+                            self.send_header("Cache-Control", "no-cache, must-revalidate")
+                            self.end_headers()
+                            return
+                        last_mod = None
+                        try:
+                            import email.utils
+                            last_mod = email.utils.formatdate(os.path.getmtime(_APP_FILE), usegmt=True)
+                        except OSError:
+                            pass
+                        extra = [("Cache-Control", "no-cache, must-revalidate"), ("ETag", etag)]
+                        if last_mod:
+                            extra.append(("Last-Modified", last_mod))
+                        self._send(200, "text/html; charset=utf-8", app, extra)
                     else:
-                        self._send(404, "text/plain; charset=utf-8", b"app.html missing - re-extract the latest zip")
+                        self._send(404, "text/plain; charset=utf-8", b"app.html missing - re-extract the latest local app package", [("Cache-Control", "no-store")])
+                    return
+                if path == "/build.json":
+                    payload, st = _build_json()
+                    self._send(st, "application/json; charset=utf-8", payload,
+                               [("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff")])
                     return
                 self._send(200, "text/plain; charset=utf-8", _up_txt().encode())
             except Exception as e:
@@ -1729,6 +1822,12 @@ def _start_http_app(port=8788):
         srv = ThreadingHTTPServer((HOST, port), H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         log.info("local app server: http://127.0.0.1:%d/app (this PC)  |  http://%s:%d/app (phone, same wifi)", port, _lan_ip(), port)
+        _rev, _st = _build_json()
+        try:
+            _rid = json.loads(_rev.decode()).get("id") if _st == 200 else None
+        except Exception:
+            _rid = None
+        log.info("app release: %s (app.html %s)", _rid or "unknown", _APP_FILE)
         return srv
     except OSError as e:
         if "10048" in str(e) or getattr(e, "errno", None) == 98:

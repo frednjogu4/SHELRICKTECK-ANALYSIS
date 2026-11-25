@@ -15,6 +15,9 @@ __pycache__/
 .dev.vars
 .dev.vars.*
 
+# `npm run dev:local` watcher marker (lives only while the watcher runs)
+.dev-watch.json
+
 # Any other environment file (the committed template stays tracked)
 .env.*
 !.env.example

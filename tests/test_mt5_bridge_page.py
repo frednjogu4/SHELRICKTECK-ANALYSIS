@@ -72,11 +72,13 @@ class PcPageTests(unittest.TestCase):
                 sys.modules[name] = old
         sys.modules.pop("mt5_bridge_page_under_test", None)
 
-    def get(self, path):
+    def get(self, path, extra_headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
             connection.putrequest("GET", path, skip_host=True)
             connection.putheader("Host", "127.0.0.1:8788")
+            for name, value in (extra_headers or {}).items():
+                connection.putheader(name, value)
             connection.endheaders()
             response = connection.getresponse()
             return response.status, dict((k.lower(), v) for k, v in response.getheaders()), response.read()
@@ -139,6 +141,61 @@ class PcPageTests(unittest.TestCase):
                 self.assertIn(b"app.html missing", body)
             finally:
                 self.bridge._APP_FILE = original
+
+    # ---- release delivery: caching, revalidation and build diagnostics ----
+
+    def test_the_page_carries_no_stale_cache_and_revalidates_with_its_etag(self):
+        """The root fix for 'the old layout keeps coming back': /app is never
+        freshly-cacheable, and a reload revalidates a replaced page."""
+        status, headers, body = self.get("/app")
+        self.assertEqual(status, 200)
+        self.assertIn("no-cache", headers["cache-control"])
+        etag = headers.get("etag")
+        self.assertTrue(etag and etag.startswith('"'), "the page must carry an ETag")
+        self.assertEqual(body, (DIST / "index.html").read_bytes())
+
+        # A reload with If-None-Match: unchanged page -> 304, no body.
+        status, headers, _body = self.get("/app", {"If-None-Match": etag})
+        self.assertEqual(status, 304)
+        self.assertEqual(headers.get("etag"), etag)
+
+        # Replaced page -> the ETag changes -> a full 200 with the new bytes.
+        original = self.bridge._APP_FILE
+        with tempfile.TemporaryDirectory() as folder:
+            page = Path(folder) / "app.html"
+            page.write_bytes(b"<!doctype html><title>new build</title>")
+            self.bridge._APP_FILE = str(page)
+            try:
+                status, headers, body = self.get("/app")
+                self.assertEqual(status, 200)
+                self.assertNotEqual(headers.get("etag"), etag)
+                self.assertEqual(body, b"<!doctype html><title>new build</title>")
+            finally:
+                self.bridge._APP_FILE = original
+
+    def test_build_json_reports_the_release_this_bridge_serves(self):
+        import json as _json
+        status, headers, body = self.get("/build.json")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "application/json; charset=utf-8")
+        self.assertIn("no-store", headers["cache-control"], "the version probe must never be cached")
+        info = _json.loads(body)
+        release = _json.loads((DIST / "build.json").read_text(encoding="utf-8"))
+        self.assertEqual(info["id"], release["id"], "the bridge reports the release of the page it serves")
+        self.assertEqual(info["version"], release["version"])
+        self.assertEqual(info["service"], "mt5-bridge")
+        self.assertIn(info["mode"], ("LOCAL", "LOCAL DEV (watch)"))
+        self.assertTrue(info["builtAt"], "builtAt is the mtime of app.html (when this PC last got a UI)")
+        # git is a short sha inside a checkout and None inside a ZIP package — never anything else.
+        self.assertTrue(info["git"] is None or (isinstance(info["git"], str) and 4 <= len(info["git"]) <= 40))
+
+    def test_the_page_stamps_exactly_the_release_build_json_reports(self):
+        import json as _json
+        page = (DIST / "index.html").read_text(encoding="utf-8")
+        meta = re.search(r'<meta name="aurum-build" content="([^"]+)">', page)
+        self.assertTrue(meta, "the built page carries no release stamp")
+        info = _json.loads(self.get("/build.json")[2])
+        self.assertEqual(meta.group(1), info["id"])
 
 
 if __name__ == "__main__":

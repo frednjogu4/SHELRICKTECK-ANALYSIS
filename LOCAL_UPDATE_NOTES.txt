@@ -1,3 +1,21 @@
+FREDRICK AURUM LOCAL UPDATE — 24 NOVEMBER 2026 (delivery repair)
+
+What changed
+- Every approved dashboard, chart, CSS, navigation and layout update now reaches BOTH http://127.0.0.1:8788/app and Cloudflare staging from ONE canonical build. Root cause of the old mismatch: the bridge sent /app with no cache headers and no validator, so the browser (and the service worker's copy of it) kept showing the previous layout even after the files on disk were current; nothing detected or announced a new release either.
+- Release identity: every build stamps a content-addressed Build ID (scripts/build-revision.mjs) into dist/index.html (meta aurum-build), dist/build.json, dist/sw.js (release-keyed cache name) and, through the normal postbuild sync, into bridge/app.html + bridge/pwa/build.json. The id changes only when the built UI really changes; rebuilding the same sources always yields the same id (verified twice in a row).
+- Local bridge: /app is now served with Cache-Control: no-cache + ETag + Last-Modified and answers If-None-Match with 304, so a replaced app.html appears on the very next reload. A new GET /build.json reports the release of the page it serves (id, version, git sha when the package sits in a checkout, app.html mtime as Last UI update, mode LOCAL or LOCAL DEV (watch)) with Cache-Control: no-store.
+- New development mode: npm run dev:local runs vite build --watch plus the postbuild sync, so a source edit in index.html/, src/, styles or public/ rebuilds and syncs bridge/app.html automatically; the open tab detects the new Build ID within its poll and shows a non-intrusive NEW VERSION AVAILABLE banner (Refresh button, or one automatic refresh only when no form submission, modal, focused field or unsubmitted input is present). A .dev-watch.json marker (removed on exit) makes /build.json report LOCAL DEV (watch) so development and packaged mode are distinguishable. Supporting commands: npm run sync:local (copy now) and npm run verify:local (fail when any served copy differs from dist/).
+- Service worker v3 lifecycle: the cache VERSION is stamped with the release id on every build; online navigations fetch with cache: no-store (the stale-shell fix); background refreshes revalidate with no-cache; activate() deletes only caches of older releases; /api, /bridge and /build.json are never cached; live API/WebSocket/auth traffic is still never stored. No browser storage is cleared wholesale.
+- Settings has a new Build & delivery panel: Application version, Git commit, Build ID, Build timestamp, Environment (LOCAL / LOCAL DEV (watch) / STAGING), UI source revision, Service worker version, API health (GET /api/health), Bridge health and Last UI update. No secrets, tokens or account data are shown.
+- Cloudflare staging serves the same release: /build.json runs through the Worker (enriched with the deployed commit when the platform provides it) and reports the same Build ID as the page; staging and local package UI derive from one canonical build (dist/ -> bridge/ copies are checked byte-for-byte by tests).
+- Startup (bridge/SETUP_AND_RUN.bat) now verifies app.html exists, warns when pwa/build.json is missing, and prints the local UI release id before opening the browser. It still checks required files, starts services once (ports 8787/8788 are freed first), never logs bridge tokens and opens http://127.0.0.1:8788/app only after the local server is ready.
+- New npm scripts: dev:local, sync:local, verify:local (added alongside the existing build/verify:dist; no existing command was replaced). Regression tests cover build-revision consistency, stale-copy detection, service-worker cache lifecycle, update-banner gating and the bridge cache/304/build.json behaviour (node + Python suites).
+
+Limit
+- The running bridge process itself needs no restart after a build (it reads app.html per request), but a bridge started from an OLD package folder keeps serving old files until the package is replaced: extract this ZIP over the package folder and run START_ALL_LOCAL.bat again; the startup line "Local UI release: b..." and Settings -> Build & delivery must match the Build ID shown on staging.
+
+---
+
 FREDRICK AURUM LOCAL UPDATE — 24 NOVEMBER 2026
 
 What changed

@@ -29,6 +29,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** [built file under dist/, the copy the PC bridge serves under bridge/]. */
 export const PC_PAGE_COPIES = Object.freeze([
   ['index.html', 'app.html'],
+  ['build.json', 'pwa/build.json'],
   ['manifest.webmanifest', 'pwa/manifest.webmanifest'],
   ['sw.js', 'pwa/sw.js'],
   ['icons/icon-192.png', 'pwa/icons/icon-192.png'],

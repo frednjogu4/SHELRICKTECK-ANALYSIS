@@ -43,7 +43,13 @@ test('every file the bridge serves for the page is one of the copies, and no cop
     assert.ok(copies.has(file), `the bridge serves bridge/${file}, which the build does not refresh`);
     assert.equal('/' + copies.get(file), url, `bridge/${file} is served as ${url}, so it must be the built file of that name`);
   }
-  assert.deepEqual([...copies.keys()].filter((copy) => copy !== 'app.html').sort(), served.map((entry) => entry.file).sort());
+  /* /build.json is not a static allowlist row: _build_json() reads
+     bridge/pwa/build.json and adds runtime metadata (git, mtime, mode). */
+  const servesBuildJson = /if path == "\/build\.json":/.test(bridge) &&
+    bridge.includes('os.path.join(_BRIDGE_DIR, "pwa", "build.json")');
+  assert.ok(servesBuildJson, 'the bridge must serve /build.json from the refreshed pwa/build.json copy');
+  const servedFiles = served.map((entry) => entry.file).concat('pwa/build.json');
+  assert.deepEqual([...copies.keys()].filter((copy) => copy !== 'app.html').sort(), servedFiles.sort());
 });
 
 test('the build ends by refreshing the PC page', () => {

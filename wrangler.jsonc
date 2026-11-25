@@ -52,8 +52,9 @@
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    // /api and everything below it always run the Worker, never a static file.
-    "run_worker_first": ["/api", "/api/*"],
+    // /api and /build.json always run the Worker, never a static file:
+    // /build.json is enriched with runtime metadata (see serveBuildInfo).
+    "run_worker_first": ["/api", "/api/*", "/build.json"],
     // A path that matches no file is handed to the Worker, which serves the
     // app shell for plain app paths (/app) and a real 404 for everything else.
     // With "single-page-application" every miss, including /missing.js and
