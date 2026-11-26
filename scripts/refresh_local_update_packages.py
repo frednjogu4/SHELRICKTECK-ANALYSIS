@@ -97,6 +97,21 @@ def expected_member(member: str, prefix: str, page_manifest: bytes) -> bytes | N
     return path.read_bytes() if path.is_file() else None
 
 
+def _make_windows_zipinfo(filename: str, date_time: tuple[int, int, int, int, int, int] | None = None) -> zipfile.ZipInfo:
+    """Build a clean MS-DOS/Windows ZipInfo so Windows File Explorer (zipfldr.dll)
+    opens and extracts every entry without stumbling on modeless Unix external_attr."""
+    dt = date_time if (date_time and date_time >= (1980, 1, 1, 0, 0, 0)) else (2026, 11, 26, 12, 0, 0)
+    zinfo = zipfile.ZipInfo(filename=filename, date_time=dt)
+    zinfo.create_system = 0  # FAT / Windows Explorer native
+    if filename.endswith("/"):
+        zinfo.compress_type = zipfile.ZIP_STORED
+        zinfo.external_attr = 0x10  # FILE_ATTRIBUTE_DIRECTORY
+    else:
+        zinfo.compress_type = zipfile.ZIP_DEFLATED
+        zinfo.external_attr = 0x20  # FILE_ATTRIBUTE_ARCHIVE
+    return zinfo
+
+
 def check_package(path: Path, refresh: bool = False) -> list[str]:
     prefix = path.stem + "/"
     if not path.is_file():
@@ -111,25 +126,55 @@ def check_package(path: Path, refresh: bool = False) -> list[str]:
     stale: list[str] = []
     rewritten: list[tuple[zipfile.ZipInfo, bytes]] = []
     present: set[str] = set()
+    seen_dirs: set[str] = set()
     for info, data in entries:
+        if info.filename.endswith("/"):
+            seen_dirs.add(info.filename)
+            if info.create_system != 0 or (info.external_attr & 0xFF) != 0x10:
+                stale.append(info.filename + " (zip header)")
+            rewritten.append((_make_windows_zipinfo(info.filename, info.date_time), b""))
+            continue
         if info.filename.startswith(prefix):
             present.add(info.filename[len(prefix):])
         expected = expected_member(info.filename, prefix, page_manifest)
+        needs_header_fix = (info.create_system != 0) or ((info.external_attr & 0xFF) != 0x20)
         if expected is not None and expected != data:
             stale.append(info.filename[len(prefix):])
             data = expected
-        rewritten.append((info, data))
+        elif needs_header_fix:
+            stale.append((info.filename[len(prefix):] if info.filename.startswith(prefix) else info.filename) + " (zip header)")
+        rewritten.append((_make_windows_zipinfo(info.filename, info.date_time), data))
     missing = [rel for rel in required_members() if rel not in present]
+    if prefix not in seen_dirs:
+        stale.append(f"{prefix} (root dir entry)")
     if refresh and (stale or missing):
         fd, temp_name = tempfile.mkstemp(prefix=path.stem + "-", suffix=".zip", dir=path.parent)
         os.close(fd)
         try:
+            all_files: dict[str, tuple[zipfile.ZipInfo, bytes]] = {}
+            for info, data in rewritten:
+                if not info.filename.endswith("/"):
+                    all_files[info.filename] = (info, data)
+            for rel in missing:
+                fname = prefix + rel
+                all_files[fname] = (
+                    _make_windows_zipinfo(fname),
+                    ROOT.joinpath(*Path(rel).parts).read_bytes(),
+                )
+            dir_names: set[str] = {prefix}
+            for fname in all_files:
+                parts = fname.split("/")[:-1]
+                cur = ""
+                for p in parts:
+                    if p:
+                        cur += p + "/"
+                        dir_names.add(cur)
             with zipfile.ZipFile(temp_name, "w") as out:
-                for info, data in rewritten:
-                    out.writestr(info, data)
-                for rel in missing:
-                    out.writestr(prefix + rel, ROOT.joinpath(*Path(rel).parts).read_bytes(),
-                                 compress_type=zipfile.ZIP_DEFLATED)
+                for dname in sorted(dir_names):
+                    out.writestr(_make_windows_zipinfo(dname), b"")
+                for fname in sorted(all_files):
+                    zinfo, payload = all_files[fname]
+                    out.writestr(zinfo, payload)
             os.replace(temp_name, path)
         finally:
             if os.path.exists(temp_name):
