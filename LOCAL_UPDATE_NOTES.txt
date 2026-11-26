@@ -1,3 +1,19 @@
+FREDRICK AURUM LOCAL UPDATE — 26 NOVEMBER 2026 (Build bebef3f1c4e7b — full 21-section platform + dist/bridge sync)
+
+What changed
+- Complete upgraded 21-section Shelricktech AI Trading & Market Intelligence workspace (Build ID bebef3f1c4e7b), synchronized byte-for-byte with live Cloudflare staging (https://cloudflare-staging.frednjogu4.workers.dev/).
+- Fixed Windows launcher startup when extracted to folders containing spaces or parentheses (such as Downloads\FREDRICK_AURUM_LOCAL_UPDATE (1)), fixed build.json release-ID parsing in bridge\SETUP_AND_RUN.bat, hardened Python 3.10-3.13 discovery against the Windows Store python.exe stub and per-user %LOCALAPPDATA%\Programs\Python installs, and auto-detected Node.js in C:\Program Files\nodejs even before PATH refresh.
+- Expanded Exness MT5 auto-discovery in bridge\START_MT5_IF_CLOSED.ps1 to check Desktop shortcuts and Exness's default C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe folder, launching MT5 visibly with its own installation WorkingDirectory whenever closed while never closing or restarting an open terminal.
+- Removed -WindowStyle Hidden in UPDATE_LOCAL_APP.bat / bridge\UPDATE_LOCAL_APP.ps1 so Windows never hides child MT5 or Chrome GUI windows during service restart, prioritized existing configured installations (with bridge_token.txt) when running the updater from a newly extracted folder, and extended first-run readiness timeout to 180s.
+- Both bridge\ (bridge\app.html, bridge\pwa\*) AND dist\ (dist\index.html, dist\AURUM_Workspace.html, dist\build.json, dist\sw.js, dist\_headers, dist\manifest.webmanifest, dist\icons\*) are now packaged directly inside this ZIP and kept in lockstep by UPDATE_LOCAL_APP.bat and npm run update:local. Whether you run START_ALL_LOCAL.bat (Exness MT5 bridge + local API on http://127.0.0.1:8788/app) or START_LOCAL_MARKET_COMMAND_CENTRE.bat (Wrangler dashboard mode on port 8788), both paths serve the identical upgraded build.
+- Service Worker registration now bypasses browser HTTP cache (updateViaCache: 'none'), /sw.js and /build.json are served with no-store headers, and stale caches from earlier builds are purged automatically while preserving local credentials, bridge_token.txt, terminal_path.txt, .env*, and server\data\.
+
+Quick install / update steps
+- Recommended (starts Exness MT5 + Local API :4100 + Bridge + opens http://127.0.0.1:8788/app): extract ALL files from this ZIP into a normal folder (not inside File Explorer's ZIP preview) — either overwriting your existing local folder (bridge_token.txt, terminal_path.txt, .env*, and server\data\ are not in the ZIP so your settings stay intact) or into a fresh folder — then double-click START_ALL_LOCAL.bat.
+- Do NOT click START_LOCAL_MARKET_COMMAND_CENTRE.bat if you want Exness MT5: that script is dashboard-only Wrangler mode and intentionally does not launch MT5 or the Exness bridge. Use START_ALL_LOCAL.bat instead.
+
+---
+
 FREDRICK AURUM LOCAL UPDATE — 24 NOVEMBER 2026 (delivery repair)
 
 What changed

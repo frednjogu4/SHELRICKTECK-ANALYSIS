@@ -31,31 +31,38 @@ if not exist START_MT5_IF_CLOSED.ps1 (
 
 rem The MetaTrader5 connector supports Python 3.8 - 3.13 (3.14/3.15 too new).
 set "PY="
-for %%V in (3.13 3.12 3.11) do (
+for %%V in (3.13 3.12 3.11 3.10) do (
   if not defined PY (
-    py -%%V --version >nul 2>nul
+    py -%%V -c "import sys; raise SystemExit(0 if (3,8)<=sys.version_info[:2]<=(3,13) else 2)" >nul 2>nul
     if not errorlevel 1 set "PY=py -%%V"
   )
 )
 if defined PY goto havepy
 
-set "PYVER="
-py -3 --version >"%TEMP%\aurum_py.txt" 2>&1
-if not errorlevel 1 for /f "usebackq tokens=2" %%A in ("%TEMP%\aurum_py.txt") do set "PYVER=%%A"
-if defined PYVER if "%PYVER:~0,4%"=="3.14" goto toonew
-if defined PYVER if "%PYVER:~0,4%"=="3.15" goto toonew
-if defined PYVER (
+for %%D in (Python313 Python312 Python311 Python310) do (
+  if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\%%D\python.exe" set "PY="%LOCALAPPDATA%\Programs\Python\%%D\python.exe""
+  if not defined PY if exist "%ProgramFiles%\%%D\python.exe" set "PY="%ProgramFiles%\%%D\python.exe""
+)
+if defined PY goto havepy
+
+py -3 -c "import sys; raise SystemExit(0 if (3,8)<=sys.version_info[:2]<=(3,13) else (2 if sys.version_info[:2]>=(3,14) else 1))" >nul 2>nul
+if "%ERRORLEVEL%"=="0" (
   set "PY=py -3"
   goto havepy
 )
-set "PYVER="
-python --version >"%TEMP%\aurum_py.txt" 2>&1
-for /f "usebackq tokens=2" %%A in ("%TEMP%\aurum_py.txt") do set "PYVER=%%A"
-if defined PYVER if "%PYVER:~0,4%"=="3.14" goto toonew
-if defined PYVER if "%PYVER:~0,4%"=="3.15" goto toonew
-if defined PYVER (
+if "%ERRORLEVEL%"=="2" (
+  set "PYVER=3.14+"
+  goto toonew
+)
+
+python -c "import sys; raise SystemExit(0 if (3,8)<=sys.version_info[:2]<=(3,13) else (2 if sys.version_info[:2]>=(3,14) else 1))" >nul 2>nul
+if "%ERRORLEVEL%"=="0" (
   set "PY=python"
   goto havepy
+)
+if "%ERRORLEVEL%"=="2" (
+  set "PYVER=3.14+"
+  goto toonew
 )
 
 echo.
@@ -118,8 +125,9 @@ if not exist "%~dp0pwa\build.json" (
   echo     Re-extract the latest ZIP, or run "npm run build" in the repository.
 )
 set "AURUM_BUILD_ID="
-for /f "usebackq delims=" %%I in (`%PY% -c "import json;print(json.load(open(r'%~dp0pwa\build.json').get('id') or ''))" 2\>nul`) do set "AURUM_BUILD_ID=%%I"
-if defined AURUM_BUILD_ID echo        Local UI release: %AURUM_BUILD_ID% (the same id appears in Settings - Build and delivery)
+%PY% -c "import json; print(json.load(open('pwa/build.json', encoding='utf-8')).get('id') or '')" >"%TEMP%\aurum_build_id.txt" 2>nul
+if not errorlevel 1 set /p AURUM_BUILD_ID=<"%TEMP%\aurum_build_id.txt"
+if defined AURUM_BUILD_ID echo        Local UI release: %AURUM_BUILD_ID% - matches Settings Build and delivery
 if not defined AURUM_BUILD_ID echo [!] Local UI release id could not be read from pwa\build.json.
 echo [3.5/4] Checking MT5; starting Exness MT5 only if no terminal is open...
 if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt"
@@ -132,9 +140,9 @@ echo [4/4] Freeing ports 8787/8788 from any earlier bridge window (normal; it pr
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8787" ^| findstr "LISTENING"') do taskkill /PID %%P /F >nul 2>&1
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8788" ^| findstr "LISTENING"') do taskkill /PID %%P /F >nul 2>&1
 echo        Preparing your bridge token (one-time; saved as bridge_token.txt)...
-if not exist "%~dp0bridge_token.txt" (
-  %PY% -c "import secrets;print(secrets.token_urlsafe(18))" > "%~dp0bridge_token.txt"
-)
+if exist "%~dp0bridge_token.txt" goto have_bridge_token
+%PY% -c "import secrets;print(secrets.token_urlsafe(18))" > "%~dp0bridge_token.txt"
+:have_bridge_token
 set /p AURUM_BRIDGE_TOKEN=<"%~dp0bridge_token.txt"
 if exist "%~dp0..\LOCAL_HOST_ONLY.txt" if not exist "%~dp0..\server\server.js" (
   echo [X] Local-only package is incomplete. The bridge will NOT fall back to Railway.
@@ -169,10 +177,11 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+set "AURUM_BRIDGE_DIR=%~dp0"
 echo        Creating the desktop icon "Fredrick TRADING (local app)" -- use this one-click launcher.
-powershell -NoProfile -Command "$w=New-Object -ComObject WScript.Shell;$s=$w.CreateShortcut([Environment]::GetFolderPath('Desktop')+'\Fredrick TRADING (local app).lnk');$s.TargetPath='%~dp0..\START_ALL_LOCAL.bat';$s.WorkingDirectory='%~dp0..';$s.Save()" >nul 2>&1
-echo        Installing per-user auto-start (bridge + app open when Windows signs in)...
-powershell -NoProfile -Command "$startup=[Environment]::GetFolderPath('Startup');$shell=New-Object -ComObject WScript.Shell;$s=$shell.CreateShortcut((Join-Path $startup 'Fredrick TRADING AutoStart.lnk'));$s.TargetPath='%~dp0AUTO_START.bat';$s.WorkingDirectory='%~dp0';$s.Save()" >nul 2>&1
+powershell -NoProfile -Command "$b=$env:AURUM_BRIDGE_DIR.TrimEnd('\');$r=Split-Path -Parent $b;$w=New-Object -ComObject WScript.Shell;$s=$w.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Fredrick TRADING (local app).lnk'));$s.TargetPath=(Join-Path $r 'START_ALL_LOCAL.bat');$s.WorkingDirectory=$r;$s.Save()" >nul 2>&1
+echo        Installing per-user auto-start -- bridge and app open when Windows signs in...
+powershell -NoProfile -Command "$b=$env:AURUM_BRIDGE_DIR.TrimEnd('\');$startup=[Environment]::GetFolderPath('Startup');$shell=New-Object -ComObject WScript.Shell;$s=$shell.CreateShortcut((Join-Path $startup 'Fredrick TRADING AutoStart.lnk'));$s.TargetPath=(Join-Path $b 'AUTO_START.bat');$s.WorkingDirectory=$b;$s.Save()" >nul 2>&1
 if errorlevel 1 (
   echo [!] Auto-start shortcut could not be created; check Windows profile permissions.
 ) else (
@@ -182,13 +191,20 @@ echo.
 echo        Starting the bridge. It prints YOUR exact address below.
 echo        On THIS PC:  http://127.0.0.1:8788/app
 echo        Local app uses its same-origin bridge socket on port 8788.
-echo        On a PHONE or tablet (same wifi): use the http://...:8788/app link
+echo        On a PHONE or tablet on same wifi: use the http://...:8788/app link
 echo        the bridge prints -- or the https app with Bridge URL + token.
 echo        Bridge token stored locally in bridge_token.txt; do not share it in chat or screenshots.
 echo        If Windows asks about the firewall: ALLOW python on Private networks.
 echo.
 echo        Starting the bridge in its own visible window...
+set "PY_EXE="
+set /p PY_EXE=<"%~dp0python_runtime.txt"
+if defined PY_EXE if exist "%PY_EXE%" goto launch_bridge_exe
 start "Fredrick TRADING - Exness MT5 Bridge" %PY% "%~dp0mt5_bridge.py"
+goto after_launch_bridge
+:launch_bridge_exe
+start "Fredrick TRADING - Exness MT5 Bridge" "%PY_EXE%" "%~dp0mt5_bridge.py"
+:after_launch_bridge
 set /a bridge_tries=0
 :wait_for_local_bridge
 powershell -NoProfile -Command "try{$r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8788/ready' -TimeoutSec 2;if($r.StatusCode -eq 200 -and $r.Content -match 'AURUM local app bridge ready'){exit 0}}catch{};exit 1" >nul 2>&1

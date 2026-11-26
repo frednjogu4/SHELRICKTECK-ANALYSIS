@@ -105,6 +105,12 @@ test('UPDATE_LOCAL_APP.bat and bridge/UPDATE_LOCAL_APP.ps1 use pure ASCII CRLF a
 
   const batHeader = rawText.slice(0, idx);
   assert.match(batHeader, /\(\r\n[\s\S]*powershell\.exe[\s\S]*exit \/b 1[\s\S]*exit \/b 0\r\n\s*\)\r\n\)\r\n/);
+  const blockBody = batHeader.slice(batHeader.indexOf('(\r\n'));
+  for (const line of blockBody.split('\r\n')) {
+    if (/^\s*echo\b/i.test(line)) {
+      assert.doesNotMatch(line, /[()]/, `Unescaped parenthesis inside parenthesized .bat echo crashes cmd.exe: ${line}`);
+    }
+  }
 });
 
 test('PowerShell updater payload has balanced syntax, TLS 1.2, UseBasicParsing, backup, rollback, dry-run, and canonical GitHub URL', () => {
@@ -151,6 +157,8 @@ test('updater preserves local secrets/data, refuses unrelated processes, never s
   assert.doesNotMatch(rawText, /netsh\s+interface\s+portproxy/i);
   assert.doesNotMatch(rawText, /0\.0\.0\.0/);
   assert.doesNotMatch(ps, /Get-Content[^\r\n]*bridge_token\.txt/);
+  assert.doesNotMatch(ps, /-WindowStyle\s+Hidden/i, 'Hidden WindowStyle suppresses MT5 and Chrome GUI windows on Windows');
+  assert.match(ps, /START_MT5_IF_CLOSED\.ps1/);
 });
 
 test('updater file lists match scripts/refresh_local_update_packages.py across Python, PowerShell, and Node', () => {

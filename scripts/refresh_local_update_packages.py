@@ -33,7 +33,7 @@ PACKAGES = (
 # server/, postbuild reads scripts/ and public/, and
 # START_LOCAL_MARKET_COMMAND_CENTRE.bat needs wrangler.jsonc plus the same
 # sources to run `npm run build` before serving http://127.0.0.1:8788/app.
-PACKAGE_TREES = ("bridge", "server", "src", "scripts", "public", "cloudflare")
+PACKAGE_TREES = ("bridge", "dist", "server", "src", "scripts", "public", "cloudflare")
 PACKAGE_ROOT_FILES = (
     "index.html",
     "vite.config.js",

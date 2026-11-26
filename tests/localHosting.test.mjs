@@ -68,6 +68,20 @@ test('single local launcher runs setup with a diagnostic log and stays private',
   assert.match(auto, /-NoPrompt/);
   assert.match(mt5Start, /Read-Host 'Enter the number to start, or press Enter to skip'/);
   assert.doesNotMatch(launch, /netsh\s+interface\s+portproxy/i);
+
+  /* Regression guards for Windows startup bugs:
+     - never interpolate %~dp0 inside `for /f (...)` (crashes on paths with `(1)` parentheses)
+     - never use `2\>nul` (invalid cmd.exe escape) or `open(...).get('id')` (invalid Python)
+     - reject Windows Store python.exe stub via sys.version_info check
+     - discover Exness's default "MetaTrader 5 EXNESS" folder and Desktop shortcuts */
+  assert.doesNotMatch(bridgeSetup, /2\\>nul/);
+  assert.doesNotMatch(bridgeSetup, /open\([^)]*\)\.get\(/);
+  assert.doesNotMatch(bridgeSetup, /for\s+\/f[^\r\n]*%~dp0/i);
+  assert.match(bridgeSetup, /sys\.version_info\[:2\]/);
+  assert.match(bridgeSetup, /LOCALAPPDATA%\\Programs\\Python/);
+  assert.match(mt5Start, /MetaTrader 5 EXNESS/);
+  assert.match(mt5Start, /GetFolderPath\('Desktop'\)/);
+  assert.match(mt5Start, /-WorkingDirectory \$mt5Dir -WindowStyle Normal/);
 });
 
 test('local bridge URL corrects accidental HTTP scheme only for private/local hosts', () => {

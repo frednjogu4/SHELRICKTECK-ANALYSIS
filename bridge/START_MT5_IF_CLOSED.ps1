@@ -131,33 +131,48 @@ foreach ($root in $registryRoots) {
   }
 }
 
-# Search named Start Menu shortcuts, preferring an Exness-labelled shortcut.
+# Search named Desktop and Start Menu shortcuts, preferring an Exness-labelled shortcut.
 try {
   $shell = New-Object -ComObject WScript.Shell
-  $startMenus = @(
+  $shortcutRoots = @(
+    [Environment]::GetFolderPath('Desktop'),
+    (Join-Path $env:PUBLIC 'Desktop'),
     (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'),
     (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs')
-  )
-  foreach ($folder in $startMenus) {
-    if (!(Test-Path -LiteralPath $folder)) { continue }
+  ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+  foreach ($folder in $shortcutRoots) {
     Get-ChildItem -LiteralPath $folder -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue |
       Where-Object { $_.BaseName -match '(?i)Exness|MetaTrader|MT5' } |
       ForEach-Object {
         try {
           $target = $shell.CreateShortcut($_.FullName).TargetPath
-          $source = if ($_.BaseName -match '(?i)Exness') { 'Exness Start Menu shortcut' } else { 'MetaTrader Start Menu shortcut' }
-          $priority = if ($source -like 'Exness*') { 2 } else { 3 }
+          $isExness = ($_.BaseName -match '(?i)Exness') -or ($target -match '(?i)Exness')
+          $source = if ($isExness) { 'Exness shortcut' } else { 'MetaTrader shortcut' }
+          $priority = if ($isExness) { 2 } else { 3 }
           Add-TerminalCandidate $target $source $priority
         } catch { }
       }
   }
 } catch { }
 
-# Common install locations are a final fallback; no broad disk scan is done.
-$programRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)
-foreach ($base in ($programRoots | Where-Object { $_ } | Select-Object -Unique)) {
-  foreach ($folder in @('MetaTrader 5', 'MetaTrader5', 'Exness MT5', 'Exness')) {
-    Add-TerminalCandidate (Join-Path (Join-Path $base $folder) 'terminal64.exe') 'common installation folder' 4
+# Common install locations and top-level Program Files folders (e.g. "MetaTrader 5 EXNESS"); no broad disk scan is done.
+$programRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA, (Join-Path $env:LOCALAPPDATA 'Programs'))
+foreach ($base in ($programRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)) {
+  foreach ($folder in @('MetaTrader 5 EXNESS', 'Exness MT5', 'Exness MetaTrader 5', 'Exness', 'MetaTrader 5', 'MetaTrader5')) {
+    $isEx = $folder -match '(?i)Exness'
+    Add-TerminalCandidate (Join-Path (Join-Path $base $folder) 'terminal64.exe') ($(if ($isEx) { 'Exness installation folder' } else { 'common installation folder' })) ($(if ($isEx) { 2 } else { 4 }))
+  }
+  foreach ($sub in (Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue)) {
+    if ($sub.Name -match '(?i)Exness|MetaTrader|MT5') {
+      $isEx = $sub.Name -match '(?i)Exness'
+      $exe64 = Join-Path $sub.FullName 'terminal64.exe'
+      $exe32 = Join-Path $sub.FullName 'terminal.exe'
+      if (Test-Path -LiteralPath $exe64 -PathType Leaf) {
+        Add-TerminalCandidate $exe64 ($(if ($isEx) { 'Exness installation folder' } else { 'common installation folder' })) ($(if ($isEx) { 2 } else { 4 }))
+      } elseif (Test-Path -LiteralPath $exe32 -PathType Leaf) {
+        Add-TerminalCandidate $exe32 ($(if ($isEx) { 'Exness installation folder' } else { 'common installation folder' })) ($(if ($isEx) { 2 } else { 4 }))
+      }
+    }
   }
 }
 
@@ -198,7 +213,8 @@ if (!$selected) {
 
 Write-Host ('MT5 is closed; starting: ' + $selected) -ForegroundColor Cyan
 try {
-  $process = Start-Process -FilePath $selected -PassThru
+  $mt5Dir = Split-Path -Parent $selected
+  $process = Start-Process -FilePath $selected -WorkingDirectory $mt5Dir -WindowStyle Normal -PassThru
   Save-TerminalPath $selected
   # Give the GUI time to initialize before the bridge attaches. We do not
   # enter or store any account credentials; sign in to MT5 yourself if needed.

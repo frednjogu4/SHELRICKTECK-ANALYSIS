@@ -154,12 +154,15 @@ function Find-TargetAurumRoot {
     }
   }
 
-  # 2. Check the folder containing UPDATE_LOCAL_APP.bat (or parent of bridge\UPDATE_LOCAL_APP.ps1)
+  # 2. Check the folder containing UPDATE_LOCAL_APP.bat (or parent of bridge\UPDATE_LOCAL_APP.ps1) if already configured
   $selfDir = Normalize-Dir $env:AURUM_UPDATER_DIR
-  if (Test-AurumRoot $selfDir) { return $selfDir }
-  if ($PSScriptRoot) {
-    $psParent = Normalize-Dir (Split-Path -Parent $PSScriptRoot)
-    if (Test-AurumRoot $psParent) { return $psParent }
+  $psParent = if ($PSScriptRoot) { Normalize-Dir (Split-Path -Parent $PSScriptRoot) } else { '' }
+  foreach ($candSelf in @($selfDir, $psParent)) {
+    if ($candSelf -and (Test-AurumRoot $candSelf)) {
+      $hasToken = Test-Path -LiteralPath (Join-Path $candSelf 'bridge\bridge_token.txt') -PathType Leaf
+      $hasNodeMods = Test-Path -LiteralPath (Join-Path $candSelf 'node_modules') -PathType Container
+      if ($hasToken -or $hasNodeMods) { return $candSelf }
+    }
   }
 
   # 3. Check live process on port 4100 (local Express API or its parent RUN_LOCAL_API.bat window)
@@ -214,8 +217,12 @@ function Find-TargetAurumRoot {
         return $cand
       }
     }
-    return $discovered[0]
   }
+
+  # 6. Fall back to a freshly extracted package folder containing UPDATE_LOCAL_APP.bat (or first discovered folder)
+  if (Test-AurumRoot $selfDir) { return $selfDir }
+  if ($psParent -and (Test-AurumRoot $psParent)) { return $psParent }
+  if ($discovered.Count -gt 0) { return $discovered[0] }
 
   throw "Could not automatically locate your existing AURUM local package folder. Move UPDATE_LOCAL_APP.bat into the folder that holds START_ALL_LOCAL.bat and double-click it again."
 }
@@ -240,32 +247,61 @@ function Test-AurumApiHealth {
   }
 }
 
+function Open-AurumLocalAppTab {
+  $appUrl = 'http://127.0.0.1:8788/app'
+  $chromeCandidates = @(
+    (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
+  )
+  foreach ($chromeExe in $chromeCandidates) {
+    if ($chromeExe -and (Test-Path -LiteralPath $chromeExe -PathType Leaf)) {
+      try {
+        Start-Process -FilePath $chromeExe -ArgumentList '--new-tab', $appUrl -WindowStyle Normal | Out-Null
+        return
+      } catch {}
+    }
+  }
+  try {
+    Start-Process -FilePath $appUrl | Out-Null
+  } catch {}
+}
+
 function Start-AurumServices([string]$rootDir, [string]$mode) {
   $hasStartAll = Test-Path -LiteralPath (Join-Path $rootDir 'START_ALL_LOCAL.bat') -PathType Leaf
   $hasCmdCentre = Test-Path -LiteralPath (Join-Path $rootDir 'START_LOCAL_MARKET_COMMAND_CENTRE.bat') -PathType Leaf
   $tokenPath = Join-Path $rootDir 'bridge\bridge_token.txt'
   $pyRuntimePath = Join-Path $rootDir 'bridge\python_runtime.txt'
   $autoStartBat = Join-Path $rootDir 'bridge\AUTO_START.bat'
+  $mt5Script = Join-Path $rootDir 'bridge\START_MT5_IF_CLOSED.ps1'
+  $mt5PathFile = Join-Path $rootDir 'bridge\terminal_path.txt'
 
   if (($mode -eq 'wrangler' -and $hasCmdCentre) -or (-not $hasStartAll -and $hasCmdCentre)) {
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $rootDir 'START_LOCAL_MARKET_COMMAND_CENTRE.bat') + '"') -WorkingDirectory $rootDir | Out-Null
-  } else {
-    $canAutoStart = $false
-    if ((Test-Path -LiteralPath $tokenPath -PathType Leaf) -and (Test-Path -LiteralPath $pyRuntimePath -PathType Leaf) -and (Test-Path -LiteralPath $autoStartBat -PathType Leaf)) {
-      $savedPy = (Get-Content -LiteralPath $pyRuntimePath -TotalCount 1 -ErrorAction SilentlyContinue)
-      if ($savedPy -and (Test-Path -LiteralPath $savedPy.Trim() -PathType Leaf)) {
-        $canAutoStart = $true
-      }
-    }
-    if ($canAutoStart) {
-      $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + $autoStartBat + '"') -WorkingDirectory (Join-Path $rootDir 'bridge') -Wait -PassThru -WindowStyle Hidden
-      if ($p.ExitCode -ne 0) {
-        Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $rootDir 'START_ALL_LOCAL.bat') + '"') -WorkingDirectory $rootDir | Out-Null
-      }
-    } else {
-      Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $rootDir 'START_ALL_LOCAL.bat') + '"') -WorkingDirectory $rootDir | Out-Null
+    Start-Process -FilePath (Join-Path $rootDir 'START_LOCAL_MARKET_COMMAND_CENTRE.bat') -WorkingDirectory $rootDir -WindowStyle Normal | Out-Null
+    return $false
+  }
+
+  if (Test-Path -LiteralPath $mt5Script -PathType Leaf) {
+    try {
+      & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $mt5Script -PathFile $mt5PathFile -NoPrompt | Out-Null
+    } catch {}
+  }
+
+  $canAutoStart = $false
+  if ((Test-Path -LiteralPath $tokenPath -PathType Leaf) -and (Test-Path -LiteralPath $pyRuntimePath -PathType Leaf) -and (Test-Path -LiteralPath $autoStartBat -PathType Leaf)) {
+    $savedPy = (Get-Content -LiteralPath $pyRuntimePath -TotalCount 1 -ErrorAction SilentlyContinue)
+    if ($savedPy -and (Test-Path -LiteralPath $savedPy.Trim() -PathType Leaf)) {
+      $canAutoStart = $true
     }
   }
+  if ($canAutoStart) {
+    $p = Start-Process -FilePath $autoStartBat -WorkingDirectory (Join-Path $rootDir 'bridge') -Wait -PassThru -WindowStyle Normal
+    if ($p.ExitCode -eq 0) {
+      return $true
+    }
+  }
+  Start-Process -FilePath (Join-Path $rootDir 'START_ALL_LOCAL.bat') -WorkingDirectory $rootDir -WindowStyle Normal | Out-Null
+  return $false
 }
 
 function Restore-AurumBackup([string]$rootDir, [string]$backupDir) {
@@ -602,12 +638,12 @@ try {
 
     if (-not $skipRestart) {
       Write-UpdateLog "[6/7] Restarting local service ($launchMode) for http://127.0.0.1:8788/app..."
-      Start-AurumServices $targetRoot $launchMode
+      $autoOpenedBrowser = Start-AurumServices $targetRoot $launchMode
 
       Write-UpdateLog "[7/7] Verifying live http://127.0.0.1:8788/build.json matches Build ID $newBuildId..."
       $liveId = ''
       $liveGit = ''
-      $deadline = (Get-Date).AddSeconds(60)
+      $deadline = (Get-Date).AddSeconds(180)
       while ((Get-Date) -lt $deadline) {
         try {
           $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8788/build.json' -Headers @{ 'Cache-Control' = 'no-cache' } -TimeoutSec 3
@@ -625,6 +661,9 @@ try {
 
       if ($liveId -ne $newBuildId) {
         throw "Live verification failed: http://127.0.0.1:8788/build.json reported '$liveId' instead of '$newBuildId'."
+      }
+      if (-not $autoOpenedBrowser) {
+        Start-Sleep -Seconds 2
       }
 
       $apiStatus = if ($launchMode -eq 'bridge') {
@@ -661,7 +700,7 @@ try {
     }
     if (-not $skipRestart) {
       Write-UpdateLog "[ROLLBACK] Restarting restored local service ($restoredId)..."
-      try { Start-AurumServices $targetRoot $launchMode } catch {}
+      try { $null = Start-AurumServices $targetRoot $launchMode } catch {}
     }
     Write-UpdateLog "[ROLLBACK COMPLETE] Restored previous Build ID: $restoredId. Preserved files verified intact."
     throw "Update failed and was automatically rolled back to $restoredId ($errMsg)"
