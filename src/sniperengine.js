@@ -258,3 +258,28 @@ export function checkAutomationSnapshot({ broker, connected, syncTsSec, snapshot
   if (!Array.isArray(positions)) return { ok: false, reason: 'Live MT5 positions are unavailable. Refresh Broker Snapshot before automation.' };
   return { ok: true };
 }
+
+/** Only an explicit, pre-order candidate rejection permits trying another symbol.
+ * A fill, global safety halt, unknown result, or exception stops this cycle. */
+export async function trySniperCandidates(candidates, { canContinue, attempt, onSkip = () => {} }) {
+  const skipped = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (!canContinue()) return { status: 'halted', skipped };
+    if (!candidate?.symbol || seen.has(candidate.symbol)) continue;
+    seen.add(candidate.symbol);
+    const result = await attempt(candidate);
+    if (result?.status !== 'skipped') return { ...result, status: result?.status || 'halted', skipped };
+    skipped.push({ symbol: candidate.symbol, reason: result.reason || 'Setup not executable.' });
+    onSkip(candidate, result);
+  }
+  return { status: 'exhausted', skipped };
+}
+
+/** Rotate the bounded base scan so a permanently rejected first batch cannot starve other markets. */
+export function sniperScanBatch(universe, cursor, breadth) {
+  if (!universe.length) return { symbols: [], nextCursor: 0 };
+  const count = Math.min(universe.length, breadth);
+  const symbols = Array.from({ length: count }, (_, i) => universe[(cursor + i) % universe.length].s);
+  return { symbols, nextCursor: (cursor + count) % universe.length };
+}

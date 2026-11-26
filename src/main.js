@@ -46,7 +46,7 @@ import { buildScheduledNewsAlerts } from './schedulednews.js';
 import { initCommandCentre } from './commandcentre.js';
 import { buildExposureReconcile, renderExposureReconcile } from './exposurereconcile.js';
 import { computeMultiTimeframeConfluence, stampSignalEnvelope, getSignalValidityState, evaluateTradeSupervisor, buildMarketIntelligenceBrief, evaluateSingleTimeframe, resampleCandles } from './supervisor.js';
-import { checkAutomationSnapshot, DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
+import { trySniperCandidates, sniperScanBatch, checkAutomationSnapshot, DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
 import { pushNotificationItem, listNotifications, unreadNotificationCount, markNotificationRead, markAllNotificationsRead, updateNotificationStatusBySignal, clearResolvedNotifications, subscribeNotifications } from './notify.js';
 
 /* The new unified Overview has its own structure; the legacy initializer safely no-ops without its old KPI anchor. */
@@ -6404,6 +6404,7 @@ function disableAutoTrade(reason,text,keepArmed){
   atStatusUI(reason==='off'?'off':reason, text||('stopped ('+(reason||'off')+')'));
   if(reason==='off'){$('#atChk').checked=false;}
 }
+let sniperScanCursor = 0;
 async function autoTradeCycle(){
   if(!atTimer||atBusy||!atSession)return;
   const c=atCfg();
@@ -6425,7 +6426,9 @@ async function autoTradeCycle(){
     if(!c.atSynth){ const noSynth=universe.filter(I=>I.c!=='synthetics'); if(noSynth.length)universe=noSynth; }
     /* Keep existing analysis filter setting, but no execution follows a scan. */
     if(c.prefResale){ const early=universe.filter(I=>I.resale==='usually'); if(early.length)universe=early; }
-    const syms=universe.slice(0,breadth).map(I=>I.s);
+    const batch=sniperScanBatch(universe,sniperExecConfig.execEnabled?sniperScanCursor:0,breadth);
+    if(sniperExecConfig.execEnabled)sniperScanCursor=batch.nextCursor;
+    const syms=batch.symbols;
     const baseSyms=syms.length?syms:INSTR.slice(0,breadth).map(I=>I.s);
     const useSyms=[...new Set([...baseSyms,...sniperWatchSymbols])];
     const results=await scanSignalsPreferred(useSyms);
@@ -6454,7 +6457,17 @@ async function autoTradeCycle(){
     const candidate=sigs[0], source=String(candidate.data_source||candidate.source||'source unavailable');
     atScanInfo={at:Date.now(),checked:results.length,best:{symbol:candidate.symbol,signal:candidate.signal,confidence:candidate.confidence||0,source}};
     if(typeof isSniperExecutionArmedNow==='function'&&isSniperExecutionArmedNow()){
-      await autoEntry(candidate,results);
+      const authorizedKey = getActiveBrokerIdentity().authKey;
+      const outcome = await trySniperCandidates(sigs, {
+        canContinue: () => Boolean(atTimer) && isSniperExecutionArmedNow()
+          && getActiveBrokerIdentity().authKey === authorizedKey && automationSnapshotCheck().ok,
+        attempt: (next) => autoEntry(next,results),
+        onSkip: (next, result) => atStatusUI('scan', `Skipped ${next.symbol} · checking next market`, result.reason),
+      });
+      if(outcome.status==='exhausted'){
+        atStatusUI('scan', `Still hunting · ${outcome.skipped.length} candidate(s) skipped · next scan in ${Math.round(AT_INTERVAL/1000)}s`,
+          outcome.skipped.map(x=>x.symbol+': '+x.reason).join(' | ') || 'No executable setup this cycle.');
+      }
       return;
     }
     atStatusUI('scan','🔍 analysis-only · '+candidate.symbol+' '+candidate.signal+' '+(candidate.confidence||0)+'%','Sniper execution is OFF (monitoring only). Source: '+source+' · no order placed.');
@@ -7667,7 +7680,7 @@ function refreshTicketSupervisorBanner() {
   const I = bySym[sym];
   const ident = getActiveBrokerIdentity();
   const env = getOrStampEnvelopeForSymbol(sym);
-  const mktOpen = I ? marketStatus(I.c, new Date(), I.s).open : true;
+  const mktOpen = I ? marketStatus(I).open : true;
   const reqUsd = parseFloat($('#orderAmount')?.value || '10') || 10;
   const reqLots = parseFloat($('#orderLots')?.value || '') || null;
   const strictMin = Boolean($('#strictMinLotChk')?.checked);
@@ -7935,22 +7948,28 @@ function triggerEmergencyStopAll(sourceLabel = 'UI Button') {
 
 async function executeSupervisedSniperEntry(candidate) {
   const ident = getActiveBrokerIdentity();
-  if (!ident.connected || !isSniperExecutionArmedNow()) return;
-  if (!automationSnapshotCheck().ok) { atStatusUI('wait', 'Automation paused', automationSnapshotCheck().reason); return; }
+  if (!ident.connected || !isSniperExecutionArmedNow()) return { status: 'halted' };
+  if (!automationSnapshotCheck().ok) { atStatusUI('wait', 'Automation paused', automationSnapshotCheck().reason); return { status: 'halted' }; }
   const cdCheck = sniperRuntime.canStartAutoEntry(sniperExecConfig.cooldownSec);
   if (!cdCheck.ok) {
     atStatusUI('scan', '⏳ Sniper cooldown', cdCheck.reason);
-    return;
+    return { status: 'halted', reason: cdCheck.reason };
   }
   const sessCheck = isTradingSessionAllowed(sniperExecConfig.sessionFilter);
   if (!sessCheck.ok) {
     atStatusUI('scan', '⏸ Outside session window', `Waiting for ${sessCheck.session}`);
-    return;
+    return { status: 'halted', reason: 'Outside configured trading session.' };
   }
 
   const sym = candidate.symbol;
   const I = bySym[sym];
-  if (!I) return;
+  if (!I) return { status: 'skipped', reason: 'Unknown instrument.' };
+  const session = marketStatus(I);
+  if (!session.open) {
+    const reason = `${sym}: ${session.label} — ${session.detail}`;
+    recordPlatformAudit('SNIPER_SUPERVISOR_GATE', 'MARKET_UNAVAILABLE', { symbol: sym, reason });
+    return { status: 'skipped', reason };
+  }
 
   sniperRuntime.beginAutoEntry();
   try {
@@ -7960,7 +7979,7 @@ async function executeSupervisedSniperEntry(candidate) {
     if (!freshSig || freshSig.error) {
       atStatusUI('wait', 'No fresh signal', freshSig?.error || 'Signal refresh returned no result.');
       sniperRuntime.finishAutoEntry(false);
-      return;
+      return { status: 'skipped', reason: freshSig?.error || 'No fresh signal.' };
     }
     state.mktScan[sym] = freshSig;
     const envelope = getOrStampEnvelopeForSymbol(sym);
@@ -7968,7 +7987,7 @@ async function executeSupervisedSniperEntry(candidate) {
     if ((freshSig.confidence || 0) < sniperExecConfig.minStrength) {
       atStatusUI('wait', 'Waiting for confluence', `${sym}: ${freshSig.confidence || 0}/100; required ${sniperExecConfig.minStrength}/100.`);
       sniperRuntime.finishAutoEntry(false);
-      return;
+      return { status: 'skipped', reason: `Confluence ${freshSig.confidence || 0} below ${sniperExecConfig.minStrength}.` };
     }
 
     let liveBid = I.bid ?? I.p ?? null;
@@ -7977,7 +7996,10 @@ async function executeSupervisedSniperEntry(candidate) {
     if (ident.broker === 'mt5') {
       const q = await bridge.quoteBridge([sym.replace('/', '')]).catch(() => null);
       const q0 = q?.quotes?.[0] || (Array.isArray(q) ? q[0] : null);
-      if (!q0) throw new Error('Live MT5 quote unavailable. No automated order sent.');
+      if (!q0) {
+        sniperRuntime.finishAutoEntry(false);
+        return { status: 'skipped', reason: 'Live MT5 quote unavailable. No automated order sent.' };
+      }
       if (q0) {
         liveBid = Number(q0.bid);
         liveAsk = Number(q0.ask);
@@ -8014,7 +8036,7 @@ async function executeSupervisedSniperEntry(candidate) {
       activeAccountId: ident.accountId,
       expectedEnvironment: ident.environment,
       activeEnvironment: ident.environment,
-      marketOpen: marketStatus(I.c, new Date(), I.s).open,
+      marketOpen: marketStatus(I).open,
       liveBid,
       liveAsk,
       quoteTsMs,
@@ -8045,7 +8067,8 @@ async function executeSupervisedSniperEntry(candidate) {
       recordPlatformAudit('SNIPER_SUPERVISOR_GATE', sup.verdict, { symbol: sym, intended: candidate.signal, reasons: sup.reasons });
       atStatusUI('scan', `🛡 Supervisor ${sup.verdict} · ${sym}`, sup.reasons[0] || '');
       sniperRuntime.finishAutoEntry(false);
-      return;
+      const globalStop = sup.checks.some(c => c.status === 'FAILED' && ['accountIdentity', 'dailyLimits', 'drawdownGuard', 'exposureLimits'].includes(c.name));
+      return { status: globalStop ? 'halted' : 'skipped', reason: sup.reasons.join(' · ') };
     }
 
     if (!isSniperExecutionArmedNow() || getActiveBrokerIdentity().authKey !== ident.authKey || !automationSnapshotCheck().ok) throw new Error('Account authorization or live snapshot changed during analysis. No order sent.');
@@ -8070,8 +8093,9 @@ async function executeSupervisedSniperEntry(candidate) {
       sniperRuntime.finishAutoEntry(true, envelope?.signalId);
       recordPlatformAudit('SNIPER_EXECUTION', 'MT5_FILLED', { symbol: sym, side: freshSig.signal, ticket: fill.ticket, lots: fill.lots, price: fill.price, environment: ident.environment });
       notify(`Sniper ${ident.environment.toUpperCase()} filled`, `${freshSig.signal} ${sym} · #${fill.ticket} · ${fill.lots} lots @ ${fill.price}`, { tag: 'sniper-fill', kind: 'ok', symbol: sym, direction: freshSig.signal, broker: 'MT5', accountMode: ident.environment.toUpperCase(), status: 'EXECUTED', sound: true });
+      atStatusUI('pos', `Sniper filled · ${sym}`, `Broker confirmed MT5 #${fill.ticket}. Waiting for the next cycle.`);
       await refreshMt5Snapshot(false);
-      return;
+      return { status: 'filled' };
     }
 
     if (ident.broker === 'deriv') {
@@ -8100,14 +8124,18 @@ async function executeSupervisedSniperEntry(candidate) {
       if (atSession) atSession.entries = (atSession.entries || 0) + 1;
       sniperRuntime.finishAutoEntry(true, envelope?.signalId);
       recordPlatformAudit('SNIPER_EXECUTION', 'DERIV_FILLED', { symbol: sym, side: freshSig.signal, stake: usdSize, environment: ident.environment });
-      return;
+      atStatusUI('pos', `Sniper filled · ${sym}`, 'Broker confirmed Deriv execution. Waiting for the next cycle.');
+      return { status: 'filled' };
     }
     sniperRuntime.finishAutoEntry(false);
+    return { status: 'halted', reason: 'Unsupported broker.' };
   } catch (err) {
     sniperRuntime.finishAutoEntry(false);
     atStatusUI('err', 'Sniper order not placed', String(err.message || err));
     recordPlatformAudit('SNIPER_ERROR', 'ORDER_REJECTED', { symbol: sym, error: String(err.message || err) });
     notify('Sniper order rejected', String(err.message || err), { tag: 'sniper-err', kind: 'err', symbol: sym });
+    // A submission may have reached the broker. Never try another order after an ambiguous error.
+    return { status: 'halted', reason: String(err.message || err) };
   }
 }
 
