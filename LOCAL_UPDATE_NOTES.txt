@@ -1,3 +1,16 @@
+FREDRICK AURUM LOCAL UPDATE — 26 NOVEMBER 2026 (Build bebef3f1c4e7b — full 21-section platform + dist/bridge sync)
+
+What changed
+- Complete upgraded 21-section Shelricktech AI Trading & Market Intelligence workspace (Build ID bebef3f1c4e7b), synchronized byte-for-byte with live Cloudflare staging (https://cloudflare-staging.frednjogu4.workers.dev/).
+- Both bridge\ (bridge\app.html, bridge\pwa\*) AND dist\ (dist\index.html, dist\AURUM_Workspace.html, dist\build.json, dist\sw.js, dist\_headers, dist\manifest.webmanifest, dist\icons\*) are now packaged directly inside this ZIP and kept in lockstep by UPDATE_LOCAL_APP.bat and npm run update:local. Whether you run START_ALL_LOCAL.bat (Exness MT5 bridge + local API on http://127.0.0.1:8788/app) or START_LOCAL_MARKET_COMMAND_CENTRE.bat (Wrangler dashboard mode on port 8788), both paths serve the identical upgraded build.
+- Service Worker registration now bypasses browser HTTP cache (updateViaCache: 'none'), /sw.js and /build.json are served with no-store headers, and stale caches from earlier builds are purged automatically while preserving local credentials, bridge_token.txt, terminal_path.txt, .env*, and server\data\.
+
+Quick install / update steps
+- Existing local installation: either double-click UPDATE_LOCAL_APP.bat (auto-locates your folder, backs up, updates bridge\ + dist\, restarts port 8788, and verifies Build ID bebef3f1c4e7b), OR extract this ZIP and copy/replace its contents over your existing folder, then restart START_ALL_LOCAL.bat (or START_LOCAL_MARKET_COMMAND_CENTRE.bat).
+- Fresh installation: extract this entire ZIP to a writable folder (e.g. Downloads\FREDRICK_AURUM_LOCAL_UPDATE) and double-click START_ALL_LOCAL.bat.
+
+---
+
 FREDRICK AURUM LOCAL UPDATE — 24 NOVEMBER 2026 (delivery repair)
 
 What changed
