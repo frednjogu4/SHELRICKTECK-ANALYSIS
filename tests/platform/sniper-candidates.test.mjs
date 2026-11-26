@@ -86,7 +86,7 @@ test('actual Sniper entry skips closed forex, then supervises and fills the next
       assert.equal(typeof inst, 'object', 'marketStatus requires the instrument, not its category string');
       return marketStatus(inst, Date.parse('2026-11-28T12:00:00Z'));
     },
-    recordPlatformAudit: (...args) => audits.push(args),
+    recordPlatformAudit: (...args) => audits.push(args), updateNotificationStatusBySignal() {},
     scanSignalsPreferred: async () => [{ confidence: 90, signal: 'BUY', stop_loss: 95, tp1: 110 }],
     state: { mktScan: {}, mt5LivePositions: [] },
     getOrStampEnvelopeForSymbol: () => ({ signalId: 'test-signal' }),

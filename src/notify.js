@@ -89,6 +89,10 @@ export function notify(title, body, opts = {}) {
     dedupeKey: `${tag}:${title}:${body || ''}`,
     title,
     body: body || '',
+    signalType: opts.signalType || 'INFO',
+    source: opts.source || '',
+    entry: opts.entry ?? null, stopLoss: opts.stopLoss ?? null, takeProfit: opts.takeProfit ?? null,
+    expiresAtMs: opts.expiresAtMs || null,
     symbol: opts.symbol || '',
     direction: opts.direction || (kind === 'ok' ? 'BUY' : kind === 'err' ? 'WARN' : 'INFO'),
     strength: opts.strength ?? null,
@@ -130,6 +134,8 @@ export function pushNotificationItem(item = {}, opts = {}) {
     dedupeKey,
     title: String(item.title || 'Market Signal'),
     body: String(item.body || ''),
+    signalType: String(item.signalType || 'INFO'),
+    source: String(item.source || ''),
     symbol: String(item.symbol || ''),
     direction: String(item.direction || 'INFO').toUpperCase(),
     strength: Number.isFinite(Number(item.strength)) ? Math.round(Number(item.strength)) : null,
@@ -144,6 +150,13 @@ export function pushNotificationItem(item = {}, opts = {}) {
     createdAtMs: item.createdAtMs || now,
     expiresAtMs: item.expiresAtMs || null,
   };
+  if (record.signalType === 'ENTRY_SIGNAL' || (record.signalType === 'CONTEXT' && ['WAIT', 'NO TRADE'].includes(record.direction))) {
+    for (const previous of store) {
+      if (previous.signalType === 'ENTRY_SIGNAL' && previous.symbol === record.symbol
+          && previous.broker === record.broker && previous.status === 'ACTIVE'
+          && previous.direction !== record.direction) previous.status = 'INVALIDATED';
+    }
+  }
   store.unshift(record);
   if (store.length > MAX_STORED) store.length = MAX_STORED;
   saveStore();

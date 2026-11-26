@@ -46,6 +46,7 @@ import { buildScheduledNewsAlerts } from './schedulednews.js';
 import { initCommandCentre } from './commandcentre.js';
 import { buildExposureReconcile, renderExposureReconcile } from './exposurereconcile.js';
 import { computeMultiTimeframeConfluence, stampSignalEnvelope, getSignalValidityState, evaluateTradeSupervisor, buildMarketIntelligenceBrief, evaluateSingleTimeframe, resampleCandles } from './supervisor.js';
+import { signalNotificationFields, notificationSignalCandidates } from './notificationsignals.js';
 import { trySniperCandidates, sniperScanBatch, checkAutomationSnapshot, DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
 import { pushNotificationItem, listNotifications, unreadNotificationCount, markNotificationRead, markAllNotificationsRead, updateNotificationStatusBySignal, clearResolvedNotifications, subscribeNotifications } from './notify.js';
 
@@ -1704,8 +1705,9 @@ function emitSignalAlerts(results){
     store.set(key,fingerprint);
     if(signal==='BUY'||signal==='SELL'){
       const details='Market: '+symbol+' · '+signal+' '+(Number(r.confidence)||0)+'% ('+(r.tf||'technical scan')+')\nEntry reference: '+level('entry')+' · SL: '+level('stop_loss')+' · TP1: '+level('tp1')+' · TP2 / exit reference: '+level('tp2')+'\nSource: '+source+'\nAnalysis only — no order was placed. Verify current price and spread before acting.'+(measuredLine(r)?'\n'+measuredLine(r):'');
-      notify('Signal update · '+symbol,details,{tag:'signal-'+symbol+'-'+signal,kind:signal==='BUY'?'ok':'warn'});
+      notify('Signal update · '+symbol,details,{tag:'signal-'+symbol+'-'+signal,kind:signal==='BUY'?'ok':'warn',...signalNotificationFields(r)});
     }else if(previous&&(String(previous).startsWith('BUY|')||String(previous).startsWith('SELL|'))){
+      updateNotificationStatusBySignal(symbol,null,'INVALIDATED','Latest scan withdrew the directional signal.');
       notify('Signal withdrawn · '+symbol,'The latest scan is WAIT. Source: '+source+'. Recheck before acting.',{tag:'signal-'+symbol+'-wait',kind:'warn'});
     }
   }
@@ -3086,7 +3088,9 @@ $('#placeOrderBtn').onclick=placeOrder;
       if (hot.length) {
         notify('Pattern alert · ' + symbol.toUpperCase(),
           hot.map((x) => x.pattern + ' ' + x.direction + ' ' + x.confidence + '% → ' + x.action).join(' · '),
-          { tag: 'patterns', kind: hot[0].action === 'BUY' ? 'ok' : 'err' });
+          { tag: 'patterns', kind: hot[0].action === 'BUY' ? 'ok' : 'err',
+            ...signalNotificationFields({signal:hot[0].action,confidence:hot[0].confidence,source:'Pattern scan'},
+              {symbol:INSTR.find(i=>i.s.replace(/[^A-Z0-9]/g,'')===symbol.toUpperCase().replace(/[^A-Z0-9]/g,''))?.s || '',timeframe:String(gran/60)+'m'}) });
       }
       if (!list.length) toast('No patterns', symbol.toUpperCase() + ' ' + gran + 's has no textbook geometry right now.', 'ok');
       if (cloudConfig()) {
@@ -4204,7 +4208,7 @@ async function azAnalyze() {
     $('#azLoading').classList.add('hidden');
     renderAz(data,meta);
     emitSignalAlerts([data]);
-    notify('Analysis ready',sym+' — '+data.signal+' '+data.confidence+'% · source: '+data.data_source,{tag:'az',kind:'ok'});
+    notify('Analysis ready',sym+' — '+data.signal+' '+data.confidence+'% · source: '+data.data_source,{tag:'az',kind:'ok',...signalNotificationFields(data,{symbol:sym})});
     if(cloudConfig()){
       saveAnalysis('mtf_scan',sym,'MTF',{signal:data.signal,confidence:data.confidence,mtf_signal:data.mtf_signal,data_ok:data.data_ok,data_source:data.data_source});
       saveSignal(Object.assign({},data,{engine:(data.meta&&(data.meta.engines||[])[0])||data.model||(data.meta&&data.meta.mode)||'technical'}));
@@ -4930,7 +4934,7 @@ function renderGoldAnalysis(){
   if(goldLastNotifiedKey!==key){
     const first=!goldLastNotifiedKey;goldLastNotifiedKey=key;try{localStorage.setItem('aurum_gold_signal_last',key);}catch(_e){}
     const msg=goldSignalMessage(d);
-    notify(first?'Gold/USD signal ready':'Gold/USD signal changed',msg,{tag:'gold-signal-'+key,kind:d.signal==='BUY'?'ok':d.signal==='SELL'?'warn':''});
+    notify(first?'Gold/USD signal ready':'Gold/USD signal changed',msg,{tag:'gold-signal-'+key,kind:d.signal==='BUY'?'ok':d.signal==='SELL'?'warn':'',...signalNotificationFields(d,{symbol:'XAU/USD'})});
     pushWA(msg);
   }
 }
@@ -6274,7 +6278,7 @@ function emitSniperSignalAlerts(qualified,allResults){
     if(old&&old.signal===r.signal&&old.source===source)continue;
     const fingerprint=[r.signal,source,'levels-v1'].join('|');
     const details='Market: '+r.symbol+' · '+r.signal+' '+(Number(r.confidence)||0)+'%\nTimeframe: '+String(r.tf||'—')+'\nEntry: '+level(r.symbol,r.entry)+' · SL: '+level(r.symbol,r.stop_loss)+' · TP1: '+level(r.symbol,r.tp1)+' · TP2 / exit: '+level(r.symbol,r.tp2)+'\nSource: '+source+'\nSignal alert only — no order was placed.'+(measuredLine(r)?'\n'+measuredLine(r):'');
-    notify('Sniper entry setup · '+r.symbol,details,{tag:'sniper-'+r.symbol+'-entry',kind:r.signal==='BUY'?'ok':'warn'});
+    notify('Sniper entry setup · '+r.symbol,details,{tag:'sniper-'+r.symbol+'-entry',kind:r.signal==='BUY'?'ok':'warn',...signalNotificationFields(r)});
     active[r.symbol]={signal:r.signal,source,entry:r.entry,stop_loss:r.stop_loss,tp1:r.tp1,tp2:r.tp2,tf:r.tf||'',stage:0,startedAt:Date.now(),fingerprint};
     started.add(r.symbol);
   }
@@ -6287,12 +6291,13 @@ function emitSniperSignalAlerts(qualified,allResults){
     if(!isDaily&&price>0){
       const buy=setup.signal==='BUY',sl=Number(setup.stop_loss),tp1=Number(setup.tp1),tp2=Number(setup.tp2);
       const slHit=sl>0&&(buy?price<=sl:price>=sl),tp1Hit=tp1>0&&(buy?price>=tp1:price<=tp1),tp2Hit=tp2>0&&(buy?price>=tp2:price<=tp2);
-      if(slHit){notify('Sniper SL touched · '+symbol,'Market: '+symbol+' · '+setup.signal+' setup stop level touched at '+level(symbol,price)+' (SL '+level(symbol,sl)+'). Source: '+String(r.data_source||r.source||setup.source)+'. Analysis only — no position was closed.',{tag:'sniper-'+symbol+'-sl',kind:'warn'});setup.closed=true;setup.closedReason='SL';continue;}
-      if(tp1Hit&&!setup.tp1Notified){setup.tp1Notified=true;setup.stage=Math.max(1,Number(setup.stage)||0);notify('Sniper TP1 reached · '+symbol,'Market: '+symbol+' · price '+level(symbol,price)+' reached TP1 '+level(symbol,tp1)+'. TP2/exit reference: '+level(symbol,tp2)+' · SL: '+level(symbol,sl)+'. Source: '+String(r.data_source||r.source||setup.source)+'. Analysis only — no order was closed.',{tag:'sniper-'+symbol+'-tp1',kind:'ok'});}
-      if(tp2Hit){notify('Sniper exit target reached · '+symbol,'Market: '+symbol+' · price '+level(symbol,price)+' reached TP2/exit reference '+level(symbol,tp2)+'. Source: '+String(r.data_source||r.source||setup.source)+'. Analysis only — no position was closed.',{tag:'sniper-'+symbol+'-tp2',kind:'ok'});setup.closed=true;setup.closedReason='TP2';continue;}
+      if(slHit){updateNotificationStatusBySignal(symbol,setup.signal,'INVALIDATED','Setup stop level touched.');notify('Sniper SL touched · '+symbol,'Market: '+symbol+' · '+setup.signal+' setup stop level touched at '+level(symbol,price)+' (SL '+level(symbol,sl)+'). Source: '+String(r.data_source||r.source||setup.source)+'. Analysis only — no position was closed.',{tag:'sniper-'+symbol+'-sl',kind:'warn'});setup.closed=true;setup.closedReason='SL';continue;}
+      if(tp1Hit&&!setup.tp1Notified){updateNotificationStatusBySignal(symbol,setup.signal,'CLOSED','Setup target reached; fresh analysis required.');setup.tp1Notified=true;setup.stage=Math.max(1,Number(setup.stage)||0);notify('Sniper TP1 reached · '+symbol,'Market: '+symbol+' · price '+level(symbol,price)+' reached TP1 '+level(symbol,tp1)+'. TP2/exit reference: '+level(symbol,tp2)+' · SL: '+level(symbol,sl)+'. Source: '+String(r.data_source||r.source||setup.source)+'. Analysis only — no order was closed.',{tag:'sniper-'+symbol+'-tp1',kind:'ok'});}
+      if(tp2Hit){updateNotificationStatusBySignal(symbol,setup.signal,'CLOSED','Setup exit target reached.');notify('Sniper exit target reached · '+symbol,'Market: '+symbol+' · price '+level(symbol,price)+' reached TP2/exit reference '+level(symbol,tp2)+'. Source: '+String(r.data_source||r.source||setup.source)+'. Analysis only — no position was closed.',{tag:'sniper-'+symbol+'-tp2',kind:'ok'});setup.closed=true;setup.closedReason='TP2';continue;}
       setup.lastPrice=price;
     }
     if(!current.has(symbol)){
+      updateNotificationStatusBySignal(symbol,setup.signal,'INVALIDATED','Setup withdrawn.');
       notify('Sniper setup withdrawn · '+symbol,'Market: '+symbol+' no longer meets the selected Sniper filters. No TP/SL touch was confirmed; no order was placed. Latest source: '+String(r.data_source||r.source||setup.source)+'.',{tag:'sniper-'+symbol+'-withdrawn',kind:'warn'});
       delete active[symbol];
     }
@@ -6430,12 +6435,23 @@ async function autoTradeCycle(){
     if(sniperExecConfig.execEnabled)sniperScanCursor=batch.nextCursor;
     const syms=batch.symbols;
     const baseSyms=syms.length?syms:INSTR.slice(0,breadth).map(I=>I.s);
-    const useSyms=[...new Set([...baseSyms,...sniperWatchSymbols])];
+    const ident = getActiveBrokerIdentity();
+    const currentNotificationCandidates = () => notificationSignalCandidates(listNotifications(), {
+      broker: ident.broker, environment: ident.environment, knownSymbols: new Set(INSTR.map(i=>i.s)),
+      instruments: INSTR, allowSynthetics: Boolean(c.atSynth),
+      allowedInstruments: sniperExecConfig.allowedInstruments, allowedTimeframes: sniperExecConfig.allowedTimeframes,
+    });
+    const notificationCandidates = currentNotificationCandidates();
+    const regularSymbols = new Set([...baseSyms,...sniperWatchSymbols]);
+    const notificationBySymbol = new Map(notificationCandidates.map(n=>[n.symbol,n]));
+    // Notification levels never enter an order: reanalyse every added symbol first.
+    const useSyms=[...new Set([...notificationBySymbol.keys(),...regularSymbols])];
     const results=await scanSignalsPreferred(useSyms);
     results.forEach(r=>{state.mktScan[r.symbol]=r;});
     if(state.view==='sniper'){renderSniperMarketList();renderSniperSelectedDetail();}
     const data={results};
     const sigs=(data.results||[]).filter(r=>!r.error
+      &&(regularSymbols.has(r.symbol)||notificationBySymbol.get(r.symbol)?.direction===r.signal)
       &&(r.signal==='BUY'||r.signal==='SELL')
       &&(c.dir==='both'||r.signal===c.dir)
       &&(r.confidence||0)>=c.conf
@@ -6461,7 +6477,12 @@ async function autoTradeCycle(){
       const outcome = await trySniperCandidates(sigs, {
         canContinue: () => Boolean(atTimer) && isSniperExecutionArmedNow()
           && getActiveBrokerIdentity().authKey === authorizedKey && automationSnapshotCheck().ok,
-        attempt: (next) => autoEntry(next,results),
+        attempt: (next) => {
+          if (!regularSymbols.has(next.symbol) && !currentNotificationCandidates().some(n=>n.symbol===next.symbol && n.direction===next.signal)) {
+            return { status: 'skipped', reason: 'Notification expired, resolved or changed before execution.' };
+          }
+          return autoEntry(next,results);
+        },
         onSkip: (next, result) => atStatusUI('scan', `Skipped ${next.symbol} · checking next market`, result.reason),
       });
       if(outcome.status==='exhausted'){
@@ -7457,6 +7478,7 @@ function renderNotificationDrawer() {
         <span class="badge ${cls}">${escHtml(n.status)}</span>
       </div>
       <div class="muted tiny" style="margin-top:4px;line-height:1.45">${escHtml(n.body)}</div>
+      ${n.signalType === 'ENTRY_SIGNAL' ? '<div class="tiny faint">Sniper candidate when current and account-compatible · fresh analysis and all safety checks required; not an order.</div>' : ''}
       <div class="row between wrap tiny faint mono" style="margin-top:6px">
         <span>${escHtml([n.symbol, n.timeframe, n.strength != null ? n.strength + '/100' : '', n.broker !== 'ALL' ? n.broker : ''].filter(Boolean).join(' · ') || 'System')}</span>
         <span>${ts}</span>
@@ -8093,6 +8115,7 @@ async function executeSupervisedSniperEntry(candidate) {
       sniperRuntime.finishAutoEntry(true, envelope?.signalId);
       recordPlatformAudit('SNIPER_EXECUTION', 'MT5_FILLED', { symbol: sym, side: freshSig.signal, ticket: fill.ticket, lots: fill.lots, price: fill.price, environment: ident.environment });
       notify(`Sniper ${ident.environment.toUpperCase()} filled`, `${freshSig.signal} ${sym} · #${fill.ticket} · ${fill.lots} lots @ ${fill.price}`, { tag: 'sniper-fill', kind: 'ok', symbol: sym, direction: freshSig.signal, broker: 'MT5', accountMode: ident.environment.toUpperCase(), status: 'EXECUTED', sound: true });
+      updateNotificationStatusBySignal(sym, freshSig.signal, 'EXECUTED', 'Broker confirmed Sniper entry.');
       atStatusUI('pos', `Sniper filled · ${sym}`, `Broker confirmed MT5 #${fill.ticket}. Waiting for the next cycle.`);
       await refreshMt5Snapshot(false);
       return { status: 'filled' };
@@ -8124,6 +8147,7 @@ async function executeSupervisedSniperEntry(candidate) {
       if (atSession) atSession.entries = (atSession.entries || 0) + 1;
       sniperRuntime.finishAutoEntry(true, envelope?.signalId);
       recordPlatformAudit('SNIPER_EXECUTION', 'DERIV_FILLED', { symbol: sym, side: freshSig.signal, stake: usdSize, environment: ident.environment });
+      updateNotificationStatusBySignal(sym, freshSig.signal, 'EXECUTED', 'Broker confirmed Sniper entry.');
       atStatusUI('pos', `Sniper filled · ${sym}`, 'Broker confirmed Deriv execution. Waiting for the next cycle.');
       return { status: 'filled' };
     }
