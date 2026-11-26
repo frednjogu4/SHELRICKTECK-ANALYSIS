@@ -41,7 +41,7 @@ if not exist node_modules\ws\package.json (
   if errorlevel 1 exit /b 1
 )
 echo [2/2] Starting AURUM API on 127.0.0.1:4100 (not exposed to the LAN)...
-start "Fredrick AURUM Local API" /min "%ComSpec%" /c ""%~dp0RUN_LOCAL_API.bat""
+start "Fredrick AURUM Local API" /min "%ComSpec%" /c "call RUN_LOCAL_API.bat"
 powershell -NoProfile -Command "$until=(Get-Date).AddSeconds(45);while((Get-Date)-lt $until){try{$j=Invoke-RestMethod 'http://127.0.0.1:4100/api/health' -TimeoutSec 2;if($j.ok -eq $true -and $j.live_feed -eq 'deriv-public'){exit 0}}catch{};Start-Sleep -Seconds 1};exit 1" >nul 2>&1
 if errorlevel 1 (
   echo [X] The local API did not answer health checks. See the minimized API window.

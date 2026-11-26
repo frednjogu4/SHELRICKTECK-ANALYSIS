@@ -39,11 +39,15 @@ for %%V in (3.13 3.12 3.11 3.10) do (
 )
 if defined PY goto havepy
 
+set "PY_BIN="
 for %%D in (Python313 Python312 Python311 Python310) do (
-  if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\%%D\python.exe" set "PY="%LOCALAPPDATA%\Programs\Python\%%D\python.exe""
-  if not defined PY if exist "%ProgramFiles%\%%D\python.exe" set "PY="%ProgramFiles%\%%D\python.exe""
+  if not defined PY_BIN if exist "%LOCALAPPDATA%\Programs\Python\%%D\python.exe" set "PY_BIN=%LOCALAPPDATA%\Programs\Python\%%D\python.exe"
+  if not defined PY_BIN if exist "%ProgramFiles%\%%D\python.exe" set "PY_BIN=%ProgramFiles%\%%D\python.exe"
 )
-if defined PY goto havepy
+if defined PY_BIN (
+  set PY="%PY_BIN%"
+  goto havepy
+)
 
 py -3 -c "import sys; raise SystemExit(0 if (3,8)<=sys.version_info[:2]<=(3,13) else (2 if sys.version_info[:2]>=(3,14) else 1))" >nul 2>nul
 if "%ERRORLEVEL%"=="0" (
@@ -131,7 +135,7 @@ if defined AURUM_BUILD_ID echo        Local UI release: %AURUM_BUILD_ID% - match
 if not defined AURUM_BUILD_ID echo [!] Local UI release id could not be read from pwa\build.json.
 echo [3.5/4] Checking MT5; starting Exness MT5 only if no terminal is open...
 if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0START_MT5_IF_CLOSED.ps1" -PathFile "%~dp0terminal_path.txt"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\START_MT5_IF_CLOSED.ps1" -PathFile ".\terminal_path.txt"
 if errorlevel 1 echo [!] MT5 auto-start check failed; the app and bridge will continue. Open MT5 manually if needed.
 if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt"
 if not exist "%~dp0terminal_path.txt" set "AURUM_MT5_PATH="

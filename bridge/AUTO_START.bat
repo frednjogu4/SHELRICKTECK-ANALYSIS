@@ -21,9 +21,11 @@ if exist "%~dp0..\server\server.js" (
   set "AURUM_LOCAL_API_TOKEN="
   set "AURUM_BRIDGE_ALLOWED_ORIGINS=aurum-staging.up.railway.app"
 )
+rem START_LOCAL_API.bat changes the working directory to the package root.
+cd /d "%~dp0"
 rem Start MT5 only if closed; never stop or restart an existing terminal.
 if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0START_MT5_IF_CLOSED.ps1" -PathFile "%~dp0terminal_path.txt" -NoPrompt >nul 2>&1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\START_MT5_IF_CLOSED.ps1" -PathFile ".\terminal_path.txt" -NoPrompt >nul 2>&1
 if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt"
 if not exist "%~dp0terminal_path.txt" set "AURUM_MT5_PATH="
 rem Reuse an already healthy local bridge ONLY when its live /build.json matches this folder's pwa\build.json.
