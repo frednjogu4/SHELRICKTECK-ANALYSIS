@@ -30,7 +30,8 @@ test('entry and auto-close paths use readiness; runtime reason is visible on the
   const watcher = main.slice(main.indexOf('async function runDynamicProfitTargetWatcher'), main.indexOf('function initSniperAndProfitTargetEngine'));
   assert.match(entry, /if \(!automationSnapshotCheck\(\)\.ok\)/);
   assert.match(entry, /Account authorization or live snapshot changed/);
-  assert.match(entry, /if \(!q0\) throw new Error/);
+  assert.match(entry, /if \(!q0\) \{/);
+  assert.match(entry, /status: 'skipped', reason: 'Live MT5 quote unavailable/);
   assert.match(entry, /quoteTsMs = q0.time \? q0.time \* 1000 : 0/);
   assert.match(watcher, /!automationSnapshotCheck\(\)\.ok/);
   assert.match(watcher, /authorizedKey !== ident.authKey/);

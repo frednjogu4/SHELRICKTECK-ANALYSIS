@@ -17,7 +17,7 @@
  *    authentication traffic must not be stored. Browser storage (localStorage,
  *    sessionStorage, IndexedDB) is never cleared.
  */
-const VERSION = 'aurum-local-ba9e1d29107a4';
+const VERSION = 'aurum-local-b51f42e7bd028';
 const VERSION_PREFIX = 'aurum-local-';
 const SHELL = ['/app', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png'];
 
