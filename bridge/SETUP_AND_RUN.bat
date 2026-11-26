@@ -39,11 +39,15 @@ for %%V in (3.13 3.12 3.11 3.10) do (
 )
 if defined PY goto havepy
 
+set "PY_BIN="
 for %%D in (Python313 Python312 Python311 Python310) do (
-  if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\%%D\python.exe" set "PY="%LOCALAPPDATA%\Programs\Python\%%D\python.exe""
-  if not defined PY if exist "%ProgramFiles%\%%D\python.exe" set "PY="%ProgramFiles%\%%D\python.exe""
+  if not defined PY_BIN if exist "%LOCALAPPDATA%\Programs\Python\%%D\python.exe" set "PY_BIN=%LOCALAPPDATA%\Programs\Python\%%D\python.exe"
+  if not defined PY_BIN if exist "%ProgramFiles%\%%D\python.exe" set "PY_BIN=%ProgramFiles%\%%D\python.exe"
 )
-if defined PY goto havepy
+if defined PY_BIN (
+  set PY="%PY_BIN%"
+  goto havepy
+)
 
 py -3 -c "import sys; raise SystemExit(0 if (3,8)<=sys.version_info[:2]<=(3,13) else (2 if sys.version_info[:2]>=(3,14) else 1))" >nul 2>nul
 if "%ERRORLEVEL%"=="0" (
@@ -131,14 +135,16 @@ if defined AURUM_BUILD_ID echo        Local UI release: %AURUM_BUILD_ID% - match
 if not defined AURUM_BUILD_ID echo [!] Local UI release id could not be read from pwa\build.json.
 echo [3.5/4] Checking MT5; starting Exness MT5 only if no terminal is open...
 if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0START_MT5_IF_CLOSED.ps1" -PathFile "%~dp0terminal_path.txt"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\START_MT5_IF_CLOSED.ps1" -PathFile ".\terminal_path.txt"
 if errorlevel 1 echo [!] MT5 auto-start check failed; the app and bridge will continue. Open MT5 manually if needed.
 if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt"
 if not exist "%~dp0terminal_path.txt" set "AURUM_MT5_PATH="
 if defined AURUM_MT5_PATH echo        MT5 target selected; the bridge will attach to that terminal.
 echo [4/4] Freeing ports 8787/8788 from any earlier bridge window (normal; it prints nothing)...
+powershell -NoProfile -Command "$ports=@(8787,8788);foreach($pt in $ports){$cs=Get-NetTCPConnection -LocalPort $pt -State Listen -ErrorAction SilentlyContinue;if($cs){foreach($id in ($cs|Select-Object -ExpandProperty OwningProcess -Unique)){if($id -gt 0){$p=Get-Process -Id $id -ErrorAction SilentlyContinue;if($p -and $p.ProcessName -notmatch '^(?i)terminal(64)?$'){Stop-Process -Id $id -Force -ErrorAction SilentlyContinue}}}}}" >nul 2>&1
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8787" ^| findstr "LISTENING"') do taskkill /PID %%P /F >nul 2>&1
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8788" ^| findstr "LISTENING"') do taskkill /PID %%P /F >nul 2>&1
+timeout /t 1 /nobreak >nul
 echo        Preparing your bridge token (one-time; saved as bridge_token.txt)...
 if exist "%~dp0bridge_token.txt" goto have_bridge_token
 %PY% -c "import secrets;print(secrets.token_urlsafe(18))" > "%~dp0bridge_token.txt"
@@ -207,7 +213,7 @@ start "Fredrick TRADING - Exness MT5 Bridge" "%PY_EXE%" "%~dp0mt5_bridge.py"
 :after_launch_bridge
 set /a bridge_tries=0
 :wait_for_local_bridge
-powershell -NoProfile -Command "try{$r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8788/ready' -TimeoutSec 2;if($r.StatusCode -eq 200 -and $r.Content -match 'AURUM local app bridge ready'){exit 0}}catch{};exit 1" >nul 2>&1
+powershell -NoProfile -Command "try{$r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8788/ready' -TimeoutSec 2;if($r.StatusCode -eq 200 -and $r.Content -match 'AURUM local app bridge ready'){if(-not $env:AURUM_BUILD_ID){exit 0};$b=(Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8788/build.json' -Headers @{'Cache-Control'='no-cache'} -TimeoutSec 2).Content|ConvertFrom-Json;if($b -and [string]$b.id -eq $env:AURUM_BUILD_ID){exit 0}}}catch{};exit 1" >nul 2>&1
 if not errorlevel 1 goto local_bridge_ready
 set /a bridge_tries+=1
 if %bridge_tries% GEQ 60 goto local_bridge_timeout

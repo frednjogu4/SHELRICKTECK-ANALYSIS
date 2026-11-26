@@ -82,6 +82,11 @@ test('single local launcher runs setup with a diagnostic log and stays private',
   assert.match(mt5Start, /MetaTrader 5 EXNESS/);
   assert.match(mt5Start, /GetFolderPath\('Desktop'\)/);
   assert.match(mt5Start, /-WorkingDirectory \$mt5Dir -WindowStyle Normal/);
+  assert.match(launch, /Set-Location -LiteralPath \$root/);
+  assert.match(launch, /& cmd\.exe \/c 'call bridge\\SETUP_AND_RUN\.bat'/);
+  assert.doesNotMatch(launch, /cmd\.exe \/d \/s \/c/);
+  const apiLauncher = text('../START_LOCAL_API.bat');
+  assert.match(apiLauncher, /\/c "call RUN_LOCAL_API\.bat"/);
 });
 
 test('local bridge URL corrects accidental HTTP scheme only for private/local hosts', () => {

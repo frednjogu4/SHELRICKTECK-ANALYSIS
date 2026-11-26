@@ -32,6 +32,20 @@ class LocalUpdatePackageParityTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_zip_entries_use_windows_explorer_compatible_dos_headers(self):
+        for package in PACKAGES:
+            prefix = Path(package).stem + "/"
+            with self.subTest(package=package), zipfile.ZipFile(ROOT / package) as archive:
+                self.assertIsNone(archive.testzip())
+                names = set(archive.namelist())
+                self.assertIn(prefix, names, "Root folder entry must exist for Windows Explorer")
+                for info in archive.infolist():
+                    self.assertEqual(info.create_system, 0, f"{info.filename} must use Windows FAT/DOS create_system=0")
+                    if info.filename.endswith("/"):
+                        self.assertEqual(info.external_attr & 0xFF, 0x10, f"{info.filename} dir attr")
+                    else:
+                        self.assertEqual(info.external_attr & 0xFF, 0x20, f"{info.filename} archive attr")
+
 
 if __name__ == "__main__":
     unittest.main()

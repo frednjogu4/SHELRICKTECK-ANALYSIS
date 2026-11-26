@@ -1,6 +1,7 @@
 @echo off
 setlocal
 title Fredrick TRADING - One-Click Update for http://127.0.0.1:8788/app
+cd /d "%~dp0"
 set "AURUM_UPDATER_BAT=%~f0"
 set "AURUM_UPDATER_DIR=%~dp0"
 set "AURUM_UPDATER_ARGS=%*"
@@ -15,8 +16,8 @@ echo ============================================================
 echo.
 
 (
-  if exist "%~dp0bridge\UPDATE_LOCAL_APP.ps1" (
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0bridge\UPDATE_LOCAL_APP.ps1"
+  if exist "bridge\UPDATE_LOCAL_APP.ps1" (
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\bridge\UPDATE_LOCAL_APP.ps1"
   ) else (
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$raw=[System.IO.File]::ReadAllText($env:AURUM_UPDATER_BAT,[System.Text.Encoding]::UTF8); $m='#'+' === AURUM_PS_UPDATER_PAYLOAD ==='; $i=$raw.IndexOf($m); if($i -lt 0){Write-Error 'Updater payload missing'; exit 1}; & ([ScriptBlock]::Create($raw.Substring($i)))"
   )
@@ -283,7 +284,7 @@ function Test-AurumApiHealth {
 }
 
 function Open-AurumLocalAppTab {
-  $appUrl = 'http://127.0.0.1:8788/app'
+  $appUrl = 'http://127.0.0.1:8788/fresh'
   $chromeCandidates = @(
     (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
     (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
@@ -697,9 +698,7 @@ try {
       if ($liveId -ne $newBuildId) {
         throw "Live verification failed: http://127.0.0.1:8788/build.json reported '$liveId' instead of '$newBuildId'."
       }
-      if (-not $autoOpenedBrowser) {
-        Start-Sleep -Seconds 2
-      }
+      Open-AurumLocalAppTab
 
       $apiStatus = if ($launchMode -eq 'bridge') {
         if (Test-AurumApiHealth) { 'HTTP 200 (ok)' } else { 'starting' }

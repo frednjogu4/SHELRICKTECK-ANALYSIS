@@ -716,6 +716,46 @@ function createReadOnlyWorker({
     return responseJson({ error: 'app_shell_unavailable', detail: 'The app shell is missing from this deployment. Rebuild the UI assets and redeploy.' }, 503);
   }
 
+  async function serveFresh(request, env, url) {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return responseText('Method not allowed', 405, { allow: 'GET, HEAD' });
+    }
+    let targetId = 'latest';
+    try {
+      if (env.ASSETS && typeof env.ASSETS.fetch === 'function') {
+        const bRes = await env.ASSETS.fetch(new Request(new URL('/build.json', url)));
+        if (bRes.ok) {
+          const b = await bRes.json();
+          if (b && typeof b.id === 'string' && /^[a-z0-9_-]{4,32}$/i.test(b.id)) targetId = b.id;
+        }
+      }
+    } catch {}
+    const html = "<!doctype html><meta charset='utf-8'><title>Refreshing workspace...</title>"
+      + "<body style='background:#080c14;color:#e6edf7;font:14px system-ui,sans-serif;padding:24px'>"
+      + "<p id='msg'>Clearing stale browser/Service Worker cache and loading Build " + targetId + "...</p>"
+      + "<script>(async()=>{"
+      + "try{if('serviceWorker' in navigator){const regs=await navigator.serviceWorker.getRegistrations();"
+      + "await Promise.all(regs.map(r=>r.unregister()));}}catch(e){}"
+      + "try{if('caches' in window){const ks=await caches.keys();"
+      + "await Promise.all(ks.map(k=>caches.delete(k)));}}catch(e){}"
+      + "try{await fetch('/app',{cache:'reload'});}catch(e){}"
+      + "location.replace('/app');"
+      + "})();</script></body>";
+    return new Response(request.method === 'HEAD' ? null : html, {
+      status: 200,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store, no-cache, must-revalidate',
+        'clear-site-data': '"cache"',
+        'x-content-type-options': 'nosniff',
+        'x-frame-options': 'DENY',
+        'referrer-policy': 'strict-origin-when-cross-origin',
+        'strict-transport-security': 'max-age=31536000',
+        'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+      }
+    });
+  }
+
   return {
     async fetch(request, env, ctx) {
       const bindings = env || {};
@@ -730,6 +770,9 @@ function createReadOnlyWorker({
         if (path === '/build.json') {
           const response = await serveBuildInfo(request, bindings, url);
           return request.method === 'HEAD' ? withoutBody(response) : response;
+        }
+        if (path === '/fresh' || path === '/fresh/') {
+          return await serveFresh(request, bindings, url);
         }
         return await serveApp(request, bindings, url);
       } catch (e) {

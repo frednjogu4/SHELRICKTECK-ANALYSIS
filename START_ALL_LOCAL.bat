@@ -30,7 +30,7 @@ echo ============================================================
 echo.
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ErrorActionPreference='Continue'; $root=$env:AURUM_ROOT.TrimEnd('\'); $logDir=Join-Path $root 'logs'; New-Item -ItemType Directory -Force -Path $logDir | Out-Null; $log=Join-Path $logDir ('local-startup-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log'); $entry=Join-Path $root 'bridge\SETUP_AND_RUN.bat'; Start-Transcript -Path $log -Force | Out-Null; Write-Host ('Startup log: ' + $log); Write-Host 'Running the complete setup and launch sequence...'; & cmd.exe /d /s /c ('""' + $entry + '""'); $rc=$LASTEXITCODE; Stop-Transcript | Out-Null; if ($null -eq $rc) { $rc=0 }; exit $rc"
+  "$ErrorActionPreference='Continue'; $root=$env:AURUM_ROOT.TrimEnd('\'); Set-Location -LiteralPath $root; $logDir=Join-Path $root 'logs'; New-Item -ItemType Directory -Force -Path $logDir | Out-Null; $log=Join-Path $logDir ('local-startup-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log'); Start-Transcript -Path $log -Force | Out-Null; Write-Host ('Startup log: ' + $log); Write-Host 'Running the complete setup and launch sequence...'; & cmd.exe /c 'call bridge\SETUP_AND_RUN.bat'; $rc=$LASTEXITCODE; Stop-Transcript | Out-Null; if ($null -eq $rc) { $rc=0 }; exit $rc"
 set "RC=%ERRORLEVEL%"
 echo.
 echo Startup sequence ended with exit code %RC%.
