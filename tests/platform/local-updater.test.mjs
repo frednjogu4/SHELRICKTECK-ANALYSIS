@@ -65,25 +65,25 @@ function checkBalancedPowerShell(psSource) {
   assert.equal(stack.length, 0, `Unclosed delimiter(s) in PowerShell payload: ${JSON.stringify(stack)}`);
 }
 
-function makeAurumInstallFixture(baseDir, buildId, extraPayload = 'v1') {
+function makeAurumInstallFixture(baseDir, buildId, extraPayload = 'v1', includeDist = false) {
   mkdirSync(join(baseDir, 'bridge', 'pwa'), { recursive: true });
   mkdirSync(join(baseDir, 'server', 'lib'), { recursive: true });
   mkdirSync(join(baseDir, 'server', 'data'), { recursive: true });
   writeFileSync(join(baseDir, 'package.json'), JSON.stringify({ name: 'aurum-workspace', version: '1.0.0' }));
   writeFileSync(join(baseDir, 'START_ALL_LOCAL.bat'), '@echo off\r\necho start\r\n');
   writeFileSync(join(baseDir, 'bridge', 'mt5_bridge.py'), `# bridge ${extraPayload}\n`);
-  writeFileSync(
-    join(baseDir, 'bridge', 'app.html'),
-    `<!DOCTYPE html><html><head><meta name="aurum-build" content="${buildId}"></head><body>${extraPayload}</body></html>`
-  );
-  writeFileSync(
-    join(baseDir, 'bridge', 'pwa', 'build.json'),
-    JSON.stringify({ id: buildId, version: '1.0.0', git: 'abcdef123456', builtAt: '2026-11-23T00:00:00Z' })
-  );
-  writeFileSync(
-    join(baseDir, 'bridge', 'pwa', 'sw.js'),
-    `const VERSION = 'aurum-local-${buildId}';\n`
-  );
+  const html = `<!DOCTYPE html><html><head><meta name="aurum-build" content="${buildId}"></head><body>${extraPayload}</body></html>`;
+  const manifest = JSON.stringify({ id: buildId, version: '1.0.0', git: 'abcdef123456', builtAt: '2026-11-23T00:00:00Z' });
+  const sw = `const VERSION = 'aurum-local-${buildId}';\n`;
+  writeFileSync(join(baseDir, 'bridge', 'app.html'), html);
+  writeFileSync(join(baseDir, 'bridge', 'pwa', 'build.json'), manifest);
+  writeFileSync(join(baseDir, 'bridge', 'pwa', 'sw.js'), sw);
+  if (includeDist) {
+    mkdirSync(join(baseDir, 'dist'), { recursive: true });
+    writeFileSync(join(baseDir, 'dist', 'index.html'), html);
+    writeFileSync(join(baseDir, 'dist', 'build.json'), manifest);
+    writeFileSync(join(baseDir, 'dist', 'sw.js'), sw);
+  }
   writeFileSync(join(baseDir, 'server', 'server.js'), `// server ${extraPayload}\n`);
   writeFileSync(join(baseDir, 'server', 'lib', 'strength.js'), `// strength ${extraPayload}\n`);
 }
@@ -198,8 +198,10 @@ test('separate-copy simulation: --dry-run, unrelated-port abort, full backup+upd
   try {
     const installDir = join(sandbox, 'installed-copy');
     const candidateDir = join(sandbox, 'candidate-release');
-    makeAurumInstallFixture(installDir, '1111111111111', 'old-release');
-    makeAurumInstallFixture(candidateDir, '2222222222222', 'new-release');
+    makeAurumInstallFixture(installDir, '1111111111111', 'old-release', true);
+    makeAurumInstallFixture(candidateDir, '2222222222222', 'new-release', false);
+
+    const origDistIndexSha = sha256File(join(installDir, 'dist', 'index.html'));
 
     /* Seed local secrets, credentials, env, and historical data that MUST never be touched */
     const tokenPath = join(installDir, 'bridge', 'bridge_token.txt');
@@ -273,6 +275,7 @@ test('separate-copy simulation: --dry-run, unrelated-port abort, full backup+upd
     assert.equal(rollbackRes.restoredBuildId, '1111111111111');
     assert.equal(restartedWithBuildId, '1111111111111', 'rollback must restart service with restored version');
     assert.equal(sha256File(join(installDir, 'bridge', 'app.html')), origAppSha, 'rollback must restore exact previous app.html');
+    assert.equal(sha256File(join(installDir, 'dist', 'index.html')), origDistIndexSha, 'rollback must restore exact previous dist/index.html');
     assert.equal(sha256File(tokenPath), tokenSha);
     assert.equal(sha256File(journalPath), journalSha);
     assert.match(readFileSync(rollbackRes.logPath, 'utf8'), /\[ROLLBACK\]/);
@@ -293,6 +296,16 @@ test('separate-copy simulation: --dry-run, unrelated-port abort, full backup+upd
     assert.equal(
       JSON.parse(readFileSync(join(installDir, 'bridge', 'pwa', 'build.json'), 'utf8')).id,
       '2222222222222'
+    );
+    assert.equal(
+      JSON.parse(readFileSync(join(installDir, 'dist', 'build.json'), 'utf8')).id,
+      '2222222222222',
+      'dist/build.json must sync to the new Build ID alongside bridge/pwa/build.json'
+    );
+    assert.equal(
+      sha256File(join(installDir, 'dist', 'index.html')),
+      sha256File(join(installDir, 'bridge', 'app.html')),
+      'dist/index.html must equal bridge/app.html after update'
     );
     assert.equal(sha256File(tokenPath), tokenSha, 'bridge_token.txt must be untouched');
     assert.equal(sha256File(termPath), termSha, 'terminal_path.txt must be untouched');

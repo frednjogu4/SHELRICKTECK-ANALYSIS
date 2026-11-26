@@ -72,13 +72,20 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/5] Verifying the generated distribution...
+echo [3/5] Verifying the generated distribution and PC bridge parity...
 call npm run verify:dist
 if errorlevel 1 (
   echo [ERROR] dist verification failed. The server will not start.
   pause
   exit /b 1
 )
+call npm run verify:local
+if errorlevel 1 (
+  echo [ERROR] bridge/app.html parity check failed. The server will not start.
+  pause
+  exit /b 1
+)
+node -e "const b=require('./dist/build.json'); console.log('[INFO] Active UI Build ID: '+b.id+' (git: '+(b.git||'n/a')+')');"
 
 echo.
 echo [4/5] Checking local port %PORT%...

@@ -17,7 +17,7 @@
  *    authentication traffic must not be stored. Browser storage (localStorage,
  *    sessionStorage, IndexedDB) is never cleared.
  */
-const VERSION = 'aurum-local-b274d5274cc0a';
+const VERSION = 'aurum-local-bebef3f1c4e7b';
 const VERSION_PREFIX = 'aurum-local-';
 const SHELL = ['/app', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png'];
 
@@ -57,8 +57,8 @@ self.addEventListener('message', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  /* Never cache live API, bridge commands, or release/update probes. */
-  if (url.pathname.startsWith('/api/') || url.pathname === '/bridge' || url.pathname === '/build.json' || url.pathname === '/update-check') return;
+  /* Never cache live API, bridge commands, the SW script itself, or release/update probes. */
+  if (url.pathname.startsWith('/api/') || url.pathname === '/bridge' || url.pathname === '/build.json' || url.pathname === '/update-check' || url.pathname === '/sw.js') return;
   if (e.request.method !== 'GET') return;
   if (url.origin !== self.location.origin) return;
 

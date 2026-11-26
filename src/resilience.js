@@ -62,7 +62,12 @@ export function registerServiceWorker({
   warn = (...args) => console.warn(...args)
 } = {}) {
   if (!nav || !('serviceWorker' in nav) || !loc || !/^https?:$/.test(String(loc.protocol))) return null;
-  return nav.serviceWorker.register(url).catch((error) => {
+  return nav.serviceWorker.register(url, { updateViaCache: 'none' }).then((reg) => {
+    if (reg && typeof reg.update === 'function') {
+      Promise.resolve(reg.update()).catch(() => undefined);
+    }
+    return reg;
+  }).catch((error) => {
     warn('[aurum] Service worker registration failed; the offline shell and app install are unavailable.', (error && error.message) || error);
     return null;
   });

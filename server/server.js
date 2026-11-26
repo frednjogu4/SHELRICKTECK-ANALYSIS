@@ -53,8 +53,13 @@ if (isMain) {
     app.use(express.static(distDir, {
       setHeaders(res, filePath) {
         /* the single-file PWA ships fresh UI with every deploy — never let
-           a browser keep serving a stale app shell after an update */
-        if (String(filePath).endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+           a browser keep serving a stale app shell, service worker, or build manifest */
+        const fp = String(filePath).replace(/\\/g, '/');
+        if (fp.endsWith('/build.json') || fp.endsWith('/sw.js')) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        } else if (fp.endsWith('.html') || fp.endsWith('.webmanifest')) {
+          res.setHeader('Cache-Control', 'no-cache');
+        }
       }
     }));
     app.use((req, res, next) => {

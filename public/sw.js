@@ -57,8 +57,8 @@ self.addEventListener('message', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  /* Never cache live API, bridge commands, or release/update probes. */
-  if (url.pathname.startsWith('/api/') || url.pathname === '/bridge' || url.pathname === '/build.json' || url.pathname === '/update-check') return;
+  /* Never cache live API, bridge commands, the SW script itself, or release/update probes. */
+  if (url.pathname.startsWith('/api/') || url.pathname === '/bridge' || url.pathname === '/build.json' || url.pathname === '/update-check' || url.pathname === '/sw.js') return;
   if (e.request.method !== 'GET') return;
   if (url.origin !== self.location.origin) return;
 

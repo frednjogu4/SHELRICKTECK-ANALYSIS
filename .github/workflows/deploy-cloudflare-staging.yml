@@ -66,3 +66,21 @@ jobs:
             printf '%s\n' "$output" | python3 -c 'import os,sys; s=sys.stdin.read(); secret=os.environ.get("CLOUDFLARE_API_TOKEN", ""); s=s.replace(secret, "[REDACTED]") if secret else s; lines=s.splitlines()[-16:]; msg=" | ".join(lines).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"); print("::error title=Cloudflare staging deploy failed::" + msg)'
             exit "$status"
           fi
+
+      - name: Verify live Cloudflare staging serves the freshly built release ID
+        run: |
+          EXPECTED_ID=$(node -e "console.log(require('./dist/build.json').id)")
+          echo "Expected Build ID: $EXPECTED_ID"
+          LIVE_ID=""
+          for attempt in 1 2 3 4 5 6; do
+            LIVE_ID=$(curl -fsS -H 'Cache-Control: no-cache' "https://cloudflare-staging.frednjogu4.workers.dev/build.json" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>console.log(JSON.parse(s).id||''))" || true)
+            if [ "$LIVE_ID" = "$EXPECTED_ID" ]; then
+              break
+            fi
+            sleep 3
+          done
+          if [ "$LIVE_ID" != "$EXPECTED_ID" ]; then
+            echo "::error title=Staging verification mismatch::Live /build.json reported '$LIVE_ID', expected '$EXPECTED_ID'."
+            exit 1
+          fi
+          echo "Verified live staging /build.json serves Build ID $LIVE_ID"

@@ -171,6 +171,17 @@ test('public/_headers sets the security headers for every static asset', () => {
   }
   assert.ok(Object.keys(rules).length <= 100, 'Cloudflare allows at most 100 header rules');
   for (const line of text.split('\n')) assert.ok(line.length <= 2000, 'Cloudflare allows at most 2,000 characters per line');
+
+  assert.equal(rules['/'] && rules['/']['cache-control'], 'no-cache, must-revalidate', '/ shell must revalidate on every load');
+  assert.equal(rules['/sw.js'] && rules['/sw.js']['cache-control'], 'no-cache, no-store, must-revalidate', '/sw.js must never be HTTP-cached');
+  assert.equal(rules['/manifest.webmanifest'] && rules['/manifest.webmanifest']['cache-control'], 'no-cache, must-revalidate');
+});
+
+test('service worker registration bypasses HTTP cache and sw.js never intercepts itself', () => {
+  const sw = read('public/sw.js');
+  assert.match(sw, /url\.pathname === '\/sw\.js'/, 'sw.js must exclude itself from CacheStorage fetch interception');
+  const resilience = read('src/resilience.js');
+  assert.match(resilience, /updateViaCache:\s*'none'/, 'registerServiceWorker must bypass browser HTTP cache for /sw.js');
 });
 
 test('everything the service worker precaches is a real file or an app-shell path', () => {

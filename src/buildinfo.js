@@ -192,7 +192,22 @@ export function initBuildUpdateWatch(options = {}) {
       '#updateBanner .ub-actions{display:flex;gap:8px;margin-left:auto}';
     if (!doc.getElementById('updateBannerStyle')) doc.head.appendChild(style);
     doc.body.appendChild(banner);
-    const doReload = () => { removeBanner(); (reload || win.location.reload.bind(win.location))(); };
+    const doReload = () => {
+      removeBanner();
+      if (reload) { reload(); return; }
+      const sw = win.navigator && win.navigator.serviceWorker;
+      if (sw && typeof sw.getRegistration === 'function') {
+        Promise.resolve(sw.getRegistration())
+          .then((reg) => {
+            if (reg && reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+            return reg && typeof reg.update === 'function' ? reg.update() : null;
+          })
+          .catch(() => null)
+          .finally(() => win.location.reload());
+        return;
+      }
+      win.location.reload();
+    };
     banner.querySelector('.ub-refresh').addEventListener('click', doReload);
     banner.querySelector('.ub-later').addEventListener('click', () => { removeBanner(); autoRefreshScheduled = false; });
     if (!autoRefreshed && !autoRefreshScheduled) {
