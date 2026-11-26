@@ -244,3 +244,17 @@ export function createSniperRuntime() {
     isOrderInFlight: () => orderInFlight,
   };
 }
+
+/** Authorization is not evidence of a live broker snapshot. Fail closed. */
+export function checkAutomationSnapshot({ broker, connected, syncTsSec, snapshotAt, snapshotFailed, positions }, nowMs = Date.now()) {
+  if (!connected) return { ok: false, reason: 'Broker disconnected. Reconnect the local bridge.' };
+  if (broker !== 'mt5') return { ok: true };
+  if (snapshotFailed) return { ok: false, reason: 'MT5 snapshot refresh failed. Reconnect Exness and refresh the broker snapshot.' };
+  const age = nowMs - Number(syncTsSec) * 1000;
+  const receivedAge = nowMs - Number(snapshotAt);
+  if (!(Number(syncTsSec) > 0) || !(Number(snapshotAt) > 0) || !Number.isFinite(age) || !Number.isFinite(receivedAge) || age < -5000 || receivedAge < -5000 || age > 45000 || receivedAge > 45000) {
+    return { ok: false, reason: 'MT5 account data is stale or unavailable (45s limit). Refresh Broker Snapshot; reconnect Exness if refresh fails.' };
+  }
+  if (!Array.isArray(positions)) return { ok: false, reason: 'Live MT5 positions are unavailable. Refresh Broker Snapshot before automation.' };
+  return { ok: true };
+}
