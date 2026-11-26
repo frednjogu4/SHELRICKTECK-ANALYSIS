@@ -137,8 +137,10 @@ if exist "%~dp0terminal_path.txt" set /p AURUM_MT5_PATH=<"%~dp0terminal_path.txt
 if not exist "%~dp0terminal_path.txt" set "AURUM_MT5_PATH="
 if defined AURUM_MT5_PATH echo        MT5 target selected; the bridge will attach to that terminal.
 echo [4/4] Freeing ports 8787/8788 from any earlier bridge window (normal; it prints nothing)...
+powershell -NoProfile -Command "$ports=@(8787,8788);foreach($pt in $ports){$cs=Get-NetTCPConnection -LocalPort $pt -State Listen -ErrorAction SilentlyContinue;if($cs){foreach($id in ($cs|Select-Object -ExpandProperty OwningProcess -Unique)){if($id -gt 0){$p=Get-Process -Id $id -ErrorAction SilentlyContinue;if($p -and $p.ProcessName -notmatch '^(?i)terminal(64)?$'){Stop-Process -Id $id -Force -ErrorAction SilentlyContinue}}}}}" >nul 2>&1
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8787" ^| findstr "LISTENING"') do taskkill /PID %%P /F >nul 2>&1
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8788" ^| findstr "LISTENING"') do taskkill /PID %%P /F >nul 2>&1
+timeout /t 1 /nobreak >nul
 echo        Preparing your bridge token (one-time; saved as bridge_token.txt)...
 if exist "%~dp0bridge_token.txt" goto have_bridge_token
 %PY% -c "import secrets;print(secrets.token_urlsafe(18))" > "%~dp0bridge_token.txt"
@@ -207,7 +209,7 @@ start "Fredrick TRADING - Exness MT5 Bridge" "%PY_EXE%" "%~dp0mt5_bridge.py"
 :after_launch_bridge
 set /a bridge_tries=0
 :wait_for_local_bridge
-powershell -NoProfile -Command "try{$r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8788/ready' -TimeoutSec 2;if($r.StatusCode -eq 200 -and $r.Content -match 'AURUM local app bridge ready'){exit 0}}catch{};exit 1" >nul 2>&1
+powershell -NoProfile -Command "try{$r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8788/ready' -TimeoutSec 2;if($r.StatusCode -eq 200 -and $r.Content -match 'AURUM local app bridge ready'){if(-not $env:AURUM_BUILD_ID){exit 0};$b=(Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8788/build.json' -Headers @{'Cache-Control'='no-cache'} -TimeoutSec 2).Content|ConvertFrom-Json;if($b -and [string]$b.id -eq $env:AURUM_BUILD_ID){exit 0}}}catch{};exit 1" >nul 2>&1
 if not errorlevel 1 goto local_bridge_ready
 set /a bridge_tries+=1
 if %bridge_tries% GEQ 60 goto local_bridge_timeout

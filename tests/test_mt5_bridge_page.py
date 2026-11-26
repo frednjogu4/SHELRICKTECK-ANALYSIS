@@ -331,6 +331,22 @@ class PcPageTests(unittest.TestCase):
             upstream.shutdown()
             upstream.server_close()
 
+    def test_sw_is_no_store_and_fresh_endpoint_clears_stale_service_worker_cache(self):
+        status_sw, headers_sw, _ = self.get("/sw.js")
+        self.assertEqual(status_sw, 200)
+        self.assertIn("no-store", headers_sw.get("cache-control", ""))
+
+        status, headers, body = self.get("/fresh")
+        self.assertEqual(status, 200)
+        self.assertIn("no-store", headers.get("cache-control", ""))
+        self.assertEqual(headers.get("clear-site-data"), '"cache"')
+        html = body.decode("utf-8")
+        self.assertIn("serviceWorker.getRegistrations", html)
+        self.assertIn("caches.keys", html)
+        self.assertIn("location.replace('/app')", html)
+        self.assertNotIn("localStorage.clear", html)
+        self.assertNotIn("sessionStorage.clear", html)
+
 
 if __name__ == "__main__":
     unittest.main()

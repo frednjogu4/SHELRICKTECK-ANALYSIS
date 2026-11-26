@@ -2468,7 +2468,7 @@ def _start_http_app(port=8788):
                     try:
                         with open(asset_path, "rb") as asset_file:
                             asset = asset_file.read()
-                        cache = "no-cache" if path in ("/sw.js", "/manifest.webmanifest") else "public, max-age=86400"
+                        cache = "no-cache, no-store, must-revalidate" if path in ("/sw.js", "/manifest.webmanifest") else "public, max-age=86400"
                         self._send(200, asset_type, asset, [("Cache-Control", cache), ("X-Content-Type-Options", "nosniff")])
                     except OSError:
                         self._send(404, "text/plain; charset=utf-8", b"PWA asset missing - re-extract the latest local app package")
@@ -2506,6 +2506,29 @@ def _start_http_app(port=8788):
                         self._send(200, "text/html; charset=utf-8", app, extra)
                     else:
                         self._send(404, "text/plain; charset=utf-8", b"app.html missing - re-extract the latest local app package", [("Cache-Control", "no-store")])
+                    return
+                if path in ("/fresh", "/fresh/") and (self.command or "GET").upper() == "GET":
+                    manifest = _read_build_manifest()
+                    target_id = str(manifest.get("id") or "") if isinstance(manifest, dict) else ""
+                    fresh_html = (
+                        "<!doctype html><meta charset='utf-8'><title>Refreshing local workspace...</title>"
+                        "<body style='background:#080c14;color:#e6edf7;font:14px system-ui,sans-serif;padding:24px'>"
+                        "<p id='msg'>Clearing stale browser/Service Worker cache and loading Build "
+                        + (target_id or "latest")
+                        + "...</p><script>(async()=>{"
+                        "try{if('serviceWorker' in navigator){const regs=await navigator.serviceWorker.getRegistrations();"
+                        "await Promise.all(regs.map(r=>r.unregister()));}}catch(e){}"
+                        "try{if('caches' in window){const ks=await caches.keys();"
+                        "await Promise.all(ks.map(k=>caches.delete(k)));}}catch(e){}"
+                        "try{await fetch('/app',{cache:'reload'});}catch(e){}"
+                        "location.replace('/app');"
+                        "})();</script></body>"
+                    ).encode("utf-8")
+                    self._send(200, "text/html; charset=utf-8", fresh_html, [
+                        ("Cache-Control", "no-store, no-cache, must-revalidate"),
+                        ("Clear-Site-Data", '"cache"'),
+                        ("X-Content-Type-Options", "nosniff"),
+                    ])
                     return
                 if path == "/build.json":
                     payload, st = _build_json()

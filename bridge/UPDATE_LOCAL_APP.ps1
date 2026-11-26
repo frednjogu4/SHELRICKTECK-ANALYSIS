@@ -248,7 +248,7 @@ function Test-AurumApiHealth {
 }
 
 function Open-AurumLocalAppTab {
-  $appUrl = 'http://127.0.0.1:8788/app'
+  $appUrl = 'http://127.0.0.1:8788/fresh'
   $chromeCandidates = @(
     (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
     (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
@@ -662,9 +662,7 @@ try {
       if ($liveId -ne $newBuildId) {
         throw "Live verification failed: http://127.0.0.1:8788/build.json reported '$liveId' instead of '$newBuildId'."
       }
-      if (-not $autoOpenedBrowser) {
-        Start-Sleep -Seconds 2
-      }
+      Open-AurumLocalAppTab
 
       $apiStatus = if ($launchMode -eq 'bridge') {
         if (Test-AurumApiHealth) { 'HTTP 200 (ok)' } else { 'starting' }
