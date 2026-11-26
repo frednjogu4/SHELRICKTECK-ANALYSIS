@@ -46,7 +46,7 @@ import { buildScheduledNewsAlerts } from './schedulednews.js';
 import { initCommandCentre } from './commandcentre.js';
 import { buildExposureReconcile, renderExposureReconcile } from './exposurereconcile.js';
 import { computeMultiTimeframeConfluence, stampSignalEnvelope, getSignalValidityState, evaluateTradeSupervisor, buildMarketIntelligenceBrief, evaluateSingleTimeframe, resampleCandles } from './supervisor.js';
-import { DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
+import { checkAutomationSnapshot, DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
 import { pushNotificationItem, listNotifications, unreadNotificationCount, markNotificationRead, markAllNotificationsRead, updateNotificationStatusBySignal, clearResolvedNotifications, subscribeNotifications } from './notify.js';
 
 /* The new unified Overview has its own structure; the legacy initializer safely no-ops without its old KPI anchor. */
@@ -56,6 +56,7 @@ else initCommandCentre();
 const $  = (s,r)=> (r||document).querySelector(s);
 const $$ = (s,r)=> Array.from((r||document).querySelectorAll(s));
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+let sniperRuntimeStatus = 'Waiting for the next signal scan. No order has been placed.';
 
 /* ---------- formatting (null-safe: no data renders as '—') ---------- */
 const fmtMoney=(v,sign)=>{
@@ -860,6 +861,7 @@ async function refreshMt5Snapshot(showToast=false){
   try{
     const [acct,positions]=await Promise.all([bridge.bridgeAccount(),bridge.bridgePositions()]);
     if(state.broker?.type!=='mt5'||epoch!==mt5SnapshotEpoch)return false;
+    if(acct?.type!=='account'||positions?.type!=='positions'||!Array.isArray(positions.list))throw new Error('Incomplete broker snapshot');
     const a=state.broker.account||{};
     state.broker.account=Object.assign({},a,{
       balance:acct.balance,equity:acct.equity,margin:acct.margin,margin_free:acct.margin_free,
@@ -879,6 +881,7 @@ async function refreshMt5Snapshot(showToast=false){
     return true;
   }catch(_e){
     state.mt5SnapshotFailed=true;
+    if(typeof updateAccountTopBar==='function')updateAccountTopBar();
     updateSessionInfo(); updateKpis(); renderMt5BrokerPositions(); paintExposureReconcile();
     if(showToast)toast('MT5 refresh failed','Could not refresh from the local bridge. Last confirmed values remain shown.','err');
     return false;
@@ -6329,6 +6332,8 @@ function atBrokerPath(){
   return null;
 }
 function atStatusUI(kind,text,title){
+  sniperRuntimeStatus = text + (title ? ' — ' + title : '');
+  paintSniperRuntimeStatus();
   const el=$('#atStatus'); if(!el)return;
   const map={off:'gray',armed:'buy',scan:'neutral',pos:'neutral',target:'buy',max:'neutral',loss:'sell',err:'sell',wait:'gray'};
   el.className='badge '+(map[kind]||'gray');
@@ -6406,6 +6411,9 @@ async function autoTradeCycle(){
   atBusy=true;
   try{
     if(Date.now()<atCooldownUntil){ atStatusUI('scan','cool-down after scan failures · still armed','retrying in '+Math.ceil((atCooldownUntil-Date.now())/1000)+'s'); atBusy=false; return; }
+    if(sniperExecConfig.execEnabled && !automationSnapshotCheck().ok){
+      atStatusUI('wait','Automation paused',automationSnapshotCheck().reason); return;
+    }
     const breadth=(c.mode||'active')==='careful'?6:10;
     /* early-exit pool (optional, default OFF): hunt only families Deriv usually
        lets you resell (synthetics). Falls back to the full universe if the pool
@@ -7221,7 +7229,7 @@ function getActiveBrokerIdentity() {
       freeMargin: Number(acct.margin_free),
       marginLevel: Number(acct.margin_level),
       dailyRealizedPl: acct.daily_realized_pl != null ? Number(acct.daily_realized_pl) : null,
-      syncTsSec: acct.ts || Math.floor((state.mt5LastSnapshotAt || Date.now()) / 1000),
+      syncTsSec: acct.ts || 0,
       authKey: buildAccountAuthKey('mt5', id, env),
     };
   }
@@ -7268,6 +7276,20 @@ function getActiveBrokerIdentity() {
     };
   }
   return { connected: false, broker: null, brokerLabel: 'Disconnected', accountId: null, environment: null, authKey: null };
+}
+
+function automationSnapshotCheck() {
+  return checkAutomationSnapshot({ ...getActiveBrokerIdentity(), snapshotAt: state.mt5LastSnapshotAt,
+    snapshotFailed: state.mt5SnapshotFailed, positions: state.mt5LivePositions });
+}
+function paintSniperRuntimeStatus() {
+  const check = automationSnapshotCheck();
+  const paused = (sniperExecConfig.execEnabled || sniperExecConfig.autoProfitCloseEnabled) && !check.ok;
+  const el = $('#sniperRuntimeStatus');
+  if (el) el.textContent = paused ? 'AUTOMATION PAUSED: ' + check.reason : sniperRuntimeStatus;
+  const badge = $('#sniperSupBadge');
+  if (!paused && badge && badge.textContent === 'PAUSED · BROKER DATA') { badge.className = 'badge gray'; badge.textContent = 'DATA RECOVERED · WAITING FOR SCAN'; }
+  if (paused && badge) { badge.className = 'badge wait'; badge.textContent = 'PAUSED · BROKER DATA'; }
 }
 
 function isSniperExecutionArmedNow() {
@@ -7375,6 +7397,9 @@ function updateAccountTopBar() {
     if (sniperExecConfig.emergencyHalted) {
       sniperBadge.className = 'badge sell';
       sniperBadge.textContent = 'EMERGENCY HALTED';
+    } else if ((armed || profitOn) && !automationSnapshotCheck().ok) {
+      sniperBadge.className = 'badge wait';
+      sniperBadge.textContent = 'AUTOMATION PAUSED · BROKER DATA';
     } else if (armed && profitOn) {
       sniperBadge.className = 'badge buy';
       sniperBadge.textContent = `SNIPER ON · +$${Number(sniperExecConfig.netProfitTargetUsd).toFixed(2)} NET`;
@@ -7911,6 +7936,7 @@ function triggerEmergencyStopAll(sourceLabel = 'UI Button') {
 async function executeSupervisedSniperEntry(candidate) {
   const ident = getActiveBrokerIdentity();
   if (!ident.connected || !isSniperExecutionArmedNow()) return;
+  if (!automationSnapshotCheck().ok) { atStatusUI('wait', 'Automation paused', automationSnapshotCheck().reason); return; }
   const cdCheck = sniperRuntime.canStartAutoEntry(sniperExecConfig.cooldownSec);
   if (!cdCheck.ok) {
     atStatusUI('scan', '⏳ Sniper cooldown', cdCheck.reason);
@@ -7932,6 +7958,7 @@ async function executeSupervisedSniperEntry(candidate) {
     const freshArr = await scanSignalsPreferred([sym]);
     const freshSig = freshArr && freshArr[0];
     if (!freshSig || freshSig.error) {
+      atStatusUI('wait', 'No fresh signal', freshSig?.error || 'Signal refresh returned no result.');
       sniperRuntime.finishAutoEntry(false);
       return;
     }
@@ -7939,6 +7966,7 @@ async function executeSupervisedSniperEntry(candidate) {
     const envelope = getOrStampEnvelopeForSymbol(sym);
 
     if ((freshSig.confidence || 0) < sniperExecConfig.minStrength) {
+      atStatusUI('wait', 'Waiting for confluence', `${sym}: ${freshSig.confidence || 0}/100; required ${sniperExecConfig.minStrength}/100.`);
       sniperRuntime.finishAutoEntry(false);
       return;
     }
@@ -7949,10 +7977,11 @@ async function executeSupervisedSniperEntry(candidate) {
     if (ident.broker === 'mt5') {
       const q = await bridge.quoteBridge([sym.replace('/', '')]).catch(() => null);
       const q0 = q?.quotes?.[0] || (Array.isArray(q) ? q[0] : null);
+      if (!q0) throw new Error('Live MT5 quote unavailable. No automated order sent.');
       if (q0) {
         liveBid = Number(q0.bid);
         liveAsk = Number(q0.ask);
-        quoteTsMs = q0.time ? q0.time * 1000 : Date.now();
+        quoteTsMs = q0.time ? q0.time * 1000 : 0;
       }
     }
 
@@ -8019,6 +8048,7 @@ async function executeSupervisedSniperEntry(candidate) {
       return;
     }
 
+    if (!isSniperExecutionArmedNow() || getActiveBrokerIdentity().authKey !== ident.authKey || !automationSnapshotCheck().ok) throw new Error('Account authorization or live snapshot changed during analysis. No order sent.');
     if (ident.broker === 'mt5') {
       const intentId = 'snp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 14);
       const fill = await bridge.placeBridgeOrder({
@@ -8075,6 +8105,7 @@ async function executeSupervisedSniperEntry(candidate) {
     sniperRuntime.finishAutoEntry(false);
   } catch (err) {
     sniperRuntime.finishAutoEntry(false);
+    atStatusUI('err', 'Sniper order not placed', String(err.message || err));
     recordPlatformAudit('SNIPER_ERROR', 'ORDER_REJECTED', { symbol: sym, error: String(err.message || err) });
     notify('Sniper order rejected', String(err.message || err), { tag: 'sniper-err', kind: 'err', symbol: sym });
   }
@@ -8083,11 +8114,12 @@ async function executeSupervisedSniperEntry(candidate) {
 async function runDynamicProfitTargetWatcher() {
   if (!sniperExecConfig.autoProfitCloseEnabled || sniperExecConfig.emergencyHalted || isCloudflareReadonlyMode()) return;
   const ident = getActiveBrokerIdentity();
-  if (!ident.connected) return;
+  if (!ident.connected || !automationSnapshotCheck().ok || sniperExecConfig.authorizedKey !== ident.authKey) return;
 
   if (ident.broker === 'mt5') {
     const list = Array.isArray(state.mt5LivePositions) ? state.mt5LivePositions : [];
     for (const p of list) {
+      if (sniperExecConfig.emergencyHalted || !sniperExecConfig.autoProfitCloseEnabled || getActiveBrokerIdentity().authKey !== ident.authKey || !automationSnapshotCheck().ok) return;
       const posKey = `mt5:${p.ticket}`;
       const check = evaluatePositionProfitTarget({ ...p, posKey }, sniperExecConfig);
       if (!check.eligible) continue;
@@ -8190,6 +8222,8 @@ function initSniperAndProfitTargetEngine() {
         toast('Connect a broker first', 'Connect and verify Deriv or Exness MT5 (DEMO or REAL) before arming Sniper execution.', 'err');
         return;
       }
+      const readiness = automationSnapshotCheck();
+      if (!readiness.ok) { e.target.checked = false; toast('Cannot arm Sniper', readiness.reason, 'warn'); paintSniperRuntimeStatus(); return; }
       sniperExecConfig.emergencyHalted = false;
       sniperExecConfig.authorizedKey = ident.authKey;
       sniperExecConfig.authorizedBy = state.user || 'local-operator';
@@ -8210,6 +8244,16 @@ function initSniperAndProfitTargetEngine() {
   });
 
   $('#autoProfitCloseChk')?.addEventListener('change', (e) => {
+    if (e.target.checked) {
+      const ident = getActiveBrokerIdentity();
+      const readiness = automationSnapshotCheck();
+      if (isCloudflareReadonlyMode() || !readiness.ok || !ident.authKey) {
+        e.target.checked = false;
+        toast('Cannot enable auto-close', readiness.reason || 'A verified local trading account is required.', 'warn');
+        return;
+      }
+      sniperExecConfig.authorizedKey = ident.authKey;
+    }
     sniperExecConfig.emergencyHalted = false;
     sniperExecConfig.autoProfitCloseEnabled = Boolean(e.target.checked);
     sniperExecConfig.netProfitTargetUsd = Math.max(0.25, Number($('#netProfitTargetInput')?.value || 3));
@@ -8677,7 +8721,8 @@ try {
       updateAccountTopBar();
       if (state.view === 'trade') refreshTicketSupervisorBanner();
       if (state.view === 'positions') renderUnifiedOpenPositions();
-      runDynamicProfitTargetWatcher();
+      paintSniperRuntimeStatus();
+      runDynamicProfitTargetWatcher().catch(() => {});
     } catch {}
   }, 2000);
 } catch (initErr) {
