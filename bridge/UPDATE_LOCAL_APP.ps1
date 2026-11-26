@@ -247,7 +247,7 @@ function Start-AurumServices([string]$rootDir, [string]$mode) {
   $pyRuntimePath = Join-Path $rootDir 'bridge\python_runtime.txt'
   $autoStartBat = Join-Path $rootDir 'bridge\AUTO_START.bat'
 
-  if (-not $hasStartAll -and $hasCmdCentre) {
+  if (($mode -eq 'wrangler' -and $hasCmdCentre) -or (-not $hasStartAll -and $hasCmdCentre)) {
     Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + (Join-Path $rootDir 'START_LOCAL_MARKET_COMMAND_CENTRE.bat') + '"') -WorkingDirectory $rootDir | Out-Null
   } else {
     $canAutoStart = $false
@@ -409,6 +409,31 @@ try {
       $rel = $f.FullName.Substring($srcRoot.Length).TrimStart('\', '/') -replace '\\', '/'
       if (Test-IsPreservedRel $rel) { continue }
       $candidateList.Add([PSCustomObject]@{ Rel = $rel; Src = $f.FullName })
+    }
+  }
+  $distMirrorPairs = @(
+    @('dist/index.html', 'bridge/app.html'),
+    @('dist/AURUM_Workspace.html', 'bridge/app.html'),
+    @('dist/build.json', 'bridge/pwa/build.json'),
+    @('dist/sw.js', 'bridge/pwa/sw.js'),
+    @('dist/manifest.webmanifest', 'bridge/pwa/manifest.webmanifest'),
+    @('dist/_headers', 'public/_headers'),
+    @('dist/icons/icon-192.png', 'bridge/pwa/icons/icon-192.png'),
+    @('dist/icons/icon-512.png', 'bridge/pwa/icons/icon-512.png'),
+    @('dist/icons/icon-maskable-512.png', 'bridge/pwa/icons/icon-maskable-512.png'),
+    @('dist/icons/apple-touch-icon.png', 'bridge/pwa/icons/apple-touch-icon.png'),
+    @('dist/icons/favicon-32.png', 'bridge/pwa/icons/favicon-32.png')
+  )
+  foreach ($pair in $distMirrorPairs) {
+    $dRel = $pair[0]
+    $fRel = $pair[1]
+    if (Test-IsPreservedRel $dRel) { continue }
+    $dSrc = Join-Path $srcRoot ($dRel -replace '/', '\')
+    $fSrc = Join-Path $srcRoot ($fRel -replace '/', '\')
+    if (Test-Path -LiteralPath $dSrc -PathType Leaf) {
+      $candidateList.Add([PSCustomObject]@{ Rel = $dRel; Src = $dSrc })
+    } elseif (Test-Path -LiteralPath $fSrc -PathType Leaf) {
+      $candidateList.Add([PSCustomObject]@{ Rel = $dRel; Src = $fSrc })
     }
   }
 

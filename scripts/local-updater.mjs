@@ -31,6 +31,25 @@ export const PACKAGE_TREES = Object.freeze([
   'bridge', 'server', 'src', 'scripts', 'public', 'cloudflare'
 ]);
 
+/**
+ * Built static files under dist/ served by Wrangler (`START_LOCAL_MARKET_COMMAND_CENTRE.bat`)
+ * and Express (`server/server.js`). Kept in lockstep with `bridge/` on every update,
+ * even when updating from a lean archive that ships `bridge/app.html` + `bridge/pwa/*`.
+ */
+export const DIST_MIRROR_PAIRS = Object.freeze([
+  ['dist/index.html', 'bridge/app.html'],
+  ['dist/AURUM_Workspace.html', 'bridge/app.html'],
+  ['dist/build.json', 'bridge/pwa/build.json'],
+  ['dist/sw.js', 'bridge/pwa/sw.js'],
+  ['dist/manifest.webmanifest', 'bridge/pwa/manifest.webmanifest'],
+  ['dist/_headers', 'public/_headers'],
+  ['dist/icons/icon-192.png', 'bridge/pwa/icons/icon-192.png'],
+  ['dist/icons/icon-512.png', 'bridge/pwa/icons/icon-512.png'],
+  ['dist/icons/icon-maskable-512.png', 'bridge/pwa/icons/icon-maskable-512.png'],
+  ['dist/icons/apple-touch-icon.png', 'bridge/pwa/icons/apple-touch-icon.png'],
+  ['dist/icons/favicon-32.png', 'bridge/pwa/icons/favicon-32.png']
+].map((pair) => Object.freeze(pair)));
+
 export const PACKAGE_ROOT_FILES = Object.freeze([
   'index.html',
   'vite.config.js',
@@ -155,6 +174,16 @@ export function collectCanonicalFiles(srcRoot) {
       const rel = relative(srcRoot, full).split(sep).join('/');
       if (isPreservedRel(rel)) continue;
       entries.push({ rel, src: full });
+    }
+  }
+  for (const [distRel, fallbackRel] of DIST_MIRROR_PAIRS) {
+    if (isPreservedRel(distRel)) continue;
+    const directSrc = join(srcRoot, ...distRel.split('/'));
+    const fallbackSrc = join(srcRoot, ...fallbackRel.split('/'));
+    if (existsSync(directSrc) && statSync(directSrc).isFile()) {
+      entries.push({ rel: distRel, src: directSrc });
+    } else if (existsSync(fallbackSrc) && statSync(fallbackSrc).isFile()) {
+      entries.push({ rel: distRel, src: fallbackSrc });
     }
   }
   return entries;
@@ -483,7 +512,9 @@ export async function runLocalUpdate({
         throw new Error(decision.reason);
       }
       if (decision.action === 'stop_aurum') {
-        if (decision.mode === 'wrangler' && !existsSync(join(resolvedTarget, 'START_ALL_LOCAL.bat'))) launchMode = 'wrangler';
+        if (decision.mode === 'wrangler' && (existsSync(join(resolvedTarget, 'START_LOCAL_MARKET_COMMAND_CENTRE.bat')) || !existsSync(join(resolvedTarget, 'START_ALL_LOCAL.bat')))) {
+          launchMode = 'wrangler';
+        }
         toStop.push(item);
       }
     }
@@ -590,6 +621,18 @@ if (invokedDirectly) {
   const dryRun = flag('--dry-run');
   const skipRestart = flag('--no-restart') || dryRun;
   const verifyUrl = opt('--verify-url', 'http://127.0.0.1:8788/build.json');
+
+  const psUpdater = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'bridge', 'UPDATE_LOCAL_APP.ps1');
+  if (process.platform === 'win32' && !skipRestart && existsSync(psUpdater)) {
+    const psArgs = [`--target "${targetRoot}"`];
+    const r = spawnSync('powershell.exe', [
+      '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psUpdater
+    ], {
+      stdio: 'inherit',
+      env: { ...process.env, AURUM_UPDATER_ARGS: psArgs.join(' '), AURUM_UPDATE_ZIP_URL: source }
+    });
+    process.exit(r.status === null ? 1 : r.status);
+  }
 
   runLocalUpdate({ targetRoot, source, dryRun, skipRestart, verifyUrl })
     .then((res) => {

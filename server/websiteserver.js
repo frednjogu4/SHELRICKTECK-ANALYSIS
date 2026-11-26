@@ -39,7 +39,15 @@ async function fileResponse(path) {
     const st = await stat(path);
     if (!st.isFile()) return null;
     const body = await readFile(path);
-    return { status: 200, headers: { 'content-type': MIME[extname(path)] || 'application/octet-stream', 'content-length': body.length }, body };
+    const norm = String(path).replace(/\\/g, '/');
+    const cacheControl = (norm.endsWith('/build.json') || norm.endsWith('/sw.js'))
+      ? 'no-cache, no-store, must-revalidate'
+      : (norm.endsWith('.html') || norm.endsWith('.webmanifest'))
+        ? 'no-cache, must-revalidate'
+        : undefined;
+    const headers = { 'content-type': MIME[extname(path)] || 'application/octet-stream', 'content-length': body.length };
+    if (cacheControl) headers['cache-control'] = cacheControl;
+    return { status: 200, headers, body };
   } catch {
     return null;
   }

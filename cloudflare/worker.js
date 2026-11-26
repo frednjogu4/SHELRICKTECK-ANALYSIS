@@ -705,7 +705,13 @@ function createReadOnlyWorker({
     const shell = await assets.fetch(new Request(new URL('/', url), { method: request.method, headers: request.headers }));
     /* 2xx covers a full (200) or partial (206, Range request) page; 304 is a
        cache revalidation. Anything else means the build has no index.html. */
-    if (shell.ok || shell.status === 304) return shell;
+    if (shell.status === 304) return shell;
+    if (shell.ok) {
+      if (shell.headers.get('cache-control')) return shell;
+      const headers = new Headers(shell.headers);
+      headers.set('cache-control', 'no-cache, must-revalidate');
+      return new Response(shell.body, { status: shell.status, statusText: shell.statusText, headers });
+    }
     log('error', 'app_shell_unavailable', { path: url.pathname, status: shell.status });
     return responseJson({ error: 'app_shell_unavailable', detail: 'The app shell is missing from this deployment. Rebuild the UI assets and redeploy.' }, 503);
   }
