@@ -6,10 +6,12 @@ import { initCommandCentre } from '../../src/commandcentre.js';
 test('Command Centre mirrors existing overview values and previews without inventing market data', () => {
   const dom = new JSDOM(`<!doctype html><html><head></head><body>
     <section id="view-overview">
+      <div class="view-head">Legacy overview heading</div>
+      <div class="grid c4" id="ovKpis"></div>
+      <div class="split section-gap" id="legacyOverviewPanels">Legacy movers and signals</div>
       <div id="feedText">Deriv feed · connected</div>
       <div id="derivPill">Deriv connected</div>
       <div id="mt5Status">Not connected</div>
-      <div id="ovKpis"></div>
       <div id="ovMovers"><div class="mover"><b>BTC/USD</b><span data-px>60,500</span></div></div>
       <div id="ovSignals"><div class="mini-signal"><b>EUR/USD</b><span>WAIT</span></div></div>
       <div id="ovPositions"><p>No app-recorded open positions.</p></div>
@@ -25,6 +27,10 @@ test('Command Centre mirrors existing overview values and previews without inven
   const root = document.getElementById('shelrick-command-centre');
   assert.ok(root);
   assert.equal(root.querySelectorAll('.cc-kpi').length, 4);
+  const style = document.getElementById('shelrick-command-centre-style');
+  assert.ok(style?.textContent.includes('#view-overview > :not(#shelrick-command-centre)'));
+  assert.ok(document.getElementById('legacyOverviewPanels'), 'legacy panels remain in the DOM for existing renderers');
+  assert.ok(document.getElementById('ovKpis'), 'legacy KPI source remains available to existing renderers');
   assert.equal(root.querySelector('.cc-kpi-value').textContent, '$10,000.00');
   assert.match(root.querySelector('#ccMovers').textContent, /BTC\/USD/);
   assert.match(root.querySelector('#ccSignals').textContent, /WAIT/);
