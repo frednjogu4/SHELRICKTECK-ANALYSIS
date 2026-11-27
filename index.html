@@ -2183,13 +2183,13 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
             <label class="field" style="margin:0"><span>Min confluence (50–95)</span><input class="input mono sm" id="sniperMinScore" type="number" min="50" max="95" step="1" value="75"></label>
             <label class="field" style="margin:0"><span>Position sizing mode</span>
               <select class="input sm" id="sniperSizingMode">
-                <option value="fixed_usd" selected>Fixed USD stake/notional</option>
+                <option value="fixed_usd" selected>Fixed USD notional (MT5) / stake (Deriv)</option>
                 <option value="fixed_lots">Fixed MT5 Lots</option>
-                <option value="risk_pct">% of Account Equity</option>
+                <option value="risk_pct">% equity as notional (not stop-loss risk)</option>
               </select>
             </label>
-            <label class="field" style="margin:0"><span>Fixed USD / Stake ($)</span><input class="input mono sm" id="sniperFixedUsd" type="number" min="1" step="1" value="10"></label>
-            <label class="field" style="margin:0"><span>Fixed MT5 Lots / Risk %</span><input class="input mono sm" id="sniperFixedLots" type="number" min="0.01" step="0.01" value="0.01"></label>
+            <label class="field" style="margin:0"><span>USD notional (MT5) / stake (Deriv)</span><input class="input mono sm" id="sniperFixedUsd" type="number" min="1" step="1" value="10"></label>
+            <label class="field" style="margin:0"><span>Fixed MT5 lots (lots mode only)</span><input class="input mono sm" id="sniperFixedLots" type="number" min="0.01" step="0.01" value="0.01"></label>
             <label class="field" style="margin:0"><span>Max concurrent positions</span><input class="input mono sm" id="sniperMaxPos" type="number" min="1" max="20" value="3"></label>
             <label class="field" style="margin:0"><span>Max daily trades</span><input class="input mono sm" id="sniperMaxDaily" type="number" min="1" max="100" value="10"></label>
             <label class="field" style="margin:0"><span>Daily profit target ($)</span><input class="input mono sm" id="sniperDailyProfit" type="number" min="0" step="1" value="50"></label>
@@ -2207,6 +2207,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
             </label>
             <label class="field" style="margin:0"><span>Entry cooldown (sec)</span><input class="input mono sm" id="sniperCooldownSec" type="number" min="10" max="3600" step="5" value="60"></label>
           </div>
+          <div class="notice warn tiny" id="sniperSizingHelp" role="status" aria-live="polite" style="margin-top:12px">MT5 sizes trades in lots. USD notional exposure, required margin, maximum loss and the net-profit target are different amounts. Broker minimums and margin checks cannot be bypassed.</div>
           <div class="row between wrap" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-soft);gap:10px">
             <label class="row tiny" style="gap:7px;cursor:pointer">
               <input type="checkbox" id="sniperNewsPauseChk" checked>
