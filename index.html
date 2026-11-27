@@ -2167,9 +2167,18 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               <option value="ALL">All markets</option>
               <option value="FOREX">Forex only</option>
               <option value="INDICES">Stock indices only</option>
+              <option value="SELECTED">Selected markets only</option>
             </select>
             <span class="hint" id="sniperMarketScopeHint">Choose the market group, then Save Sniper Rules. Applies to Sniper scans, watched markets and notification candidates—not other analysis pages or management of existing positions. All markets keeps your existing synthetic-market exclusions and broker restrictions.</span>
           </label>
+          <div class="hidden" id="sniperSelectedMarketPicker" style="margin-bottom:12px">
+            <label class="field"><span>Choose exact markets to scan</span>
+              <input class="input sm" type="search" id="sniperMarketSearchInput" placeholder="Search EUR/USD, Gold, US30…" aria-controls="sniperMarketChoices">
+            </label>
+            <div id="sniperMarketChoices" role="group" aria-label="Exact markets for Sniper scans" style="max-height:220px;overflow-y:auto;border:1px solid var(--border-soft);border-radius:8px"></div>
+            <div class="hint" id="sniperMarketSelectionCount" role="status" aria-live="polite">Select one market to scan only that market, or select several.</div>
+            <div class="hint">Your selection limits Sniper scans and new entries, including notification candidates. Empty selection never falls back to all markets. Existing broker, synthetic-market and safety restrictions still apply.</div>
+          </div>
           <div class="grid c4" style="gap:12px">
             <label class="field" style="margin:0"><span>Min confluence (50–95)</span><input class="input mono sm" id="sniperMinScore" type="number" min="50" max="95" step="1" value="75"></label>
             <label class="field" style="margin:0"><span>Position sizing mode</span>

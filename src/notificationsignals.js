@@ -18,7 +18,7 @@ export function signalNotificationFields(reading = {}, { symbol = reading.symbol
   };
 }
 
-export function notificationSignalCandidates(items, { broker, environment, knownSymbols, allowSynthetics = false, instruments = [], allowedInstruments = [], allowedTimeframes = [], marketScope = 'ALL' }, nowMs = Date.now()) {
+export function notificationSignalCandidates(items, { broker, environment, knownSymbols, allowSynthetics = false, instruments = [], allowedInstruments = [], allowedTimeframes = [], marketScope = 'ALL', selectedMarkets = [] }, nowMs = Date.now()) {
   const selected = new Map();
   const categories = new Map(instruments.map(i => [i.s, i.c]));
   const brokerName = String(broker || '').toUpperCase();
@@ -29,7 +29,7 @@ export function notificationSignalCandidates(items, { broker, environment, known
     if (!(Number(n.createdAtMs) > 0) || !Number.isFinite(age) || age < 0 || age > NOTIFICATION_SIGNAL_MAX_AGE_MS || !Number.isFinite(expiry) || expiry <= nowMs) continue;
     if (n.broker !== 'ALL' && n.broker !== brokerName && !(brokerName === 'MT5' && n.broker === 'EXNESS MT5')) continue;
     if (n.accountMode && n.accountMode !== String(environment || '').toUpperCase()) continue;
-    if (!sniperMarketAllowed({ c: categories.get(n.symbol) }, marketScope)) continue;
+    if (!sniperMarketAllowed({ s: n.symbol, c: categories.get(n.symbol) }, marketScope, selectedMarkets)) continue;
     if (!allowSynthetics && categories.get(n.symbol) === 'synthetics') continue;
     if (allowedInstruments.length && !allowedInstruments.includes(n.symbol)) continue;
     const frames = String(n.timeframe || '').toLowerCase().match(/\b\d+[mhd]\b/g) || [];

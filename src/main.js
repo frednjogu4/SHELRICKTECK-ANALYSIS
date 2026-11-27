@@ -6424,7 +6424,7 @@ async function autoTradeCycle(){
     /* early-exit pool (optional, default OFF): hunt only families Deriv usually
        lets you resell (synthetics). Falls back to the full universe if the pool
        has no live prices yet — the sniper never dead-ends. */
-    const scopedInstruments=INSTR.filter(I=>sniperMarketAllowed(I,sniperExecConfig.marketScope)
+    const scopedInstruments=INSTR.filter(I=>sniperMarketAllowed(I,sniperExecConfig.marketScope,sniperExecConfig.selectedMarkets)
       &&(!sniperExecConfig.allowedInstruments?.length||sniperExecConfig.allowedInstruments.includes(I.s))
       &&(c.atSynth||I.c!=='synthetics'));
     let universe=scopedInstruments.filter(I=>I.p!=null||I.c==='indices'); /* index CFDs can be scanned via Exness or labelled daily fallback without a Deriv tick */
@@ -6442,7 +6442,7 @@ async function autoTradeCycle(){
     const currentNotificationCandidates = () => notificationSignalCandidates(listNotifications(), {
       broker: ident.broker, environment: ident.environment, knownSymbols: new Set(INSTR.map(i=>i.s)),
       instruments: INSTR, allowSynthetics: Boolean(c.atSynth),
-      allowedInstruments: sniperExecConfig.allowedInstruments, allowedTimeframes: sniperExecConfig.allowedTimeframes, marketScope: sniperExecConfig.marketScope,
+      allowedInstruments: sniperExecConfig.allowedInstruments, allowedTimeframes: sniperExecConfig.allowedTimeframes, marketScope: sniperExecConfig.marketScope, selectedMarkets: sniperExecConfig.selectedMarkets,
     });
     const notificationCandidates = currentNotificationCandidates();
     const scopedSymbols = new Set(scopedInstruments.map(i=>i.s));
@@ -7908,6 +7908,28 @@ function initMtfConfluenceUi() {
 }
 
 /* ---------- 6. Automated Sniper Execution & Dynamic Monetary Net-Profit Closure (Sections 5 & 6) ---------- */
+function updateSniperSelectedMarketPicker() {
+  const selected = $('#sniperMarketScope')?.value === 'SELECTED';
+  $('#sniperSelectedMarketPicker')?.classList.toggle('hidden', !selected);
+  const query = String($('#sniperMarketSearchInput')?.value || '').trim().toLowerCase();
+  $$('#sniperMarketChoices [data-market-search]').forEach(row=>{
+    row.classList.toggle('hidden', !row.dataset.marketSearch.includes(query));
+  });
+  const count = $$('#sniperMarketChoices input:checked').length;
+  const status = $('#sniperMarketSelectionCount');
+  if(status)status.textContent=count ? `${count} market(s) selected. Save Sniper Rules to apply.` : 'No markets selected: Selected markets only will scan nothing. Choose a market and save.';
+}
+function renderSniperSelectedMarketPicker() {
+  const choices = $('#sniperMarketChoices');
+  if(!choices)return;
+  const selected = new Set(sniperExecConfig.selectedMarkets || []);
+  choices.innerHTML = INSTR.map(i=>`<label class="row tiny" data-market-search="${escHtml((i.s+' '+i.n).toLowerCase())}" style="gap:8px;padding:6px">
+    <input type="checkbox" value="${escHtml(i.s)}" ${selected.has(i.s)?'checked':''}>
+    <span><b>${escHtml(i.s)}</b> · ${escHtml(i.n)}</span>
+  </label>`).join('');
+  updateSniperSelectedMarketPicker();
+}
+
 function syncSniperUiControls() {
   const armed = isSniperExecutionArmedNow();
   const ident = getActiveBrokerIdentity();
@@ -7929,6 +7951,7 @@ function syncSniperUiControls() {
   if ($('#sniperMaxExp')) $('#sniperMaxExp').value = sniperExecConfig.maxExposureUsd;
   if ($('#sniperSessionFilter')) $('#sniperSessionFilter').value = sniperExecConfig.sessionFilter;
   if ($('#sniperMarketScope')) $('#sniperMarketScope').value = sniperExecConfig.marketScope;
+  renderSniperSelectedMarketPicker();
   if ($('#sniperCooldownSec')) $('#sniperCooldownSec').value = sniperExecConfig.cooldownSec;
   if ($('#sniperNewsPauseChk')) $('#sniperNewsPauseChk').checked = Boolean(sniperExecConfig.pauseOnHighImpactNews);
   if ($('#sniperNewsPreMin')) $('#sniperNewsPreMin').value = sniperExecConfig.newsWindowBeforeMin;
@@ -7995,7 +8018,7 @@ async function executeSupervisedSniperEntry(candidate) {
   const sym = candidate.symbol;
   const I = bySym[sym];
   if (!I) return { status: 'skipped', reason: 'Unknown instrument.' };
-  if (!sniperMarketAllowed(I,sniperExecConfig.marketScope)) return { status: 'skipped', reason: 'Market excluded by your Sniper analysis scope.' };
+  if (!sniperMarketAllowed(I,sniperExecConfig.marketScope,sniperExecConfig.selectedMarkets)) return { status: 'skipped', reason: 'Market excluded by your Sniper analysis scope.' };
   const session = marketStatus(I);
   if (!session.open) {
     const reason = `${sym}: ${session.label} — ${session.detail}`;
@@ -8103,7 +8126,7 @@ async function executeSupervisedSniperEntry(candidate) {
       return { status: globalStop ? 'halted' : 'skipped', reason: sup.reasons.join(' · ') };
     }
 
-    if (!sniperMarketAllowed(I,sniperExecConfig.marketScope)) {
+    if (!sniperMarketAllowed(I,sniperExecConfig.marketScope,sniperExecConfig.selectedMarkets)) {
       sniperRuntime.finishAutoEntry(false);
       return { status: 'skipped', reason: 'Sniper market scope changed during analysis; no order sent.' };
     }
@@ -8250,6 +8273,9 @@ async function runDynamicProfitTargetWatcher() {
 }
 
 function initSniperAndProfitTargetEngine() {
+  $('#sniperMarketScope')?.addEventListener('change', updateSniperSelectedMarketPicker);
+  $('#sniperMarketSearchInput')?.addEventListener('input', updateSniperSelectedMarketPicker);
+  $('#sniperMarketChoices')?.addEventListener('change', updateSniperSelectedMarketPicker);
   const readRulesFromInputs = () => {
     sniperExecConfig = normalizeSniperConfig({
       ...sniperExecConfig,
@@ -8265,6 +8291,7 @@ function initSniperAndProfitTargetEngine() {
       maxExposureUsd: Number($('#sniperMaxExp')?.value || 5000),
       sessionFilter: $('#sniperSessionFilter')?.value || 'ALL',
       marketScope: $('#sniperMarketScope')?.value || 'ALL',
+      selectedMarkets: $$('#sniperMarketChoices input:checked').map(input=>input.value),
       cooldownSec: Number($('#sniperCooldownSec')?.value || 60),
       pauseOnHighImpactNews: Boolean($('#sniperNewsPauseChk')?.checked),
       newsWindowBeforeMin: Number($('#sniperNewsPreMin')?.value || 15),
@@ -8355,7 +8382,7 @@ function initSniperAndProfitTargetEngine() {
     readRulesFromInputs();
     recordPlatformAudit('SNIPER_CONFIG', 'UPDATED_RULES', { minStrength: sniperExecConfig.minStrength, maxDailyLossUsd: sniperExecConfig.maxDailyLossUsd, marketScope: sniperExecConfig.marketScope });
     sniperScanCursor = 0;
-    toast('Sniper rules saved', 'Analysis scope: '+sniperExecConfig.marketScope+'. Applies to the next scan and new entries; existing positions remain managed.', 'ok');
+    toast('Sniper rules saved', 'Analysis scope: '+(sniperExecConfig.marketScope==='SELECTED'?(sniperExecConfig.selectedMarkets.join(', ')||'no markets selected'):sniperExecConfig.marketScope)+'. Applies to the next scan and new entries; existing positions remain managed.', 'ok');
   });
 
   ['#sniperStopAllBtn', '#topBarEmergencyStop', '#secStopAllBtn'].forEach((id) => {
