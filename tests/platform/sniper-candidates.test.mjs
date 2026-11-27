@@ -134,6 +134,14 @@ test('actual Sniper entry skips closed forex, then supervises and fills the next
   };
   assert.equal((await execute(candidates[2])).status, 'skipped');
   assert.equal(submitted.length, 0, 'a scope change during quote fetch must prevent dispatch');
+  ctx.sniperExecConfig.marketScope = 'SELECTED';
+  ctx.sniperExecConfig.selectedMarkets = ['BTC/USD'];
+  ctx.bridge.quoteBridge = async () => {
+    ctx.sniperExecConfig.selectedMarkets = ['EUR/GBP'];
+    return { quotes: [{ bid: 100, ask: 101, time: Date.now() / 1000 }] };
+  };
+  assert.equal((await execute(candidates[2])).status, 'skipped');
+  assert.equal(submitted.length, 0, 'changing exact markets during a quote fetch must prevent dispatch');
   assert.doesNotMatch(main, /marketStatus\(I\.c,/);
   assert.match(main, /trySniperCandidates\(sigs,/);
 });
