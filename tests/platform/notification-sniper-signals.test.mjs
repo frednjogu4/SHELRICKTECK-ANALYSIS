@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { signalNotificationFields, notificationSignalCandidates } from '../../src/notificationsignals.js';
 import { notify, listNotifications, pushNotificationItem, updateNotificationStatusBySignal } from '../../src/notify.js';
-import { trySniperCandidates, sniperScanBatch } from '../../src/sniperengine.js';
+import { sniperMarketAllowed, trySniperCandidates, sniperScanBatch } from '../../src/sniperengine.js';
 
 const now = 1800000000000;
 const context = { broker: 'mt5', environment: 'demo', knownSymbols: new Set(['EUR/USD', 'XAU/USD', 'BTC/USD', 'VOL10']),
@@ -63,7 +63,7 @@ test('scan cycle includes notification-only symbol, reanalyses it, and dispatche
     const ctx={
       atTimer:1,atBusy:false,atSession:{},atCfg:()=>({mode:'active',dir:'both',conf:75}),atCooldownUntil:0,
       sniperExecConfig:{execEnabled:armed,allowedInstruments:[],allowedTimeframes:[]}, automationSnapshotCheck:()=>({ok:true}),
-      INSTR:[instrument],sniperScanCursor:0,sniperScanBatch,sniperWatchSymbols:new Set(),
+      sniperMarketAllowed, INSTR:[instrument],sniperScanCursor:0,sniperScanBatch,sniperWatchSymbols:new Set(),
       getActiveBrokerIdentity:()=>({broker:'mt5',environment:'demo',authKey:'locked'}),
       notificationSignalCandidates,listNotifications:()=>[{...notification,symbol:'XAU/USD'}],
       scanSignalsPreferred:async symbols=>{

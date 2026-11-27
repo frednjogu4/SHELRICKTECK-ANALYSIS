@@ -47,7 +47,7 @@ import { initCommandCentre } from './commandcentre.js';
 import { buildExposureReconcile, renderExposureReconcile } from './exposurereconcile.js';
 import { computeMultiTimeframeConfluence, stampSignalEnvelope, getSignalValidityState, evaluateTradeSupervisor, buildMarketIntelligenceBrief, evaluateSingleTimeframe, resampleCandles } from './supervisor.js';
 import { signalNotificationFields, notificationSignalCandidates } from './notificationsignals.js';
-import { trySniperCandidates, sniperScanBatch, checkAutomationSnapshot, DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
+import { sniperMarketAllowed, trySniperCandidates, sniperScanBatch, checkAutomationSnapshot, DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
 import { pushNotificationItem, listNotifications, unreadNotificationCount, markNotificationRead, markAllNotificationsRead, updateNotificationStatusBySignal, clearResolvedNotifications, subscribeNotifications } from './notify.js';
 
 /* The new unified Overview has its own structure; the legacy initializer safely no-ops without its old KPI anchor. */
@@ -6424,28 +6424,36 @@ async function autoTradeCycle(){
     /* early-exit pool (optional, default OFF): hunt only families Deriv usually
        lets you resell (synthetics). Falls back to the full universe if the pool
        has no live prices yet — the sniper never dead-ends. */
-    let universe=INSTR.filter(I=>I.p!=null||I.c==='indices'); /* index CFDs can be scanned via Exness or labelled daily fallback without a Deriv tick */
+    const scopedInstruments=INSTR.filter(I=>sniperMarketAllowed(I,sniperExecConfig.marketScope)
+      &&(!sniperExecConfig.allowedInstruments?.length||sniperExecConfig.allowedInstruments.includes(I.s))
+      &&(c.atSynth||I.c!=='synthetics'));
+    let universe=scopedInstruments.filter(I=>I.p!=null||I.c==='indices'); /* index CFDs can be scanned via Exness or labelled daily fallback without a Deriv tick */
     /* synthetics (VOL/BOOM/CRASH/STEP) are engineered random-walks — candle
        signals have no edge there, so AUTO skips them unless you explicitly
        re-include them in Automation. Manual trading is never restricted. */
-    if(!c.atSynth){ const noSynth=universe.filter(I=>I.c!=='synthetics'); if(noSynth.length)universe=noSynth; }
+    if(!c.atSynth)universe=universe.filter(I=>I.c!=='synthetics');
     /* Keep existing analysis filter setting, but no execution follows a scan. */
     if(c.prefResale){ const early=universe.filter(I=>I.resale==='usually'); if(early.length)universe=early; }
     const batch=sniperScanBatch(universe,sniperExecConfig.execEnabled?sniperScanCursor:0,breadth);
     if(sniperExecConfig.execEnabled)sniperScanCursor=batch.nextCursor;
     const syms=batch.symbols;
-    const baseSyms=syms.length?syms:INSTR.slice(0,breadth).map(I=>I.s);
+    const baseSyms=syms.length?syms:scopedInstruments.slice(0,breadth).map(I=>I.s);
     const ident = getActiveBrokerIdentity();
     const currentNotificationCandidates = () => notificationSignalCandidates(listNotifications(), {
       broker: ident.broker, environment: ident.environment, knownSymbols: new Set(INSTR.map(i=>i.s)),
       instruments: INSTR, allowSynthetics: Boolean(c.atSynth),
-      allowedInstruments: sniperExecConfig.allowedInstruments, allowedTimeframes: sniperExecConfig.allowedTimeframes,
+      allowedInstruments: sniperExecConfig.allowedInstruments, allowedTimeframes: sniperExecConfig.allowedTimeframes, marketScope: sniperExecConfig.marketScope,
     });
     const notificationCandidates = currentNotificationCandidates();
-    const regularSymbols = new Set([...baseSyms,...sniperWatchSymbols]);
+    const scopedSymbols = new Set(scopedInstruments.map(i=>i.s));
+    const regularSymbols = new Set([...baseSyms,...sniperWatchSymbols].filter(symbol=>scopedSymbols.has(symbol)));
     const notificationBySymbol = new Map(notificationCandidates.map(n=>[n.symbol,n]));
     // Notification levels never enter an order: reanalyse every added symbol first.
     const useSyms=[...new Set([...notificationBySymbol.keys(),...regularSymbols])];
+    if(!useSyms.length){
+      atStatusUI('wait','No markets in the selected Sniper scope','Choose another scope or check the allowed instruments. Scope is never widened automatically.');
+      return;
+    }
     const results=await scanSignalsPreferred(useSyms);
     results.forEach(r=>{state.mktScan[r.symbol]=r;});
     if(state.view==='sniper'){renderSniperMarketList();renderSniperSelectedDetail();}
@@ -7920,6 +7928,7 @@ function syncSniperUiControls() {
   if ($('#sniperMaxDd')) $('#sniperMaxDd').value = sniperExecConfig.maxDrawdownPct;
   if ($('#sniperMaxExp')) $('#sniperMaxExp').value = sniperExecConfig.maxExposureUsd;
   if ($('#sniperSessionFilter')) $('#sniperSessionFilter').value = sniperExecConfig.sessionFilter;
+  if ($('#sniperMarketScope')) $('#sniperMarketScope').value = sniperExecConfig.marketScope;
   if ($('#sniperCooldownSec')) $('#sniperCooldownSec').value = sniperExecConfig.cooldownSec;
   if ($('#sniperNewsPauseChk')) $('#sniperNewsPauseChk').checked = Boolean(sniperExecConfig.pauseOnHighImpactNews);
   if ($('#sniperNewsPreMin')) $('#sniperNewsPreMin').value = sniperExecConfig.newsWindowBeforeMin;
@@ -7986,6 +7995,7 @@ async function executeSupervisedSniperEntry(candidate) {
   const sym = candidate.symbol;
   const I = bySym[sym];
   if (!I) return { status: 'skipped', reason: 'Unknown instrument.' };
+  if (!sniperMarketAllowed(I,sniperExecConfig.marketScope)) return { status: 'skipped', reason: 'Market excluded by your Sniper analysis scope.' };
   const session = marketStatus(I);
   if (!session.open) {
     const reason = `${sym}: ${session.label} — ${session.detail}`;
@@ -8093,6 +8103,10 @@ async function executeSupervisedSniperEntry(candidate) {
       return { status: globalStop ? 'halted' : 'skipped', reason: sup.reasons.join(' · ') };
     }
 
+    if (!sniperMarketAllowed(I,sniperExecConfig.marketScope)) {
+      sniperRuntime.finishAutoEntry(false);
+      return { status: 'skipped', reason: 'Sniper market scope changed during analysis; no order sent.' };
+    }
     if (!isSniperExecutionArmedNow() || getActiveBrokerIdentity().authKey !== ident.authKey || !automationSnapshotCheck().ok) throw new Error('Account authorization or live snapshot changed during analysis. No order sent.');
     if (ident.broker === 'mt5') {
       const intentId = 'snp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 14);
@@ -8250,6 +8264,7 @@ function initSniperAndProfitTargetEngine() {
       maxDrawdownPct: Number($('#sniperMaxDd')?.value || 10),
       maxExposureUsd: Number($('#sniperMaxExp')?.value || 5000),
       sessionFilter: $('#sniperSessionFilter')?.value || 'ALL',
+      marketScope: $('#sniperMarketScope')?.value || 'ALL',
       cooldownSec: Number($('#sniperCooldownSec')?.value || 60),
       pauseOnHighImpactNews: Boolean($('#sniperNewsPauseChk')?.checked),
       newsWindowBeforeMin: Number($('#sniperNewsPreMin')?.value || 15),
@@ -8338,8 +8353,9 @@ function initSniperAndProfitTargetEngine() {
 
   $('#sniperSaveRulesBtn')?.addEventListener('click', () => {
     readRulesFromInputs();
-    recordPlatformAudit('SNIPER_CONFIG', 'UPDATED_RULES', { minStrength: sniperExecConfig.minStrength, maxDailyLossUsd: sniperExecConfig.maxDailyLossUsd });
-    toast('Sniper rules saved', 'Updated thresholds, daily limits, session & news filters.', 'ok');
+    recordPlatformAudit('SNIPER_CONFIG', 'UPDATED_RULES', { minStrength: sniperExecConfig.minStrength, maxDailyLossUsd: sniperExecConfig.maxDailyLossUsd, marketScope: sniperExecConfig.marketScope });
+    sniperScanCursor = 0;
+    toast('Sniper rules saved', 'Analysis scope: '+sniperExecConfig.marketScope+'. Applies to the next scan and new entries; existing positions remain managed.', 'ok');
   });
 
   ['#sniperStopAllBtn', '#topBarEmergencyStop', '#secStopAllBtn'].forEach((id) => {

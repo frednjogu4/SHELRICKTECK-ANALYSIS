@@ -2162,6 +2162,14 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
           </div>
 
           <!-- Configurable Sniper Entry & Risk Parameters (Section 5) -->
+          <label class="field" style="margin-bottom:12px"><span>Sniper analysis markets</span>
+            <select class="input sm" id="sniperMarketScope" aria-describedby="sniperMarketScopeHint">
+              <option value="ALL">All markets</option>
+              <option value="FOREX">Forex only</option>
+              <option value="INDICES">Stock indices only</option>
+            </select>
+            <span class="hint" id="sniperMarketScopeHint">Choose the market group, then Save Sniper Rules. Applies to Sniper scans, watched markets and notification candidates—not other analysis pages or management of existing positions. All markets keeps your existing synthetic-market exclusions and broker restrictions.</span>
+          </label>
           <div class="grid c4" style="gap:12px">
             <label class="field" style="margin:0"><span>Min confluence (50–95)</span><input class="input mono sm" id="sniperMinScore" type="number" min="50" max="95" step="1" value="75"></label>
             <label class="field" style="margin:0"><span>Position sizing mode</span>
