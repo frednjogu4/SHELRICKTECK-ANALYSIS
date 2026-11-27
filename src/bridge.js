@@ -340,7 +340,10 @@ function verifiedOrderEnvironment(environment) {
 }
 export function previewBridgeOrder(o) {
   if (!verifiedOrderEnvironment(o?.environment)) return Promise.reject(new Error('MT5 account mode does not match the explicitly selected REAL or DEMO preview. Reconnect and verify the account; no order was sent.'));
-  return frame({ type: 'preview_order', environment: o.environment, symbol: o.symbol, side: o.side, volume: o.volume, sl: o.sl, tp: o.tp });
+  const payload = { type: 'preview_order', environment: o.environment, symbol: o.symbol, side: o.side, volume: o.volume, sl: o.sl, tp: o.tp };
+  if (Number.isFinite(Number(o.lots)) && Number(o.lots) > 0) payload.lots = Number(o.lots);
+  if (o.strictMinVolume) payload.strict_min_volume = true;
+  return frame(payload);
 }
 export function placeBridgeOrder(o) {
   if (!verifiedOrderEnvironment(o?.environment)) return Promise.reject(new Error('MT5 account mode does not match the explicitly selected REAL or DEMO order. Reconnect and verify the account; no order was sent.'));

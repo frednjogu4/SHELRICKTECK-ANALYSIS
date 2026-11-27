@@ -46,6 +46,7 @@ import { buildScheduledNewsAlerts } from './schedulednews.js';
 import { initCommandCentre } from './commandcentre.js';
 import { buildExposureReconcile, renderExposureReconcile } from './exposurereconcile.js';
 import { computeMultiTimeframeConfluence, stampSignalEnvelope, getSignalValidityState, evaluateTradeSupervisor, buildMarketIntelligenceBrief, evaluateSingleTimeframe, resampleCandles } from './supervisor.js';
+import { checkMt5OrderSize } from './mt5sizing.js';
 import { signalNotificationFields, notificationSignalCandidates } from './notificationsignals.js';
 import { checkSniperMt5Size, sniperSizingGuidance, sniperMarketAllowed, trySniperCandidates, sniperScanBatch, checkAutomationSnapshot, DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
 import { pushNotificationItem, listNotifications, unreadNotificationCount, markNotificationRead, markAllNotificationsRead, updateNotificationStatusBySignal, clearResolvedNotifications, subscribeNotifications } from './notify.js';
@@ -2147,7 +2148,10 @@ function setChartSymbol(sym,keepLevels){
     levelsForSym=null; /* refresh the same symbol without discarding user edits */
   }
   autofillLevels(sym);
-  if(previousSym!==sym&&state.broker?.type==='mt5'){renderSizePlan();refreshMt5SizePlan();}
+  if(previousSym!==sym&&state.broker?.type==='mt5'){
+    const lots=$('#orderLots');if(lots){lots.value='';lots.min='0';lots.step='any';lots.removeAttribute('max');} // Never reuse another market's minimum.
+    renderSizePlan();refreshMt5SizePlan();
+  }
   if(state.view==='trade'&&DERIV_CODE_MAP[sym])msInit({followChart:true});
   else if(state.view==='trade')updateChartMarketState();
   if(state.view==='trade')refreshChartOutlook(true);
@@ -2408,9 +2412,9 @@ function syncSide(){
   btn.textContent='Place '+state.side+' order';
   btn.classList.toggle('buy',buy); btn.classList.toggle('sell',!buy);
 }
-$('#sideBuy').onclick=()=>{ state.side='BUY'; syncSide(); };
-$('#sideSell').onclick=()=>{ state.side='SELL'; syncSide(); };
-$$('#view-trade .quick-amts button').forEach(b=>b.onclick=()=>{ $('#orderAmount').value=b.dataset.amt; updateRisk(); });
+$('#sideBuy').onclick=()=>{ state.side='BUY'; syncSide(); renderSizePlan(); };
+$('#sideSell').onclick=()=>{ state.side='SELL'; syncSide(); renderSizePlan(); };
+$$('#view-trade .quick-amts button').forEach(b=>b.onclick=()=>{ $('#orderAmount').value=b.dataset.amt; updateRisk(); renderSizePlan(); });
 /* duration chips + live settle preview: the time frame is a visible choice,
    never a dropdown silently left on yesterday's value */
 function syncDurChips(){
@@ -2502,13 +2506,39 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
     return;
   }
   const demo=acct.demo,environment=demo?'demo':'real',environmentLabel=demo?'DEMO':'REAL';
+  const identityKey=getActiveBrokerIdentity().authKey;
+  const intendedSide=state.side;
   const orderKind=($('#orderTypeSelect')?.value||'MARKET').toUpperCase();
   const explicitLotsRaw=parseFloat($('#orderLots')?.value||'');
-  const explicitLots=Number.isFinite(explicitLotsRaw)&&explicitLotsRaw>0?explicitLotsRaw:null;
+  const explicitLotsText=$('#orderLots')?.value?.trim()||'';
+  if(explicitLotsText!==''&&(!Number.isFinite(explicitLotsRaw)||explicitLotsRaw<=0)){toast('Invalid MT5 lots','Enter positive broker-valid lots, or clear the field to size from USD notional. No order sent.','warn');return;}
+  const explicitLots=explicitLotsText===''?null:explicitLotsRaw;
   const maxSlippagePoints=Math.max(1,Math.min(100,parseInt($('#orderSlippage')?.value||'20',10)||20));
   const strictMinVolume=Boolean($('#strictMinLotChk')?.checked);
   const cleanSl=Number.isFinite(sl)&&sl>0?sl:0;
   const cleanTp=Number.isFinite(tp)&&tp>0?tp:0;
+  const sizingButton=$('#placeOrderBtn');
+  if(sizingButton?.disabled)return;
+  const sizingInputs=()=>JSON.stringify(['#orderAmount','#orderLots','#orderEntryPrice','#orderSL','#orderTP'].map(id=>$(id)?.value));
+  const sizingSnapshot=sizingInputs();
+  let ticketSize=null;
+  if(sizingButton)sizingButton.disabled=true;
+  try {
+    const quote=await freshManualMt5Quote(I.s);
+    const price=orderKind==='MARKET'?null:Number($('#orderEntryPrice')?.value);
+    if(orderKind!=='MARKET'&&!(Number.isFinite(price)&&price>0))throw new Error('Enter a valid pending trigger price before checking size. No order sent.');
+    const sizingQuote=price?{...quote,bid:price,ask:price}:quote;
+    const size=checkMt5OrderSize({quote:sizingQuote,side:intendedSide,usdSize:amt,lotSize:explicitLots});
+    ticketSize=size;
+    if(!size.ok)throw new Error(size.reason+' Use “Review broker minimum lots” in the ticket to explicitly choose a lot size.');
+    if(state.chart.sym!==I.s||state.side!==intendedSide||getActiveBrokerIdentity().authKey!==identityKey
+      ||!getActiveBrokerIdentity().connected||sizingInputs()!==sizingSnapshot
+      ||($('#orderTypeSelect')?.value||'MARKET').toUpperCase()!==orderKind)throw new Error('Account, market, direction or order type changed during sizing. No order sent; review the ticket again.');
+  } catch(e) {
+    toast('MT5 size needs review',String(e.message||e),'warn');
+    return;
+  } finally {if(sizingButton)sizingButton.disabled=false;}
+
 
   if(orderKind!=='MARKET'){
     const entryPrice=parseFloat($('#orderEntryPrice')?.value||'');
@@ -2557,8 +2587,9 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
       await refreshMt5Snapshot(false);
       return;
     }
-    const preview=await bridge.previewBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,sl,tp});
+    const preview=await bridge.previewBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,lots:explicitLots,strictMinVolume,sl,tp});
     if(preview.environment!==environment||preview.demo!==demo||preview.manual_only!==true)throw new Error('The MT5 preview does not match the verified account mode; no order was sent. Reconnect and inspect the terminal account.');
+    if(preview.side!==intendedSide||!Number.isFinite(Number(preview.lots))||Math.abs(Number(preview.lots)-ticketSize.lots)>1e-8)throw new Error('The bridge preview does not match the selected direction/lot size. No order sent. Update the local bridge and review a fresh ticket.');
     const risk=fmtAcctMoney(preview.risk_amount,preview.currency);
     const reward=fmtAcctMoney(preview.reward_amount,preview.currency);
     const margin=fmtAcctMoney(preview.margin,preview.currency);
@@ -2567,6 +2598,7 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
     const details=accountWarning+'\n\n'
       +'Account '+accountLabel+'\n'
       +preview.side+' '+preview.symbol+' · requested notional '+fmtMoney(preview.requested_usd)+' · estimated '+preview.lots+' lots\n'
+      +'Actual notional exposure ≈ '+fmtMoney(preview.exposure)+' (not required margin or maximum loss)\n'
       +'Current '+(preview.side==='BUY'?'ask':'bid')+' '+fmtPx(preview.price,I.d)+' · stop '+fmtPx(preview.sl,I.d)+' · target '+fmtPx(preview.tp,I.d)+'\n'
       +'Buffered estimated stop risk '+risk+' ('+Number(preview.risk_pct).toFixed(2)+'% of equity) · target estimate '+reward+' · R:R '+Number(preview.rr).toFixed(2)+' · margin '+margin+'\n\n'
       +'Bridge hard limits (preview mode): maximum 0.5% buffered stop-risk per order, 2% account daily loss, one open position, minimum 1.2 reward:risk, and 80% free-margin ceiling. Quote and limits are rechecked by the local MT5 bridge at send time. Preview expires in 30 seconds.\n'
@@ -2574,6 +2606,9 @@ async function placeMt5ManualOrder({I,amt,sl,tp}){
     if(btn)btn.textContent='Waiting for '+environmentLabel+' confirmation…';
     const confirmed=await askConfirm('Confirm Exness '+environmentLabel+' order',details,'Place '+environmentLabel+' order');
     if(!confirmed){toast('Cancelled','No Exness order was sent.');return;}
+    if(state.chart.sym!==I.s||state.side!==intendedSide||getActiveBrokerIdentity().authKey!==identityKey
+      ||!getActiveBrokerIdentity().connected||sizingInputs()!==sizingSnapshot
+      ||($('#orderTypeSelect')?.value||'MARKET').toUpperCase()!==orderKind)throw new Error('Account or ticket changed during confirmation. No order sent; review again.');
     if(btn)btn.textContent='Sending '+environmentLabel+' order…';
     const intentId=Date.now().toString(36)+Math.random().toString(36).slice(2,16);
     const result=await bridge.placeBridgeOrder({environment,symbol:I.s.replace('/',''),side:state.side,volume:amt,lots:explicitLots,strictMinVolume,maxSlippagePoints,sl:cleanSl,tp:cleanTp,
@@ -6998,6 +7033,68 @@ applyTheme();
 }
 
 /* ---------- position sizer + trade planner (master §11) ---------- */
+async function freshManualMt5Quote(sym) {
+  const result=await bridge.quoteBridge([sym.replace('/','')]);
+  const quote=result?.quotes?.[0];
+  const age=Date.now()-Number(quote?.time)*1000;
+  if(!quote||!Number.isFinite(age)||age < -5000||age > 60000)throw new Error('A fresh MT5 quote is required to verify minimum lots. No order sent.');
+  return quote;
+}
+
+async function reviewManualMt5Minimum() {
+  const ident={...getActiveBrokerIdentity()},sym=state.chart?.sym,side=state.side;
+  if(ident.broker!=='mt5'||!ident.connected||!ident.authKey){toast('Connect MT5','Connect and verify the MT5 account first.','warn');return;}
+  const kind=$('#orderTypeSelect')?.value||'MARKET';
+  const entry=Number($('#orderEntryPrice')?.value);
+  const button=$('#reviewMt5MinSizeBtn');if(button)button.disabled=true;
+  try {
+    const quote=await freshManualMt5Quote(sym);
+    if(kind!=='MARKET'&&!(Number.isFinite(entry)&&entry>0))throw new Error('Enter a valid pending trigger price first.');
+    const size=checkMt5OrderSize({quote:kind==='MARKET'?quote:{...quote,bid:entry,ask:entry},side,usdSize:1,lotSize:Number(quote.volume_min)});
+    if(!size.ok)throw new Error(size.reason);
+    const stillCurrent=()=>state.broker?.type==='mt5'&&state.chart?.sym===sym&&state.side===side
+      &&getActiveBrokerIdentity().authKey===ident.authKey&&getActiveBrokerIdentity().connected
+      &&($('#orderTypeSelect')?.value||'MARKET')===kind
+      &&(kind==='MARKET'||Number($('#orderEntryPrice')?.value)===entry);
+    if(!stillCurrent())throw new Error('Account or ticket changed. Review the new selection again.');
+    const confirmed=await askConfirm('Review broker minimum — '+sym,
+      String(ident.environment||'').toUpperCase()+' account '+String(ident.accountId||'')+'\n'
+      +quote.symbol+' · '+(kind==='MARKET'?side:kind)+' · minimum '+size.minLots+' lots · volume step '+quote.volume_step+'\n'
+      +'Approximate exposure: $'+size.minNotional.toFixed(2)+' notional. This is NOT required margin, maximum loss, or a profit target.\n\n'
+      +'Selecting this replaces the ticket lot size with '+size.minLots+' lots; the USD notional input is overridden by explicit lots. 1-click will be switched OFF. This only fills the ticket; it does not place an order or arm Sniper.\n\n'
+      +(kind==='MARKET'?'Review the next broker preview for actual margin and stop risk. ':'Review the pending ticket before pressing Place, which submits the pending order. Margin is not estimated here. ')+'If you intended to limit loss or funding to $1, do not assume the minimum lot meets that budget. Cancel if this exposure is not acceptable.',
+      'Set '+size.minLots+' lots — no order');
+    if(!confirmed)return;
+    if(!stillCurrent())throw new Error('Account or ticket changed during review. Size was not applied.');
+    const lots=$('#orderLots');if(!lots)throw new Error('Lot-size control unavailable.');
+    lots.value=String(size.minLots);
+    lots.min=String(size.minLots);lots.step=String(quote.volume_step);lots.max=String(quote.volume_max);
+    const strict=$('#strictMinLotChk');if(strict)strict.checked=true;
+    state.settings.oneClick=false;save();syncOneClickUI();
+    renderSizePlan();refreshTicketSupervisorBanner();
+    toast('Ticket size selected',size.minLots+' lots for '+sym+'. No order sent. Review SL/TP, exposure and the ticket before placing an order.','warn');
+  } catch(e) { toast('Minimum size not selected',String(e.message||e),'warn'); }
+  finally { if(button)button.disabled=false; }
+}
+
+function renderManualMt5SizingHelp() {
+  const hint=$('#mt5TicketSizingHelp'),button=$('#reviewMt5MinSizeBtn');
+  const isMt5=state.broker?.type==='mt5';
+  if(button)button.classList.toggle('hidden',!isMt5);
+  if(!hint)return;
+  if(!isMt5){hint.textContent='Deriv: the USD field is contract stake. MT5 lot-size selection applies only to a connected MT5 account.';return;}
+  const spec=state.cfdSpec,age=Date.now()-Number(spec?.quoteAt);
+  if(!spec||spec.sym!==state.chart?.sym||!Number.isFinite(age)||age < -5000||age > 60000){hint.textContent='MT5: USD is notional exposure, not margin or maximum loss. Use “Review broker minimum lots” to fetch this market’s current minimum. No size is raised automatically.';return;}
+  const kind=$('#orderTypeSelect')?.value||'MARKET',entry=Number($('#orderEntryPrice')?.value);
+  const quote={symbol:spec.brokerSymbol,bid:spec.bid,ask:spec.ask,contract_size:spec.contractSize,volume_min:spec.volumeMin,volume_max:spec.volumeMax,volume_step:spec.volumeStep};
+  if(kind!=='MARKET'&&entry>0)quote.bid=quote.ask=entry;
+  const raw=$('#orderLots')?.value?.trim()||'';
+  const result=checkMt5OrderSize({quote,side:state.side,usdSize:Number($('#orderAmount')?.value),lotSize:raw===''?null:Number(raw)});
+  hint.textContent=result.ok
+    ? `MT5 ticket: ${result.lots} lots ≈ $${result.notional.toFixed(2)} notional. ${raw?'Explicit lots override the USD field. ':''}This is not required margin or maximum loss. Broker margin, stop-risk and account checks still apply.`
+    : result.reason+' Use “Review broker minimum lots” only if you accept the exposure.';
+}
+
 async function sizePlanSpecs(){
   /* All CFD specs and the sizing entry quote must come from this MT5 terminal.
      Do not derive broker volume steps or substitute the app's Deriv price. */
@@ -7039,6 +7136,7 @@ function refreshMt5SizePlan(){
   void sizePlanSpecs().then(()=>renderSizePlan()).catch(()=>renderSizePlan());
 }
 function renderSizePlan(){
+  renderManualMt5SizingHelp();
   const el=document.getElementById('sizePlanBody'); if(!el)return;
   const I=bySym[state.chart&&state.chart.sym];
   const amt=parseFloat(($('#orderAmount')||{}).value), sl=parseFloat(($('#orderSL')||{}).value), tp=parseFloat(($('#orderTP')||{}).value);
@@ -7770,15 +7868,17 @@ function refreshTicketSupervisorBanner() {
 }
 
 function initManualTicketEnhancements() {
+  $('#reviewMt5MinSizeBtn')?.addEventListener('click', reviewManualMt5Minimum);
   const typeSel = $('#orderTypeSelect');
   const pendField = $('#pendingEntryField');
   typeSel?.addEventListener('change', () => {
     const val = typeSel.value;
     const isPend = val !== 'MARKET';
     pendField?.classList.toggle('hidden', !isPend);
+    renderSizePlan();
     if (isPend) {
-      if (val.startsWith('BUY') && typeof setSide === 'function') setSide('BUY');
-      if (val.startsWith('SELL') && typeof setSide === 'function') setSide('SELL');
+      state.side=val.startsWith('BUY')?'BUY':'SELL';
+      syncSide();renderSizePlan();
       const btn = $('#placeOrderBtn');
       if (btn) btn.textContent = `Place ${val.replace('_', ' ')} order`;
     } else {
@@ -7786,9 +7886,9 @@ function initManualTicketEnhancements() {
       if (btn) btn.textContent = `Place ${state.side} order`;
     }
   });
-  ['#orderAmount', '#orderLots', '#orderSlippage', '#strictMinLotChk'].forEach((s) => {
-    $(s)?.addEventListener('input', refreshTicketSupervisorBanner);
-    $(s)?.addEventListener('change', refreshTicketSupervisorBanner);
+  ['#orderAmount', '#orderLots', '#orderEntryPrice', '#orderSlippage', '#strictMinLotChk'].forEach((s) => {
+    $(s)?.addEventListener('input', () => {refreshTicketSupervisorBanner();renderSizePlan();});
+    $(s)?.addEventListener('change', () => {refreshTicketSupervisorBanner();renderSizePlan();});
   });
 }
 

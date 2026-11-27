@@ -1468,7 +1468,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
                 <button class="side-btn sel-buy" id="sideBuy" type="button">BUY<span class="px" id="bidPx">—</span></button>
                 <button class="side-btn" id="sideSell" type="button">SELL<span class="px" id="askPx">—</span></button>
               </div>
-              <label class="field"><span>Amount / Notional (USD)</span>
+              <label class="field"><span>USD notional (MT5) / contract stake (Deriv)</span>
                 <input class="input mono" id="orderAmount" type="number" min="1" step="1" value="10">
                 <div class="quick-amts">
                   <button type="button" data-amt="10">$10</button>
@@ -1479,12 +1479,14 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               </label>
               <div class="grid c2" style="gap:10px;margin-bottom:10px">
                 <label class="field" style="margin:0"><span>Explicit MT5 Lots <span class="faint">(optional)</span></span>
-                  <input class="input mono" id="orderLots" type="number" min="0.001" step="0.01" placeholder="auto from USD">
+                  <input class="input mono" id="orderLots" type="number" min="0" step="any" placeholder="auto from USD">
                 </label>
                 <label class="field" style="margin:0"><span>Max slippage (pts)</span>
                   <input class="input mono" id="orderSlippage" type="number" min="1" max="100" step="1" value="20">
                 </label>
               </div>
+              <div class="notice warn tiny" id="mt5TicketSizingHelp" role="status" aria-live="polite">MT5: USD is notional exposure, not required margin or maximum loss. Broker minimum lot sizes vary by market.</div>
+              <button type="button" class="btn sm ghost hidden" id="reviewMt5MinSizeBtn" style="margin:8px 0 12px">Review broker minimum lots (no order)</button>
               <label class="row tiny" style="gap:7px;margin-bottom:10px;cursor:pointer">
                 <input type="checkbox" id="strictMinLotChk" checked>
                 <span>Strict minimum-lot guard (never secretly increase order size to meet broker minimum)</span>

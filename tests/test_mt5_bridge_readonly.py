@@ -245,6 +245,59 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.assertLessEqual(reply["risk_pct"], self.bridge.MT5_MAX_RISK_PCT)
         self.fake_mt5.order_send.assert_not_called()
 
+    def test_preview_and_confirm_preserve_explicit_minimum_lots_for_all_categories(self):
+        for symbol, vmin, contract, price in (
+            ("EURUSD", 0.01, 100000, 1.1),
+            ("XAUUSD", 0.01, 100, 1424.26),
+            ("US30Cash", 0.1, 1, 44000),
+            ("BTCUSD", 0.001, 1, 90000),
+            ("AAPL", 1, 1, 230),
+            ("OIL", 0.05, 1000, 70),
+        ):
+            for side in ("BUY", "SELL"):
+                with self.subTest(symbol=symbol, side=side):
+                    self.setUp()
+                    info = self.fake_mt5.symbol_info.return_value
+                    info.name = symbol
+                    info.volume_min = info.volume_step = vmin
+                    info.trade_contract_size = contract
+                    self.fake_mt5.symbol_info_tick.return_value.bid = price
+                    self.fake_mt5.symbol_info_tick.return_value.ask = price
+                    direction = 1 if side == "BUY" else -1
+                    req = self.demo_request(symbol=symbol, side=side, volume=1, lots=vmin,
+                                            strict_min_volume=True, sl=price - direction * 0.01,
+                                            tp=price + direction * 0.03)
+                    preview = self.bridge.handle_order_preview(req)
+                    self.assertEqual(preview["type"], "order_preview", preview)
+                    self.assertAlmostEqual(preview["lots"], vmin)
+                    self.assertAlmostEqual(preview["exposure"], vmin * contract * price)
+                    self.fake_mt5.order_send.assert_not_called()
+                    # Every confirmation rebuilds the plan using those SAME explicit lots.
+                    filled = self.bridge.handle_order({**req, "preview_id": preview["preview_id"],
+                        "confirmed": True, "intent_id": "minimumLots1234567890"})
+                    self.assertEqual(filled["type"], "filled", filled)
+                    self.assertAlmostEqual(self.fake_mt5.order_send.call_args.args[0]["volume"], vmin)
+
+    def test_strict_preview_rejects_undersized_usd_without_silent_minimum_rounding(self):
+        self.fake_mt5.symbol_info.return_value.trade_contract_size = 100
+        self.fake_mt5.symbol_info_tick.return_value.bid = 1424.26
+        self.fake_mt5.symbol_info_tick.return_value.ask = 1424.26
+        reply = self.bridge.handle_order_preview(self.demo_request(volume=1, strict_min_volume=True,
+            sl=1424, tp=1425))
+        self.assertEqual(reply["type"], "error", reply)
+        self.assertIn("1,424.26 notional", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_changed_explicit_lots_after_preview_cannot_execute(self):
+        req = self.demo_request(lots=0.01, strict_min_volume=True)
+        preview = self.bridge.handle_order_preview(req)
+        self.assertEqual(preview["type"], "order_preview", preview)
+        reply = self.bridge.handle_order({**req, "lots": 0.02, "preview_id": preview["preview_id"],
+            "confirmed": True, "intent_id": "changedLots1234567890"})
+        self.assertEqual(reply["type"], "error", reply)
+        self.assertIn("changed since preview", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
     def test_m15_history_is_read_only_and_uses_mt5_tick_volume(self):
         self.fake_mt5.TIMEFRAME_M1 = 1
         self.fake_mt5.TIMEFRAME_M5 = 5

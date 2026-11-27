@@ -727,7 +727,29 @@ def _mt5_order_plan(msg):
         if stops_level and (abs(price - sl) < stops_level or abs(tp - price) < stops_level):
             return None, "Stop-loss/take-profit is closer than the broker's minimum stop distance."
         raw_lots = requested_usd / (contract_size * price)
-        lots = usd_to_lots(info, price, requested_usd)
+        floor_exposure = float(info.volume_min) * contract_size * price
+        raw_lots_input = msg.get("lots")
+        if raw_lots_input not in (None, "", 0, "0"):
+            explicit_lots = float(raw_lots_input)
+            vmin, vmax = float(info.volume_min), float(info.volume_max)
+            vstep = float(info.volume_step or 0.01)
+            if not math.isfinite(explicit_lots) or explicit_lots <= 0:
+                raise ValueError
+            if explicit_lots + 1e-12 < vmin:
+                return None, f"Requested volume ({explicit_lots:g} lots) is below the broker minimum ({vmin:g} lots ≈ ${floor_exposure:,.2f} notional); no order was sent."
+            if explicit_lots - 1e-12 > vmax:
+                return None, f"Requested volume ({explicit_lots:g} lots) exceeds the broker maximum ({vmax:g} lots); no order was sent."
+            lots = round(int((explicit_lots + 1e-12) / vstep) * vstep, 8)
+            if lots + 1e-12 < vmin:
+                return None, "Requested volume rounds below the broker minimum; no order was sent."
+            raw_lots = explicit_lots
+        else:
+            if bool(msg.get("strict_min_volume")) and requested_usd + 1e-6 < floor_exposure:
+                return None, (
+                    f"Requested exposure (${requested_usd:,.2f}) is below the broker minimum lot ({float(info.volume_min):g} lots ≈ ${floor_exposure:,.2f} notional). "
+                    "No order was sent. Review the broker minimum lots explicitly; notional is not margin or maximum loss."
+                )
+            lots = usd_to_lots(info, price, requested_usd)
         if lots <= 0:
             raise ValueError
         exposure = lots * contract_size * price
@@ -981,7 +1003,7 @@ def handle_order(msg):
                 preview = _MT5_PREVIEWS.pop(preview_id, None)
             if not preview or time.time() - preview["created"] > 30:
                 return {**err("Order preview expired; review a fresh quote and confirm again. No order was sent.")}
-            request_msg = {key: msg.get(key) for key in ("symbol", "side", "volume", "sl", "tp", "environment")}
+            request_msg = {key: msg.get(key) for key in ("symbol", "side", "volume", "sl", "tp", "environment", "lots", "strict_min_volume")}
             plan, problem = _mt5_order_plan(request_msg)
             if problem:
                 return {**err(problem)}
