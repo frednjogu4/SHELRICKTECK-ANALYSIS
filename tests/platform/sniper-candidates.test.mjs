@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
-import { trySniperCandidates, sniperScanBatch, DEFAULT_SNIPER_CONFIG } from '../../src/sniperengine.js';
+import { sniperMarketAllowed, trySniperCandidates, sniperScanBatch, DEFAULT_SNIPER_CONFIG } from '../../src/sniperengine.js';
 import { marketStatus } from '../../server/lib/markethours.js';
 
 const candidates = ['EUR/GBP', 'EUR/USD', 'BTC/USD'].map(symbol => ({ symbol, signal: 'BUY' }));
@@ -80,7 +80,7 @@ test('actual Sniper entry skips closed forex, then supervises and fills the next
     automationSnapshotCheck: () => ({ ok: true }),
     sniperExecConfig: { ...DEFAULT_SNIPER_CONFIG, sizingMode: 'fixed_lots', pauseOnHighImpactNews: false },
     sniperRuntime: { canStartAutoEntry: () => ({ ok: true }), beginAutoEntry() {}, finishAutoEntry() {}, executedSignals: new Set() },
-    isTradingSessionAllowed: () => ({ ok: true }),
+    sniperMarketAllowed, isTradingSessionAllowed: () => ({ ok: true }),
     bySym: { 'EUR/GBP': { c: 'forex' }, 'BTC/USD': { c: 'crypto' } },
     marketStatus: inst => {
       assert.equal(typeof inst, 'object', 'marketStatus requires the instrument, not its category string');
@@ -123,6 +123,17 @@ test('actual Sniper entry skips closed forex, then supervises and fills the next
   assert.equal(supervised.length, 2);
   assert.equal(submitted.length, 1);
   assert.equal(submitted[0].symbol, 'BTCUSD');
+  submitted.length = 0;
+  ctx.sniperExecConfig.marketScope = 'FOREX';
+  assert.equal((await execute(candidates[2])).status, 'skipped');
+  assert.equal(submitted.length, 0, 'excluded crypto cannot dispatch in forex-only scope');
+  ctx.sniperExecConfig.marketScope = 'ALL';
+  ctx.bridge.quoteBridge = async () => {
+    ctx.sniperExecConfig.marketScope = 'FOREX';
+    return { quotes: [{ bid: 100, ask: 101, time: Date.now() / 1000 }] };
+  };
+  assert.equal((await execute(candidates[2])).status, 'skipped');
+  assert.equal(submitted.length, 0, 'a scope change during quote fetch must prevent dispatch');
   assert.doesNotMatch(main, /marketStatus\(I\.c,/);
   assert.match(main, /trySniperCandidates\(sigs,/);
 });

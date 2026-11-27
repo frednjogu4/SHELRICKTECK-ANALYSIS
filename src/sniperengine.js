@@ -12,6 +12,7 @@ export const DEFAULT_SNIPER_CONFIG = {
   authorizedAt: null,
   emergencyHalted: false,
   minStrength: 75,
+  marketScope: 'ALL',             // Sniper analysis and new entries: ALL | FOREX | INDICES
   allowedTimeframes: ['5m', '15m', '1h'],
   allowedInstruments: [],         // Empty = all instruments enabled in workspace scanner
   sizingMode: 'fixed_usd',        // 'fixed_usd' | 'fixed_lots' | 'risk_pct'
@@ -50,6 +51,7 @@ export function buildAccountAuthKey(broker, accountId, environment) {
 export function normalizeSniperConfig(raw = {}) {
   const merged = { ...DEFAULT_SNIPER_CONFIG, ...(raw && typeof raw === 'object' ? raw : {}) };
   merged.execEnabled = Boolean(merged.execEnabled) && !merged.emergencyHalted && Boolean(merged.authorizedKey);
+  merged.marketScope = ['ALL', 'FOREX', 'INDICES'].includes(merged.marketScope) ? merged.marketScope : 'ALL';
   merged.minStrength = Math.max(50, Math.min(99, Number(merged.minStrength) || 75));
   merged.fixedUsd = Math.max(0.35, Number(merged.fixedUsd) || 10);
   merged.fixedLots = Math.max(0.001, Number(merged.fixedLots) || 0.01);
@@ -282,4 +284,13 @@ export function sniperScanBatch(universe, cursor, breadth) {
   const count = Math.min(universe.length, breadth);
   const symbols = Array.from({ length: count }, (_, i) => universe[(cursor + i) % universe.length].s);
   return { symbols, nextCursor: (cursor + count) % universe.length };
+}
+
+/** Category scope applies to analysis/new entries, never to management of open positions. */
+export function sniperMarketAllowed(instrument, scope = 'ALL') {
+  if (!instrument) return false;
+  if (scope === 'ALL') return true;
+  if (scope === 'FOREX') return instrument.c === 'forex';
+  if (scope === 'INDICES') return instrument.c === 'indices' || instrument.c === 'stockindices';
+  return false;
 }
