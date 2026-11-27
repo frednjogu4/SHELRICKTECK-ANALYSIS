@@ -878,7 +878,7 @@ async function run() {
     check('20d: /api/risk/gate runs the tri-state module and returns checks + boss verdict', ap.includes('evaluateRisk({') && ap.includes('bossVerdict({ risk: report') && ap.includes('checks: report.checks'));
     check('20d: kill switch enforced on every buy route (order/confirm/buy) incl. the env-token router', ap.includes('/\\/(order|confirm|buy)$/.test(p)') && ap.includes('requireTrading(req, _res, next)'));
     check('20d: kill switch control endpoint present (GET+POST /api/ctl/killswitch)', ap.includes("app.post('/api/ctl/killswitch'") && ap.includes("app.get('/api/ctl/killswitch'"));
-    check('20d: Exness demo plan uses local broker preview with SL/TP and no browser-supplied risk booleans', srcMain2.includes('previewBridgeOrder({environment,symbol:I.s.replace(\'/\',\'\'),side:state.side,volume:amt,sl,tp})') && srcMain2.includes('previewId:preview.preview_id') && !srcMain2.includes('marketHours:(minqr&&minqr.ask>0)?true:null'));
+    check('20d: Exness demo plan uses local broker preview with SL/TP and no browser-supplied risk booleans', srcMain2.includes('previewBridgeOrder({environment,symbol:I.s.replace(\'/\',\'\'),side:state.side,volume:amt,lots:explicitLots,strictMinVolume,sl,tp})') && srcMain2.includes('previewId:preview.preview_id') && !srcMain2.includes('marketHours:(minqr&&minqr.ask>0)?true:null'));
     check('20d: Settings kill-switch toggle + visible score formula (quality score, not probability)', srcMain2.includes('killSwitchBtn') && srcMain2.includes('/api/ctl/killswitch') && doc.documentElement.outerHTML.includes('NOT a probability of profit') && doc.documentElement.outerHTML.includes('killSwitchState'));
   }
 
