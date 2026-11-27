@@ -2149,7 +2149,7 @@ function setChartSymbol(sym,keepLevels){
   }
   autofillLevels(sym);
   if(previousSym!==sym&&state.broker?.type==='mt5'){
-    const lots=$('#orderLots');if(lots){lots.value='';lots.min='0';lots.step='any';lots.removeAttribute('max');} // Never reuse another market's minimum.
+    const lots=$('#orderLots');if(lots){lots.value='0.01';lots.min='0';lots.step='0.01';lots.removeAttribute('max');} // Start each market at the user-requested default, not another market's size.
     renderSizePlan();refreshMt5SizePlan();
   }
   if(state.view==='trade'&&DERIV_CODE_MAP[sym])msInit({followChart:true});
@@ -7082,17 +7082,17 @@ function renderManualMt5SizingHelp() {
   const isMt5=state.broker?.type==='mt5';
   if(button)button.classList.toggle('hidden',!isMt5);
   if(!hint)return;
-  if(!isMt5){hint.textContent='Deriv: the USD field is contract stake. MT5 lot-size selection applies only to a connected MT5 account.';return;}
+  if(!isMt5){hint.textContent='Deriv uses the USD stake; MT5 lots do not apply.';return;}
   const spec=state.cfdSpec,age=Date.now()-Number(spec?.quoteAt);
-  if(!spec||spec.sym!==state.chart?.sym||!Number.isFinite(age)||age < -5000||age > 60000){hint.textContent='MT5: USD is notional exposure, not margin or maximum loss. Use “Review broker minimum lots” to fetch this market’s current minimum. No size is raised automatically.';return;}
+  if(!spec||spec.sym!==state.chart?.sym||!Number.isFinite(age)||age < -5000||age > 60000){hint.textContent='MT5: lots override USD. Broker limits apply; review the minimum if needed.';return;}
   const kind=$('#orderTypeSelect')?.value||'MARKET',entry=Number($('#orderEntryPrice')?.value);
   const quote={symbol:spec.brokerSymbol,bid:spec.bid,ask:spec.ask,contract_size:spec.contractSize,volume_min:spec.volumeMin,volume_max:spec.volumeMax,volume_step:spec.volumeStep};
   if(kind!=='MARKET'&&entry>0)quote.bid=quote.ask=entry;
   const raw=$('#orderLots')?.value?.trim()||'';
   const result=checkMt5OrderSize({quote,side:state.side,usdSize:Number($('#orderAmount')?.value),lotSize:raw===''?null:Number(raw)});
   hint.textContent=result.ok
-    ? `MT5 ticket: ${result.lots} lots ≈ $${result.notional.toFixed(2)} notional. ${raw?'Explicit lots override the USD field. ':''}This is not required margin or maximum loss. Broker margin, stop-risk and account checks still apply.`
-    : result.reason+' Use “Review broker minimum lots” only if you accept the exposure.';
+    ? `${result.lots} lots ≈ $${result.notional.toFixed(2)} exposure — not margin or maximum loss. ${raw?'Lots override USD.':'Sized from USD.'}`
+    : result.minLots ? `Broker minimum: ${result.minLots} lots ≈ $${result.minNotional.toFixed(2)} exposure. Adjust lots or review the minimum; size is never raised automatically.` : result.reason;
 }
 
 async function sizePlanSpecs(){

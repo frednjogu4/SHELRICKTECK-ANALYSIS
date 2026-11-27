@@ -888,7 +888,7 @@ async function run() {
     check('20e: sizer module exists with OK/BLOCKED/INCOMPLETE and never assumes values', sz.includes('export function planPosition') && sz.includes('INCOMPLETE') && sz.includes('never assumed'));
     check('20e: sizer rounds DOWN to broker step, enforces minimum volume, tiers never exceed the cap', sz.includes('rounded DOWN to the broker step') && sz.includes('Below the broker minimum') && sz.includes('SMALL: mk(0.25)'));
     check('20e: slippage + costs honesty (stop not guaranteed, fees never assumed)', sz.includes('does not guarantee the exact exit price') && sz.includes('not assumed'));
-    check('20e: trade ticket shows the live size plan with formula + user-supplied conversion rate', srcMain2.includes('renderSizePlan') && srcMain2.includes('sizePlanSpecs') && srcMain2.includes('you supply — never fetched or assumed') && doc.documentElement.outerHTML.includes('id="sizePlan"'));
+    check('20e: ticket keeps broker sizing calculations while the adaptive panel is hidden', srcMain2.includes('renderSizePlan') && srcMain2.includes('sizePlanSpecs') && srcMain2.includes('you supply — never fetched or assumed') && doc.querySelector('#sizePlan')?.hidden===true);
     check('20e: Exness sizer refreshes after connect/symbol switch and uses fresh MT5 bid/ask plus broker volume step', srcMain2.includes('refreshMt5SizePlan();') && srcMain2.includes('Number(r.volume_step)>0') && srcMain2.includes('Number(r.volume_max)>=Number(r.volume_min)') && srcMain2.includes('volumeStep:Number(r.volume_step)') && srcMain2.includes('entry:freshBrokerEntry') && srcMain2.includes('spec.volumeStep>0') && srcMain2.includes('Math.min(requestedRiskPct,0.5)') && !srcMain2.includes('Math.min(0.01,state.cfdSpec.volumeMin/10)'));
   }
 
