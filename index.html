@@ -1478,18 +1478,18 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
                 </div>
               </label>
               <div class="grid c2" style="gap:10px;margin-bottom:10px">
-                <label class="field" style="margin:0"><span>Explicit MT5 Lots <span class="faint">(optional)</span></span>
-                  <input class="input mono" id="orderLots" type="number" min="0" step="any" placeholder="auto from USD">
+                <label class="field" style="margin:0"><span>MT5 lots <span class="faint">(overrides USD)</span></span>
+                  <input class="input mono" id="orderLots" type="number" min="0" step="0.01" value="0.01" placeholder="clear to use USD">
                 </label>
                 <label class="field" style="margin:0"><span>Max slippage (pts)</span>
                   <input class="input mono" id="orderSlippage" type="number" min="1" max="100" step="1" value="20">
                 </label>
               </div>
-              <div class="notice warn tiny" id="mt5TicketSizingHelp" role="status" aria-live="polite">MT5: USD is notional exposure, not required margin or maximum loss. Broker minimum lot sizes vary by market.</div>
+              <div class="notice warn tiny" id="mt5TicketSizingHelp" role="status" aria-live="polite">MT5: starts at 0.01 lots. Adjust as needed; broker limits apply.</div>
               <button type="button" class="btn sm ghost hidden" id="reviewMt5MinSizeBtn" style="margin:8px 0 12px">Review broker minimum lots (no order)</button>
               <label class="row tiny" style="gap:7px;margin-bottom:10px;cursor:pointer">
                 <input type="checkbox" id="strictMinLotChk" checked>
-                <span>Strict minimum-lot guard (never secretly increase order size to meet broker minimum)</span>
+                <span>Never increase lots automatically</span>
               </label>
               <label class="field"><span>Contract duration (Deriv paths)</span>
                 <select class="input mono" id="orderDuration">
@@ -1524,7 +1524,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
               <div class="hint" id="levelsNote">Pick a market — suggested SL/TP from its live analysis appear here automatically.</div>
               <div class="hint" id="resaleNote" style="margin-top:6px">Early exit (resale): pick a market to see its family guidance.</div>
               <div class="hint" style="margin-top:6px">Deriv binaries: your stake is committed to expiry and the <b>maximum loss is exactly your stake</b>. Your SL/TP levels are watched live — acted on the moment Deriv allows early exit; if the contract is locked you get one clear alert while it rides to settlement (it can still recover).</div>
-              <div class="card" id="sizePlan" style="background:var(--surface-2);margin:10px 0">
+              <div class="card hidden" id="sizePlan" hidden style="display:none;background:var(--surface-2);margin:10px 0">
                 <div class="card-head" style="margin-bottom:6px"><h3 style="font-size:14px">Position sizer (adaptive, formula shown)</h3></div>
                 <div id="sizePlanBody" class="tiny">Pick a market and set a stop-loss — the size plan appears here. Nothing is assumed: missing inputs are listed, never invented.</div>
               </div>

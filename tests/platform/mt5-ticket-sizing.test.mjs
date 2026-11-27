@@ -110,3 +110,33 @@ test('mismatched bridge lot preview or edits during confirmation cannot place an
     assert.equal(sent.length,0,mismatch);
   }
 });
+
+test('ticket starts at editable 0.01 lots and the adaptive sizer is hidden',async()=>{
+  const {JSDOM}=await import('jsdom');
+  const html=readFileSync(new URL('../../index.html',import.meta.url),'utf8');
+  const dom=new JSDOM(html);
+  const doc=dom.window.document;
+  const lots=doc.querySelector('#orderLots');
+  assert.equal(lots.value,'0.01');
+  assert.equal(lots.step,'0.01');
+  assert.equal(lots.disabled,false);
+  const sizer=doc.querySelector('#sizePlan');
+  assert.equal(sizer.hidden,true);
+  assert.equal(dom.window.getComputedStyle(sizer).display,'none');
+  assert.equal(doc.querySelector('#sniperFixedLots').value,'0.01');
+  lots.value='0.05';assert.equal(lots.value,'0.05');
+  dom.window.close();
+});
+test('changing MT5 markets resets lots to 0.01, while refreshing the same market preserves edits',async()=>{
+  const {JSDOM}=await import('jsdom');
+  const dom=new JSDOM('<select id="chartSymbol"><option>EUR/USD</option><option>XAU/USD</option></select><input id="orderLots" value="0.05"><input id="orderSL"><input id="orderTP"><input id="orderTP2"><div id="levelsNote"></div>');
+  const lots=dom.window.document.querySelector('#orderLots');
+  const fn=main.slice(main.indexOf('function setChartSymbol(sym,keepLevels)'),main.indexOf('/* auto-fill SL/TP in the order ticket'));
+  const ctx={bySym:{'EUR/USD':{},'XAU/USD':{}},state:{chart:{sym:'EUR/USD'},broker:{type:'mt5'},view:'other'},$:s=>dom.window.document.querySelector(s),
+    chartDisplayMode:'tv',tv:{switchChartSymbol(){}},updateTradeHeader(){},updateRisk(){},autofillLevels(){},renderSizePlan(){},refreshMt5SizePlan(){},DERIV_CODE_MAP:{},levelsForSym:null};
+  const set=vm.runInNewContext('('+fn+')',ctx);
+  set('XAU/USD');assert.equal(lots.value,'0.01');
+  lots.value='0.08';set('XAU/USD');assert.equal(lots.value,'0.08');
+  set('EUR/USD');assert.equal(lots.value,'0.01');
+  dom.window.close();
+});
