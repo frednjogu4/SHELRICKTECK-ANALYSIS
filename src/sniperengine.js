@@ -299,3 +299,32 @@ export function sniperMarketAllowed(instrument, scope = 'ALL', selectedMarkets =
   if (scope === 'INDICES') return instrument.c === 'indices' || instrument.c === 'stockindices';
   return false;
 }
+
+/** Read-only broker-spec preflight. Never increases size or assumes leverage/margin. */
+export function checkSniperMt5Size({ quote, side, usdSize, lotSize = null }) {
+  if (!['BUY', 'SELL'].includes(side)) return { ok: false, reason: 'No executable BUY or SELL direction. No order sent.' };
+  const price = Number(side === 'BUY' ? quote?.ask : quote?.bid);
+  const contract = Number(quote?.contract_size), minLots = Number(quote?.volume_min);
+  const step = Number(quote?.volume_step), maxLots = Number(quote?.volume_max);
+  if (![price, contract, minLots, step].every(n => Number.isFinite(n) && n > 0)) {
+    return { ok: false, reason: 'Live MT5 contract size / minimum lot / volume step unavailable. No order sent; checking the next eligible market.' };
+  }
+  const minNotional = minLots * contract * price;
+  const explicitLots = lotSize != null;
+  const requestedLots = explicitLots ? Number(lotSize) : Number(usdSize) / (contract * price);
+  if (!Number.isFinite(requestedLots) || requestedLots <= 0) return { ok: false, reason: 'Invalid Sniper order size. No order sent.' };
+  if (requestedLots + 1e-12 < minLots) {
+    return { ok: false, minLots, minNotional,
+      reason: `${quote.symbol || 'MT5'}: requested ${explicitLots ? requestedLots + ' lots' : '$' + Number(usdSize).toFixed(2) + ' notional'} is below ${minLots} lots (about $${minNotional.toFixed(2)} notional). This is exposure, not required margin or the profit target. Size was not increased; checking the next eligible market.` };
+  }
+  if (Number.isFinite(maxLots) && maxLots > 0 && requestedLots > maxLots + 1e-12) return { ok: false, reason: `Requested size exceeds the broker maximum (${maxLots} lots). No order sent.` };
+  const lots = Math.floor((requestedLots + 1e-12) / step) * step;
+  if (lots + 1e-12 < minLots) return { ok: false, reason: 'Order size rounds below the broker minimum lot. No order sent.' };
+  return { ok: true, minLots, minNotional, lots, notional: lots * contract * price };
+}
+
+export function sniperSizingGuidance(mode, usdSize, lotSize) {
+  if (mode === 'fixed_lots') return `MT5: request ${lotSize} lots per entry, subject to this symbol's minimum, volume step, margin and risk checks. The USD notional field is not the MT5 lot size. The net-profit target is separate; this mode does not guarantee a fill or profit.`;
+  if (mode === 'risk_pct') return 'This mode requests a percentage of equity as NOTIONAL exposure—not a maximum loss at the stop. MT5 minimum lots, margin and risk checks still apply. The net-profit target is separate.';
+  return `MT5: $${Number(usdSize).toFixed(2)} means NOTIONAL exposure—not margin, maximum loss or the net-profit target. A broker minimum of 0.01 lots may represent much more exposure and block this size. To request lots, explicitly select Fixed MT5 Lots and review the broker minimum and margin first. No size is increased automatically. Deriv uses the USD field as stake.`;
+}

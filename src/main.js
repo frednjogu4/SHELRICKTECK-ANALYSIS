@@ -47,7 +47,7 @@ import { initCommandCentre } from './commandcentre.js';
 import { buildExposureReconcile, renderExposureReconcile } from './exposurereconcile.js';
 import { computeMultiTimeframeConfluence, stampSignalEnvelope, getSignalValidityState, evaluateTradeSupervisor, buildMarketIntelligenceBrief, evaluateSingleTimeframe, resampleCandles } from './supervisor.js';
 import { signalNotificationFields, notificationSignalCandidates } from './notificationsignals.js';
-import { sniperMarketAllowed, trySniperCandidates, sniperScanBatch, checkAutomationSnapshot, DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
+import { checkSniperMt5Size, sniperSizingGuidance, sniperMarketAllowed, trySniperCandidates, sniperScanBatch, checkAutomationSnapshot, DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
 import { pushNotificationItem, listNotifications, unreadNotificationCount, markNotificationRead, markAllNotificationsRead, updateNotificationStatusBySignal, clearResolvedNotifications, subscribeNotifications } from './notify.js';
 
 /* The new unified Overview has its own structure; the legacy initializer safely no-ops without its old KPI anchor. */
@@ -7930,6 +7930,15 @@ function renderSniperSelectedMarketPicker() {
   updateSniperSelectedMarketPicker();
 }
 
+function paintSniperSizingHelp() {
+  const mode = $('#sniperSizingMode')?.value || sniperExecConfig.sizingMode;
+  const usd = $('#sniperFixedUsd'), lots = $('#sniperFixedLots');
+  if(usd)usd.disabled=mode==='fixed_lots';
+  if(lots)lots.disabled=mode!=='fixed_lots';
+  const hint = $('#sniperSizingHelp');
+  if(hint)hint.textContent=sniperSizingGuidance(mode, usd?.value || sniperExecConfig.fixedUsd, lots?.value || sniperExecConfig.fixedLots);
+}
+
 function syncSniperUiControls() {
   const armed = isSniperExecutionArmedNow();
   const ident = getActiveBrokerIdentity();
@@ -7943,6 +7952,7 @@ function syncSniperUiControls() {
   if ($('#sniperSizingMode')) $('#sniperSizingMode').value = sniperExecConfig.sizingMode;
   if ($('#sniperFixedUsd')) $('#sniperFixedUsd').value = sniperExecConfig.fixedUsd;
   if ($('#sniperFixedLots')) $('#sniperFixedLots').value = sniperExecConfig.fixedLots;
+  paintSniperSizingHelp();
   if ($('#sniperMaxPos')) $('#sniperMaxPos').value = sniperExecConfig.maxConcurrentPositions;
   if ($('#sniperMaxDaily')) $('#sniperMaxDaily').value = sniperExecConfig.maxDailyTrades;
   if ($('#sniperDailyProfit')) $('#sniperDailyProfit').value = sniperExecConfig.dailyProfitTargetUsd;
@@ -8045,6 +8055,7 @@ async function executeSupervisedSniperEntry(candidate) {
       return { status: 'skipped', reason: `Confluence ${freshSig.confidence || 0} below ${sniperExecConfig.minStrength}.` };
     }
 
+    let brokerQuote = null;
     let liveBid = I.bid ?? I.p ?? null;
     let liveAsk = I.ask ?? I.p ?? null;
     let quoteTsMs = I.tickAt || Date.now();
@@ -8056,6 +8067,7 @@ async function executeSupervisedSniperEntry(candidate) {
         return { status: 'skipped', reason: 'Live MT5 quote unavailable. No automated order sent.' };
       }
       if (q0) {
+        brokerQuote = q0;
         liveBid = Number(q0.bid);
         liveAsk = Number(q0.ask);
         quoteTsMs = q0.time ? q0.time * 1000 : 0;
@@ -8076,6 +8088,13 @@ async function executeSupervisedSniperEntry(candidate) {
       ? Math.max(1, (ident.equity * sniperExecConfig.riskPct) / 100)
       : sniperExecConfig.fixedUsd;
     const lotSize = sniperExecConfig.sizingMode === 'fixed_lots' ? sniperExecConfig.fixedLots : null;
+    const mt5Size = ident.broker === 'mt5' ? checkSniperMt5Size({ quote: brokerQuote, side: freshSig.signal, usdSize, lotSize }) : null;
+    if (mt5Size && !mt5Size.ok) {
+      sniperRuntime.finishAutoEntry(false);
+      recordPlatformAudit('SNIPER_SIZING_SKIP', 'BROKER_SIZE_PREFLIGHT', { symbol: sym, reason: mt5Size.reason });
+      atStatusUI('scan', `Sizing skipped · ${sym}`, mt5Size.reason);
+      return { status: 'skipped', reason: mt5Size.reason };
+    }
     const { currentDrawdownPct, totalOpenExposureUsd, effectiveRequestedUsd } =
       computeAccountDrawdownAndExposure(ident, sym, lotSize, usdSize, liveAsk || liveBid || I.p);
 
@@ -8097,7 +8116,9 @@ async function executeSupervisedSniperEntry(candidate) {
       quoteTsMs,
       freeMargin: ident.freeMargin,
       requestedLots: lotSize,
-      requestedUsd: effectiveRequestedUsd,
+      requestedUsd: mt5Size ? Math.max(mt5Size.notional, lotSize == null ? usdSize : 0) : effectiveRequestedUsd,
+      brokerMinLots: mt5Size?.minLots ?? null,
+      brokerMinNotionalUsd: mt5Size?.minNotional ?? null,
       strictMinVolume: sniperExecConfig.strictMinVolume,
       openPositionsCount: openList.length,
       maxConcurrentPositions: sniperExecConfig.maxConcurrentPositions,
@@ -8273,6 +8294,10 @@ async function runDynamicProfitTargetWatcher() {
 }
 
 function initSniperAndProfitTargetEngine() {
+  ['#sniperSizingMode','#sniperFixedUsd','#sniperFixedLots'].forEach(id=>{
+    $(id)?.addEventListener('change',paintSniperSizingHelp);
+    $(id)?.addEventListener('input',paintSniperSizingHelp);
+  });
   $('#sniperMarketScope')?.addEventListener('change', updateSniperSelectedMarketPicker);
   $('#sniperMarketSearchInput')?.addEventListener('input', updateSniperSelectedMarketPicker);
   $('#sniperMarketChoices')?.addEventListener('change', updateSniperSelectedMarketPicker);

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
-import { sniperMarketAllowed, trySniperCandidates, sniperScanBatch, DEFAULT_SNIPER_CONFIG } from '../../src/sniperengine.js';
+import { checkSniperMt5Size, sniperMarketAllowed, trySniperCandidates, sniperScanBatch, DEFAULT_SNIPER_CONFIG } from '../../src/sniperengine.js';
 import { marketStatus } from '../../server/lib/markethours.js';
 
 const candidates = ['EUR/GBP', 'EUR/USD', 'BTC/USD'].map(symbol => ({ symbol, signal: 'BUY' }));
@@ -80,7 +80,7 @@ test('actual Sniper entry skips closed forex, then supervises and fills the next
     automationSnapshotCheck: () => ({ ok: true }),
     sniperExecConfig: { ...DEFAULT_SNIPER_CONFIG, sizingMode: 'fixed_lots', pauseOnHighImpactNews: false },
     sniperRuntime: { canStartAutoEntry: () => ({ ok: true }), beginAutoEntry() {}, finishAutoEntry() {}, executedSignals: new Set() },
-    sniperMarketAllowed, isTradingSessionAllowed: () => ({ ok: true }),
+    checkSniperMt5Size, sniperMarketAllowed, isTradingSessionAllowed: () => ({ ok: true }),
     bySym: { 'EUR/GBP': { c: 'forex' }, 'BTC/USD': { c: 'crypto' } },
     marketStatus: inst => {
       assert.equal(typeof inst, 'object', 'marketStatus requires the instrument, not its category string');
@@ -90,7 +90,7 @@ test('actual Sniper entry skips closed forex, then supervises and fills the next
     scanSignalsPreferred: async () => [{ confidence: 90, signal: 'BUY', stop_loss: 95, tp1: 110 }],
     state: { mktScan: {}, mt5LivePositions: [] },
     getOrStampEnvelopeForSymbol: () => ({ signalId: 'test-signal' }),
-    bridge: { quoteBridge: async () => ({ quotes: [{ bid: 100, ask: 101, time: Date.now() / 1000 }] }),
+    bridge: { quoteBridge: async () => ({ quotes: [{ bid: 100, ask: 101, time: Date.now() / 1000, contract_size: 1, volume_min: 0.01, volume_max: 100, volume_step: 0.01 }] }),
       placeBridgeOrder: async order => { submitted.push(order); return { type: 'filled', ticket: 1 }; } },
     computeAccountDrawdownAndExposure: () => ({ currentDrawdownPct: 0, totalOpenExposureUsd: 0, effectiveRequestedUsd: 10 }),
     evaluateTradeSupervisor: input => { supervised.push(input); return { verdict: 'APPROVED', checks: [], reasons: [] }; },
@@ -130,7 +130,7 @@ test('actual Sniper entry skips closed forex, then supervises and fills the next
   ctx.sniperExecConfig.marketScope = 'ALL';
   ctx.bridge.quoteBridge = async () => {
     ctx.sniperExecConfig.marketScope = 'FOREX';
-    return { quotes: [{ bid: 100, ask: 101, time: Date.now() / 1000 }] };
+    return { quotes: [{ bid: 100, ask: 101, time: Date.now() / 1000, contract_size: 1, volume_min: 0.01, volume_max: 100, volume_step: 0.01 }] };
   };
   assert.equal((await execute(candidates[2])).status, 'skipped');
   assert.equal(submitted.length, 0, 'a scope change during quote fetch must prevent dispatch');
@@ -138,10 +138,29 @@ test('actual Sniper entry skips closed forex, then supervises and fills the next
   ctx.sniperExecConfig.selectedMarkets = ['BTC/USD'];
   ctx.bridge.quoteBridge = async () => {
     ctx.sniperExecConfig.selectedMarkets = ['EUR/GBP'];
-    return { quotes: [{ bid: 100, ask: 101, time: Date.now() / 1000 }] };
+    return { quotes: [{ bid: 100, ask: 101, time: Date.now() / 1000, contract_size: 1, volume_min: 0.01, volume_max: 100, volume_step: 0.01 }] };
   };
   assert.equal((await execute(candidates[2])).status, 'skipped');
   assert.equal(submitted.length, 0, 'changing exact markets during a quote fetch must prevent dispatch');
+  // A confirmed local size skip must continue, without ever submitting the undersized symbol.
+  ctx.sniperExecConfig.marketScope = 'ALL';
+  ctx.sniperExecConfig.sizingMode = 'fixed_usd';
+  ctx.sniperExecConfig.fixedUsd = 2;
+  ctx.scanSignalsPreferred = async ([symbol]) => { ctx.quoteSymbol = symbol; return [{ confidence: 90, signal: 'SELL' }]; };
+  ctx.bridge.quoteBridge = async () => ({ quotes: [{ bid: 2189.25, ask: 2190, time: Date.now()/1000,
+    contract_size: ctx.quoteSymbol === 'EUR/GBP' ? 100 : 0.01, volume_min: 0.01, volume_max: 100, volume_step: 0.01 }] });
+  const sized = await trySniperCandidates([candidates[0], candidates[2]], { canContinue: () => true, attempt: execute });
+  assert.equal(sized.status, 'filled');
+  assert.match(sized.skipped[0].reason, /2189.25 notional/);
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].symbol, 'BTCUSD');
+  assert.equal(submitted[0].volume, 2, 'configured USD size never increases');
+  assert.equal(submitted[0].lots, null, 'USD mode never silently switches to lots');
+  submitted.length = 0;
+  ctx.bridge.placeBridgeOrder = async () => { throw new Error('Submission timeout: outcome unknown'); };
+  const uncertain = await trySniperCandidates([candidates[2], candidates[0]], { canContinue: () => true, attempt: execute });
+  assert.equal(uncertain.status, 'halted');
+  assert.equal(uncertain.skipped.length, 0, 'an uncertain submission is never a size skip');
   assert.doesNotMatch(main, /marketStatus\(I\.c,/);
   assert.match(main, /trySniperCandidates\(sigs,/);
 });
