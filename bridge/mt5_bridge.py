@@ -1556,7 +1556,8 @@ def handle_quote(msg):
         _inf = mt5.symbol_info(sym)
         _path = str(getattr(_inf, "path", "") or "")
         _desc = str(getattr(_inf, "description", "") or "")
-        out.append({"symbol": sym, "bid": float(t.bid or 0), "ask": float(t.ask or 0), "time": int(t.time or 0),
+        out.append({"symbol": sym, "requested_symbol": requested, "bid": float(t.bid or 0), "ask": float(t.ask or 0), "time": int(t.time or 0),
+                    "time_msc": int(getattr(t, "time_msc", 0) or 0),
                     "volume_min": getattr(_inf, "volume_min", None),
                     "volume_max": getattr(_inf, "volume_max", None),
                     "volume_step": getattr(_inf, "volume_step", None),
@@ -1574,7 +1575,7 @@ def handle_quote(msg):
                     "category": market_category(_path, _desc, sym),
                     "spec_source": "local MT5 terminal",
                     "spec_at": int(time.time())})
-    return {"type": "quotes", "quotes": out, "unresolved": unresolved}
+    return {"type": "quotes", "quotes": out, "unresolved": unresolved, "server_time_ms": int(time.time() * 1000)}
 
 
 def handle_search(msg):

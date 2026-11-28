@@ -46,7 +46,7 @@ import { buildScheduledNewsAlerts } from './schedulednews.js';
 import { initCommandCentre } from './commandcentre.js';
 import { buildExposureReconcile, renderExposureReconcile } from './exposurereconcile.js';
 import { computeMultiTimeframeConfluence, stampSignalEnvelope, getSignalValidityState, evaluateTradeSupervisor, buildMarketIntelligenceBrief, evaluateSingleTimeframe, resampleCandles } from './supervisor.js';
-import { checkMt5OrderSize } from './mt5sizing.js';
+import { checkMt5OrderSize, inspectMt5Quote } from './mt5sizing.js';
 import { signalNotificationFields, notificationSignalCandidates } from './notificationsignals.js';
 import { checkSniperMt5Size, sniperSizingGuidance, sniperMarketAllowed, trySniperCandidates, sniperScanBatch, checkAutomationSnapshot, DEFAULT_SNIPER_CONFIG, normalizeSniperConfig, buildAccountAuthKey, isTradingSessionAllowed, checkHighImpactNewsWindow, evaluatePositionProfitTarget, createSniperRuntime, PROFIT_TARGET_PRESETS } from './sniperengine.js';
 import { pushNotificationItem, listNotifications, unreadNotificationCount, markNotificationRead, markAllNotificationsRead, updateNotificationStatusBySignal, clearResolvedNotifications, subscribeNotifications } from './notify.js';
@@ -7036,11 +7036,16 @@ applyTheme();
 
 /* ---------- position sizer + trade planner (master §11) ---------- */
 async function freshManualMt5Quote(sym) {
-  const result=await bridge.quoteBridge([sym.replace('/','')]);
-  const quote=result?.quotes?.[0];
-  const age=Date.now()-Number(quote?.time)*1000;
-  if(!quote||!Number.isFinite(age)||age < -5000||age > 60000)throw new Error('A fresh MT5 quote is required to verify minimum lots. No order sent.');
-  return quote;
+  const clock=()=>typeof performance!=='undefined' ? performance.now() : Date.now();
+  for(let attempt=0;attempt<2;attempt++){
+    const started=clock();
+    const result=await bridge.quoteBridge([sym.replace('/','')]);
+    const check=inspectMt5Quote(result,{symbol:sym,nowMs:Date.now(),roundTripMs:clock()-started});
+    if(check.ok)return check.quote;
+    if(!check.retryable||attempt===1)throw new Error(check.reason);
+    // One read-only retry handles the first tick arriving just after symbol selection. Never retry an order.
+    await new Promise(resolve=>setTimeout(resolve,250));
+  }
 }
 
 async function reviewManualMt5Minimum() {
