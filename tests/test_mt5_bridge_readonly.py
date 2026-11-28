@@ -362,6 +362,32 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.fake_mt5.positions_get.return_value = None
         self.assertEqual(self.bridge.handle_positions({})["type"], "error")
 
+    def test_quote_preserves_tick_time_and_supplies_bridge_clock_and_requested_symbol(self):
+        old_tick = int(time.time()) - 3600
+        self.fake_mt5.symbol_info_tick.return_value.time = old_tick
+        self.fake_mt5.symbol_info_tick.return_value.time_msc = old_tick * 1000 + 123
+        before = int(time.time() * 1000)
+        reply = self.bridge.handle_quote({"symbols": ["XAUUSD"]})
+        after = int(time.time() * 1000)
+        self.assertEqual(reply["type"], "quotes", reply)
+        self.assertGreaterEqual(reply["server_time_ms"], before)
+        self.assertLessEqual(reply["server_time_ms"], after)
+        quote = reply["quotes"][0]
+        self.assertEqual(quote["requested_symbol"], "XAUUSD")
+        self.assertEqual(quote["time"], old_tick, "Never relabel an old broker tick as fresh")
+        self.assertEqual(quote["time_msc"], old_tick * 1000 + 123)
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_quote_reports_missing_tick_with_resolved_symbol_without_any_order(self):
+        self.fake_mt5.symbol_info_tick.return_value = None
+        reply = self.bridge.handle_quote({"symbols": ["XAUUSD"]})
+        self.assertEqual(reply["quotes"], [])
+        self.assertEqual(reply["unresolved"][0]["requested"], "XAUUSD")
+        self.assertIn("resolved", reply["unresolved"][0])
+        self.assertIn("No current tick", reply["unresolved"][0]["message"])
+        self.assertGreater(reply["server_time_ms"], 0)
+        self.fake_mt5.order_send.assert_not_called()
+
     def test_m15_history_is_read_only_and_uses_mt5_tick_volume(self):
         self.fake_mt5.TIMEFRAME_M1 = 1
         self.fake_mt5.TIMEFRAME_M5 = 5
