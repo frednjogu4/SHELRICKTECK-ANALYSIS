@@ -365,7 +365,13 @@ export function closeBridgeOrder(o) {
   if (req?.manualConfirmed !== true || !Number.isInteger(ticket) || ticket <= 0 || !req.intentId) {
     return Promise.reject(new Error('Explicit per-close confirmation, valid MT5 ticket, and unique intent id are required. No close order was sent.'));
   }
-  return frame({ type: 'close', ticket, environment: req.environment, intent_id: req.intentId, confirmed: true });
+  const payload = { type: 'close', ticket, environment: req.environment, intent_id: req.intentId, confirmed: true };
+  if (req.netTargetUsd != null) {
+    const target = Number(req.netTargetUsd);
+    if (!Number.isFinite(target) || target <= 0) return Promise.reject(new Error('Invalid net-profit target; no close order was sent.'));
+    payload.net_target_usd = target;
+  }
+  return frame(payload);
 }
 export function bridgePositions() { return frame({ type: 'positions' }); }
 export function bridgePendingOrders() { return frame({ type: 'pending_orders' }); }

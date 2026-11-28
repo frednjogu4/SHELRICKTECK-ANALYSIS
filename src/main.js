@@ -867,6 +867,7 @@ async function refreshMt5Snapshot(showToast=false){
     const a=state.broker.account||{};
     state.broker.account=Object.assign({},a,{
       balance:acct.balance,equity:acct.equity,margin:acct.margin,margin_free:acct.margin_free,
+      net_target_close_supported:acct.net_target_close_supported===true,
       margin_level:acct.margin_level,profit:acct.profit,daily_realized_pl:acct.daily_realized_pl,
       open_positions_count:acct.open_positions_count,pending_orders_count:acct.pending_orders_count,ts:acct.ts,
       currency:acct.currency||a.currency,leverage:acct.leverage||a.leverage||null,
@@ -879,6 +880,7 @@ async function refreshMt5Snapshot(showToast=false){
     updateSessionInfo(); updateKpis(); updatePortfolioLive();
     refreshMt5SizePlan();
     if(state.view==='overview')renderOverview();
+    if(state.view==='positions' && typeof renderUnifiedOpenPositions==='function')renderUnifiedOpenPositions();
     if(showToast)toast('MT5 refreshed',(state.mt5LivePositions||[]).length+' live position(s) · balance/equity from the connected terminal.','ok');
     return true;
   }catch(_e){
@@ -7312,6 +7314,8 @@ async function loadPipelineFlow(){
  * ============================================================================ */
 
 const sniperRuntime = createSniperRuntime();
+let profitTargetWatcherBusy = false;
+const profitTargetCloseAttempts = new Set();
 const SNIPER_CFG_STORAGE_KEY = 'aurum_sniper_v2';
 const AUDIT_STORAGE_KEY = 'aurum_audit_trail_v2';
 
@@ -8044,6 +8048,9 @@ function syncSniperUiControls() {
   const ident = getActiveBrokerIdentity();
   if ($('#sniperExecToggle')) $('#sniperExecToggle').checked = armed;
   if ($('#autoProfitCloseChk')) $('#autoProfitCloseChk').checked = Boolean(sniperExecConfig.autoProfitCloseEnabled);
+  if ($('#sniperNetTargetPrimary')) $('#sniperNetTargetPrimary').checked = Boolean(sniperExecConfig.netTargetPrimary);
+  const ptStatus=$('#profitTargetStatus');
+  if(ptStatus)ptStatus.textContent=sniperExecConfig.autoProfitCloseEnabled ? 'Auto-close ON · checks fresh MT5 net P&L about every 2s while this app stays running. SL/TP can close first; fills may differ from target.' : 'Auto-close OFF · setting a target alone does not authorize closing.';
   if ($('#netProfitTargetInput')) $('#netProfitTargetInput').value = Number(sniperExecConfig.netProfitTargetUsd).toFixed(2);
   $$('#profitPresetRow .profit-preset-btn').forEach((b) => {
     b.classList.toggle('active', Math.abs(Number(b.dataset.profitPreset) - Number(sniperExecConfig.netProfitTargetUsd)) < 1e-6);
@@ -8253,6 +8260,12 @@ async function executeSupervisedSniperEntry(candidate) {
     }
     if (!isSniperExecutionArmedNow() || getActiveBrokerIdentity().authKey !== ident.authKey || !automationSnapshotCheck().ok) throw new Error('Account authorization or live snapshot changed during analysis. No order sent.');
     if (ident.broker === 'mt5') {
+      if(sniperExecConfig.autoProfitCloseEnabled && sniperExecConfig.netTargetPrimary
+        && (!(Number.isFinite(Number(freshSig.stop_loss)) && Number(freshSig.stop_loss)>0)
+          || state.broker?.account?.net_target_close_supported!==true)) {
+        sniperRuntime.finishAutoEntry(false);
+        return {status:'skipped',reason:'Net-target-first entries require a valid signal SL and updated MT5 bridge. No order sent.'};
+      }
       const intentId = 'snp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 14);
       const fill = await bridge.placeBridgeOrder({
         environment: ident.environment,
@@ -8263,7 +8276,7 @@ async function executeSupervisedSniperEntry(candidate) {
         strictMinVolume: sniperExecConfig.strictMinVolume,
         maxSlippagePoints: sniperExecConfig.maxSlippagePoints,
         sl: Number(freshSig.stop_loss) || 0,
-        tp: Number(freshSig.tp1) || 0,
+        tp: sniperExecConfig.autoProfitCloseEnabled && sniperExecConfig.netTargetPrimary ? 0 : Number(freshSig.tp1) || 0,
         direct: true,
         intentId,
         manualConfirmed: true,
@@ -8322,75 +8335,82 @@ async function executeSupervisedSniperEntry(candidate) {
 }
 
 async function runDynamicProfitTargetWatcher() {
-  if (!sniperExecConfig.autoProfitCloseEnabled || sniperExecConfig.emergencyHalted || isCloudflareReadonlyMode()) return;
+  if (profitTargetWatcherBusy || !sniperExecConfig.autoProfitCloseEnabled || sniperExecConfig.emergencyHalted || isCloudflareReadonlyMode()) return;
   const ident = getActiveBrokerIdentity();
-  if (!ident.connected || !automationSnapshotCheck().ok || sniperExecConfig.authorizedKey !== ident.authKey) return;
-
-  if (ident.broker === 'mt5') {
-    const list = Array.isArray(state.mt5LivePositions) ? state.mt5LivePositions : [];
-    for (const p of list) {
-      if (sniperExecConfig.emergencyHalted || !sniperExecConfig.autoProfitCloseEnabled || getActiveBrokerIdentity().authKey !== ident.authKey || !automationSnapshotCheck().ok) return;
-      const posKey = `mt5:${p.ticket}`;
-      const check = evaluatePositionProfitTarget({ ...p, posKey }, sniperExecConfig);
-      if (!check.eligible) continue;
-      if (!sniperRuntime.acquireCloseLock(posKey, 20_000)) continue;
-      try {
-        const intentId = 'ptc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 14);
-        const closed = await bridge.closeBridgeOrder({
-          ticket: Number(p.ticket),
-          environment: ident.environment,
-          intentId,
-          manualConfirmed: true,
-        });
-        if (closed?.type === 'closed') {
+  if (!ident.connected || sniperExecConfig.authorizedKey !== ident.authKey) return;
+  const authorized = () => sniperExecConfig.autoProfitCloseEnabled && !sniperExecConfig.emergencyHalted
+    && !isCloudflareReadonlyMode() && getActiveBrokerIdentity().connected
+    && getActiveBrokerIdentity().authKey === ident.authKey && sniperExecConfig.authorizedKey === ident.authKey;
+  profitTargetWatcherBusy = true;
+  try {
+    if (ident.broker === 'mt5') {
+      // Never close against the previous 15-second display snapshot. Poll one complete snapshot per cycle.
+      if (!await refreshMt5Snapshot(false) || !authorized() || !automationSnapshotCheck().ok) return;
+      if (state.broker?.account?.net_target_close_supported !== true) {
+        const status = $('#profitTargetStatus');
+        if (status) status.textContent = 'Auto-close paused: update/restart the local MT5 bridge for guarded net-target closes.';
+        return;
+      }
+      const list = [...(state.mt5LivePositions || [])];
+      for (const p of list) {
+        if (!authorized() || !automationSnapshotCheck().ok) return;
+        const posKey = `mt5:${p.ticket}`, attemptKey = `${ident.authKey}:${posKey}`;
+        const check = evaluatePositionProfitTarget({ ...p, posKey }, sniperExecConfig);
+        if (!check.eligible || profitTargetCloseAttempts.has(attemptKey) || mt5ClosingTickets.has(Number(p.ticket))) continue;
+        if (!sniperRuntime.acquireCloseLock(posKey, 20_000)) continue;
+        profitTargetCloseAttempts.add(attemptKey);
+        mt5ClosingTickets.add(Number(p.ticket));
+        try {
+          const intentId = 'ptc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 14);
+          const closed = await bridge.closeBridgeOrder({ ticket: Number(p.ticket), environment: ident.environment,
+            intentId, manualConfirmed: true, netTargetUsd: check.targetUsd });
+          if (closed?.type === 'close_skipped' && Number(closed.ticket) === Number(p.ticket)
+            && ['NET_TARGET_NOT_REACHED', 'NET_PROFIT_UNAVAILABLE'].includes(closed.reason)) {
+            profitTargetCloseAttempts.delete(attemptKey); // Explicitly verified no-send: keep monitoring.
+            continue;
+          }
+          if (closed?.type !== 'closed' || Number(closed.ticket) !== Number(p.ticket) || closed.environment !== ident.environment) {
+            throw new Error('Target close was not confirmed for this position/account. Inspect MT5 before retrying.');
+          }
           recordPlatformAudit('PROFIT_TARGET_CLOSE', 'MT5_NET_TARGET_HIT', {
-            ticket: p.ticket, symbol: p.symbol, netProfit: check.netProfit, grossProfit: check.grossProfit, costs: check.costs, targetUsd: check.targetUsd, exitPrice: closed.price,
+            ticket: p.ticket, symbol: p.symbol, observedNetProfit: check.netProfit, targetUsd: check.targetUsd, exitPrice: closed.price,
           });
           state.history.unshift({
-            id: 'mt5_pt_' + p.ticket + '_' + Date.now(),
-            sym: p.symbol,
-            side: p.side,
-            amt: p.volume,
-            entry: p.price,
-            exit: closed.price,
-            pl: check.netProfit,
-            grossPl: check.grossProfit,
-            costs: check.costs,
-            closedAt: Date.now(),
-            reason: `Net Profit Target (+$${check.targetUsd.toFixed(2)})`,
+            id: 'mt5_pt_' + p.ticket + '_' + Date.now(), sym: p.symbol, side: p.side, amt: p.volume,
+            entry: p.price, exit: closed.price, pl: null, triggerNetProfit: check.netProfit,
+            closedAt: Date.now(), broker: 'mt5', ticket: p.ticket,
+            reason: `Net Profit Target (+$${check.targetUsd.toFixed(2)}) — final P&L pending broker history`,
           });
           save();
-          toast('Net profit target banked!', `#${p.ticket} ${p.symbol} closed @ ${closed.price} · Net +$${check.netProfit.toFixed(2)} (target +$${check.targetUsd.toFixed(2)})`, 'ok');
-          notify('Dynamic Profit Target Closed', `${p.symbol} #${p.ticket} banked +$${check.netProfit.toFixed(2)} net profit (after fees/swap). Scanning next setup.`, {
+          toast('Net-target close confirmed', `#${p.ticket} ${p.symbol} closed. Observed net +$${check.netProfit.toFixed(2)}; final realized P&L may differ.`, 'ok');
+          notify('Dynamic Profit Target Closed', `${p.symbol} #${p.ticket} close confirmed. Final P&L comes from broker history; monitoring continues.`, {
             tag: 'profit-target-' + p.ticket, kind: 'ok', symbol: p.symbol, broker: 'MT5', accountMode: ident.environment.toUpperCase(), status: 'CLOSED', sound: true,
           });
           await refreshMt5Snapshot(false);
+        } catch (e) {
+          // A timeout/rejection/partial result never releases this ticket for an automatic retry.
+          recordPlatformAudit('PROFIT_TARGET_ERROR', 'MT5_CLOSE_FAILED', { ticket: p.ticket, error: String(e.message || e) });
+          toast('Auto-close needs review', `#${p.ticket}: ${String(e.message || e)} No automatic retry; inspect MT5.`, 'warn');
+        } finally {
+          mt5ClosingTickets.delete(Number(p.ticket));
+          sniperRuntime.releaseCloseLock(posKey);
         }
-      } catch (e) {
-        recordPlatformAudit('PROFIT_TARGET_ERROR', 'MT5_CLOSE_FAILED', { ticket: p.ticket, error: String(e.message || e) });
-      } finally {
-        sniperRuntime.releaseCloseLock(posKey);
+      }
+    } else if (ident.broker === 'deriv') {
+      const list = Array.isArray(state.positions) ? [...state.positions] : [];
+      for (const p of list) {
+        if (!authorized() || !automationSnapshotCheck().ok) return;
+        if (!p.contract_id) continue;
+        const posKey = `deriv:${p.contract_id}`;
+        const livePl = typeof posPnl === 'function' ? Number(posPnl(p) || 0) : 0;
+        const check = evaluatePositionProfitTarget({ posKey, profit: livePl, net_profit: livePl }, sniperExecConfig);
+        if (!check.eligible || !sniperRuntime.acquireCloseLock(posKey, 20_000)) continue;
+        try {
+          if (typeof closePosition === 'function') await closePosition(p.id, `Net Profit Target (+$${check.targetUsd.toFixed(2)})`);
+        } catch {} finally { sniperRuntime.releaseCloseLock(posKey); }
       }
     }
-  } else if (ident.broker === 'deriv') {
-    const list = Array.isArray(state.positions) ? [...state.positions] : [];
-    for (const p of list) {
-      if (!p.contract_id) continue;
-      const posKey = `deriv:${p.contract_id}`;
-      const livePl = typeof posPnl === 'function' ? Number(posPnl(p) || 0) : 0;
-      const check = evaluatePositionProfitTarget({ posKey, profit: livePl, net_profit: livePl }, sniperExecConfig);
-      if (!check.eligible) continue;
-      if (!sniperRuntime.acquireCloseLock(posKey, 20_000)) continue;
-      try {
-        if (typeof closePosition === 'function') {
-          await closePosition(p.id, `Net Profit Target (+$${check.targetUsd.toFixed(2)})`);
-          recordPlatformAudit('PROFIT_TARGET_CLOSE', 'DERIV_NET_TARGET_HIT', { contractId: p.contract_id, symbol: p.sym, netProfit: check.netProfit, targetUsd: check.targetUsd });
-        }
-      } catch {} finally {
-        sniperRuntime.releaseCloseLock(posKey);
-      }
-    }
-  }
+  } finally { profitTargetWatcherBusy = false; }
 }
 
 function initSniperAndProfitTargetEngine() {
@@ -8422,6 +8442,7 @@ function initSniperAndProfitTargetEngine() {
       newsWindowBeforeMin: Number($('#sniperNewsPreMin')?.value || 15),
       newsWindowAfterMin: Number($('#sniperNewsPostMin')?.value || 15),
       netProfitTargetUsd: Number($('#netProfitTargetInput')?.value || 3),
+      netTargetPrimary: Boolean($('#sniperNetTargetPrimary')?.checked),
     });
     saveSniperExecConfig();
     syncSniperUiControls();
@@ -8462,6 +8483,12 @@ function initSniperAndProfitTargetEngine() {
     }
   });
 
+  $('#sniperNetTargetPrimary')?.addEventListener('change', (e) => {
+    sniperExecConfig.netTargetPrimary=Boolean(e.target.checked);
+    saveSniperExecConfig();
+    recordPlatformAudit('PROFIT_TARGET_CONFIG','NEW_ENTRY_EXIT_MODE',{netTargetPrimary:sniperExecConfig.netTargetPrimary});
+    toast('New Sniper entries',e.target.checked?'With Auto-Close ON: keep signal SL and use the monetary net target instead of price TP1. Existing SL/TP are unchanged.':'New entries use signal SL and TP1; net target may still close earlier.','ok');
+  });
   $('#autoProfitCloseChk')?.addEventListener('change', (e) => {
     if (e.target.checked) {
       const ident = getActiveBrokerIdentity();
@@ -8477,6 +8504,7 @@ function initSniperAndProfitTargetEngine() {
     sniperExecConfig.autoProfitCloseEnabled = Boolean(e.target.checked);
     sniperExecConfig.netProfitTargetUsd = Math.max(0.25, Number($('#netProfitTargetInput')?.value || 3));
     saveSniperExecConfig();
+    if(e.target.checked)void runDynamicProfitTargetWatcher().catch(()=>{});
     recordPlatformAudit('PROFIT_TARGET_CONFIG', e.target.checked ? 'ENABLED' : 'DISABLED', { targetUsd: sniperExecConfig.netProfitTargetUsd });
     syncSniperUiControls();
     toast('Dynamic net-profit target', e.target.checked ? `Active: open trades auto-close at +$${sniperExecConfig.netProfitTargetUsd.toFixed(2)} net profit.` : 'Dynamic profit-target auto-close turned off.', 'ok');
@@ -8491,6 +8519,7 @@ function initSniperAndProfitTargetEngine() {
     if ($('#netProfitTargetInput')) $('#netProfitTargetInput').value = v.toFixed(2);
     saveSniperExecConfig();
     recordPlatformAudit('PROFIT_TARGET_CONFIG', 'SET_PRESET', { targetUsd: v });
+    void runDynamicProfitTargetWatcher().catch(()=>{});
     syncSniperUiControls();
   });
 
@@ -8500,6 +8529,7 @@ function initSniperAndProfitTargetEngine() {
     e.target.value = v.toFixed(2);
     saveSniperExecConfig();
     recordPlatformAudit('PROFIT_TARGET_CONFIG', 'SET_CUSTOM', { targetUsd: v });
+    void runDynamicProfitTargetWatcher().catch(()=>{});
     syncSniperUiControls();
   });
 
@@ -8507,6 +8537,7 @@ function initSniperAndProfitTargetEngine() {
     readRulesFromInputs();
     recordPlatformAudit('SNIPER_CONFIG', 'UPDATED_RULES', { minStrength: sniperExecConfig.minStrength, maxDailyLossUsd: sniperExecConfig.maxDailyLossUsd, marketScope: sniperExecConfig.marketScope });
     sniperScanCursor = 0;
+    if(atTimer)void autoTradeCycle();
     toast('Sniper rules saved', 'Analysis scope: '+(sniperExecConfig.marketScope==='SELECTED'?(sniperExecConfig.selectedMarkets.join(', ')||'no markets selected'):sniperExecConfig.marketScope)+'. Applies to the next scan and new entries; existing positions remain managed.', 'ok');
   });
 
@@ -8530,6 +8561,7 @@ function renderUnifiedOpenPositions() {
       const gross = Number(p.profit || 0);
       const costs = Number(p.commission || 0) + Number(p.swap || 0) + Number(p.fee || 0);
       const net = Number(p.net_profit ?? (gross + costs));
+      const costsKnown=p.costs_verified!==false;
       const targetVal = sniperExecConfig.perPositionTargets?.[posKey] ?? sniperExecConfig.netProfitTargetUsd;
       rows.push(`<tr>
         <td class="mono">MT5 #${escHtml(String(p.ticket))} <span class="badge ${ident.environment === 'real' ? 'sell' : 'buy'}">${ident.environment.toUpperCase()}</span></td>
@@ -8539,8 +8571,8 @@ function renderUnifiedOpenPositions() {
         <td class="num mono">${escHtml(String(p.price))}</td>
         <td class="num mono">${escHtml(String(p.current_price ?? '—'))}</td>
         <td class="num mono ${gross >= 0 ? 'up' : 'down'}">${fmtMoney(gross, true)}</td>
-        <td class="num mono">${fmtMoney(costs, true)}</td>
-        <td class="num mono ${net >= 0 ? 'up' : 'down'}"><b>${fmtMoney(net, true)}</b></td>
+        <td class="num mono">${costsKnown ? fmtMoney(costs, true) : '—'}</td>
+        <td class="num mono ${costsKnown && net >= 0 ? 'up' : 'down'}"><b>${costsKnown ? fmtMoney(net, true) : 'Unverified'}</b></td>
         <td><input class="input sm mono" type="number" step="0.25" min="0.25" value="${Number(targetVal).toFixed(2)}" data-pos-target="${escHtml(posKey)}" style="width:84px"></td>
         <td class="right"><button class="btn danger sm" type="button" data-close-mt5-ticket="${escHtml(String(p.ticket))}">Close</button></td>
       </tr>`);
@@ -8564,6 +8596,7 @@ function renderUnifiedOpenPositions() {
       <td class="right"><button class="btn danger sm" type="button" data-close-app-pos="${escHtml(String(p.id))}">Close</button></td>
     </tr>`);
   }
+  if(tbody.contains(document.activeElement) && document.activeElement?.matches('[data-pos-target]'))return;
   tbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="11" class="faint center">No open positions on the active broker account.</td></tr>';
 }
 
@@ -8859,6 +8892,7 @@ function initSpecialistViewsAndSettingsNav() {
     sniperExecConfig.perPositionTargets[key] = val;
     saveSniperExecConfig();
     recordPlatformAudit('POSITION_PROFIT_TARGET', 'OVERRIDE_NET_TARGET', { position: key, targetUsd: val });
+    void runDynamicProfitTargetWatcher().catch(()=>{});
     toast('Position net target updated', `${key} will auto-close at +$${val.toFixed(2)} net profit when Auto-Close is enabled.`, 'ok');
   });
   $('#unifiedOpenPosBody')?.addEventListener('click', async (e) => {

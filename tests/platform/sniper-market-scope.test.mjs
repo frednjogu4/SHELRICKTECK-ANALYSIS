@@ -130,6 +130,9 @@ test('actual scan considers only exact selections even with other watchlist/noti
     await vm.runInNewContext('('+cycle+')',ctx)();
     const expected=selectedMarkets.filter(s=>instruments.some(i=>i.s===s));
     assert.deepEqual([...scanned].sort(),expected.sort());
+    scanned.length=0;
+    await vm.runInNewContext('('+cycle+')',ctx)();
+    assert.deepEqual([...scanned].sort(),expected.sort(),'each later monitoring cycle rechecks exactly the same selected markets');
     if(!expected.length)assert.match(statuses[0][1],/No markets/);
   }
 });

@@ -2143,7 +2143,7 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
             <div class="row between wrap" style="gap:10px;margin-bottom:10px">
               <div>
                 <b>Dynamic Monetary Net-Profit Target Auto-Close</b>
-                <div class="tiny faint">Automatically closes any open position the instant its broker-verified <b>NET monetary profit</b> (after commission, swap &amp; fees) reaches your target, then continues scanning for the next setup.</div>
+                <div class="tiny faint">When enabled, requests a close when fresh broker <b>NET profit</b> (after accrued commission, swap &amp; fees) reaches your target. Final fill/P&amp;L may differ; this app and bridge must stay running.</div>
               </div>
               <label class="switch" title="Enable automatic position closing at net monetary profit target"><input type="checkbox" id="autoProfitCloseChk"><i></i></label>
             </div>
@@ -2161,6 +2161,9 @@ button,.btn,.chip,.icon-btn,.nav-item,.theme-card,.side-btn{ -webkit-tap-highlig
                 <input class="input mono sm" id="netProfitTargetInput" type="number" min="0.25" step="0.25" value="3.00" style="width:96px">
               </label>
             </div>
+            <div class="hint" id="profitTargetStatus" role="status" aria-live="polite">Auto-close OFF · setting a target alone does not authorize closing.</div>
+            <label class="row tiny" style="gap:7px;margin-top:8px"><input type="checkbox" id="sniperNetTargetPrimary">New MT5 Sniper entries: keep signal SL, use net target instead of price TP1 (Auto-Close must be ON).</label>
+            <div class="hint">Existing SL/TP are unchanged and may close earlier. Selected markets are rechecked every 30s while monitoring is ON; entries still require Arm Sniper Execution.</div>
           </div>
 
           <!-- Configurable Sniper Entry & Risk Parameters (Section 5) -->
