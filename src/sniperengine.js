@@ -36,6 +36,7 @@ export const DEFAULT_SNIPER_CONFIG = {
   cooldownSec: 60,
   preventDuplicateSymbol: true,
   autoProfitCloseEnabled: false,  // Dynamic net-profit target auto-close toggle
+  netTargetPrimary: false,       // Explicit opt-in: new MT5 entries retain SL but omit price TP1
   netProfitTargetUsd: 3.0,        // Default $3 net profit target ($2, $3, $4, $5, $10, or custom)
   perPositionTargets: {},         // { [posKey]: customTargetUsd }
 };
@@ -68,10 +69,10 @@ export function normalizeSniperConfig(raw = {}) {
   merged.maxExposureUsd = Math.max(0, Number(merged.maxExposureUsd) ?? 5000);
   merged.maxSlippagePoints = Math.max(1, Math.min(100, Math.round(Number(merged.maxSlippagePoints) || 20)));
   merged.cooldownSec = Math.max(5, Math.min(3600, Math.round(Number(merged.cooldownSec) || 60)));
+  merged.netTargetPrimary = merged.netTargetPrimary === true;
   merged.netProfitTargetUsd = Math.max(0.1, Number(merged.netProfitTargetUsd) || 3);
-  if (!merged.perPositionTargets || typeof merged.perPositionTargets !== 'object') {
-    merged.perPositionTargets = {};
-  }
+  merged.perPositionTargets = merged.perPositionTargets && typeof merged.perPositionTargets === 'object' && !Array.isArray(merged.perPositionTargets)
+    ? { ...merged.perPositionTargets } : {};
   return merged;
 }
 
@@ -150,6 +151,11 @@ export function evaluatePositionProfitTarget(pos, config = DEFAULT_SNIPER_CONFIG
     ? Number(pos.net_profit)
     : Number((grossProfit + costs).toFixed(2));
 
+  const values = [targetUsd, grossProfit, commission, swap, fee, netProfit];
+  if (pos.costs_verified === false || values.some(v => !Number.isFinite(v))
+    || ['profit','net_profit','commission','swap','fee'].some(k => pos[k] != null && !Number.isFinite(Number(pos[k])))) {
+    return { eligible: false, posKey, netProfit, grossProfit, costs, targetUsd, reason: 'Broker net profit / costs could not be verified.' };
+  }
   if (!config?.autoProfitCloseEnabled || !(targetUsd > 0)) {
     return { eligible: false, posKey, netProfit, grossProfit, costs, targetUsd, reason: 'Auto profit-target closure is disabled.' };
   }

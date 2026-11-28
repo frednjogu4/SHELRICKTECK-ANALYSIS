@@ -596,6 +596,7 @@ def handle_account(_msg):
         pending_count = 0
     return {
         "type": "account",
+        "net_target_close_supported": True,
         "balance": ai.balance,
         "equity": ai.equity,
         "margin": getattr(ai, "margin", 0.0),
@@ -1103,6 +1104,29 @@ def handle_order(msg):
             _MT5_ORDER_REPLIES.pop(next(iter(_MT5_ORDER_REPLIES)))
         return reply
 
+def _mt5_position_net(pos):
+    """Accrued broker net P/L; unavailable deal costs must never look like zero fees."""
+    try:
+        gross = float(pos.profit)
+        swap = float(getattr(pos, "swap", 0.0) or 0.0)
+        raw_comm, raw_fee = getattr(pos, "commission", None), getattr(pos, "fee", None)
+        if raw_comm is None or raw_fee is None:
+            deals = mt5.history_deals_get(position=int(pos.ticket))
+            if deals is None:
+                return None
+            if raw_comm is None:
+                raw_comm = sum(float(getattr(d, "commission", 0.0) or 0.0) for d in deals)
+            if raw_fee is None:
+                raw_fee = sum(float(getattr(d, "fee", 0.0) or 0.0) for d in deals)
+        commission, fee = float(raw_comm), float(raw_fee)
+        if not all(math.isfinite(x) for x in (gross, swap, commission, fee)):
+            return None
+        return {"profit": gross, "swap": swap, "commission": commission, "fee": fee,
+                "net_profit": round(gross + swap + commission + fee, 2), "costs_verified": True}
+    except Exception:
+        return None
+
+
 def handle_close(msg):
     """Close one open Exness REAL or DEMO position by ticket with explicit manual confirmation."""
     global _MT5_ORDER_UNCERTAIN
@@ -1134,6 +1158,21 @@ def handle_close(msg):
         pos = next((p for p in positions if int(getattr(p, "ticket", -1)) == ticket), None)
         if pos is None:
             return {**err(f"MT5 position #{ticket} is not open (already closed or settled).")}
+        if msg.get("net_target_usd") is not None:
+            try:
+                target = float(msg["net_target_usd"])
+                if not math.isfinite(target) or target <= 0:
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError):
+                return {**err("Invalid net-profit target; no close order was sent.")}
+            if _MT5_ORDER_UNCERTAIN:
+                return {**err("Previous execution outcome uncertain. Automatic target close paused; inspect MT5 positions/history. No close order was sent.")}
+            net = _mt5_position_net(pos)
+            if net is None:
+                return {"type": "close_skipped", "reason": "NET_PROFIT_UNAVAILABLE", "ticket": ticket}
+            if net["net_profit"] + 1e-9 < target:
+                return {"type": "close_skipped", "reason": "NET_TARGET_NOT_REACHED", "ticket": ticket,
+                        "net_profit": net["net_profit"], "target_usd": target}
         try:
             info = mt5.symbol_info(pos.symbol)
             tick = mt5.symbol_info_tick(pos.symbol)
@@ -1187,6 +1226,9 @@ def handle_close(msg):
                 "environment": environment,
                 "demo": environment == "demo",
             }
+        elif result.retcode in (getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", -2), getattr(mt5, "TRADE_RETCODE_PLACED", -3)):
+            _MT5_ORDER_UNCERTAIN = True
+            reply = {**err(f"{env_label} close outcome for #{ticket} is partial or pending and uncertain. Inspect MT5; no automatic retry was made.")}
         else:
             reply = {**err(f"{env_label} close rejected by MT5 (retcode={getattr(result, 'retcode', None)}): {getattr(result, 'comment', '')}. No retry was made.")}
         _MT5_CLOSE_REPLIES[intent_id] = reply
@@ -1200,21 +1242,15 @@ def handle_positions(_msg):
     if identity_error:
         return {**err(identity_error)}
     out = []
-    for p in mt5.positions_get() or ():
+    positions = mt5.positions_get()
+    if positions is None:
+        return {**err("MT5 open positions could not be verified.")}
+    for p in positions:
+        net = _mt5_position_net(p)
         gross = float(getattr(p, "profit", 0.0) or 0.0)
         swap = float(getattr(p, "swap", 0.0) or 0.0)
-        raw_comm = getattr(p, "commission", None)
-        raw_fee = getattr(p, "fee", None)
-        commission = float(raw_comm or 0.0)
-        fee = float(raw_fee or 0.0)
-        # Standard MT5 positions_get() records omit commission/fee; source linked deal costs from history_deals_get(position=ticket).
-        if raw_comm is None and raw_fee is None and hasattr(mt5, "history_deals_get"):
-            try:
-                pos_deals = mt5.history_deals_get(position=int(p.ticket)) or ()
-                commission = sum(float(getattr(d, "commission", 0.0) or 0.0) for d in pos_deals)
-                fee = sum(float(getattr(d, "fee", 0.0) or 0.0) for d in pos_deals)
-            except Exception:
-                pass
+        commission = net["commission"] if net else None
+        fee = net["fee"] if net else None
         out.append(
             {
                 "ticket": p.ticket,
@@ -1227,7 +1263,8 @@ def handle_positions(_msg):
                 "swap": swap,
                 "commission": commission,
                 "fee": fee,
-                "net_profit": round(gross + swap + commission + fee, 2),
+                "net_profit": net["net_profit"] if net else None,
+                "costs_verified": net is not None,
                 "sl": p.sl,
                 "tp": p.tp,
                 "time": getattr(p, "time", None),

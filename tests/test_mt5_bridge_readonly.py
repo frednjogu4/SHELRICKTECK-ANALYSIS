@@ -298,6 +298,70 @@ class ExnessBridgeDemoSafetyTests(unittest.TestCase):
         self.assertIn("changed since preview", reply["message"])
         self.fake_mt5.order_send.assert_not_called()
 
+    def target_position(self):
+        return types.SimpleNamespace(ticket=101, symbol="XAUUSD", type=0, volume=0.01,
+            price_open=100, price_current=103, profit=3.5, swap=-0.1, sl=95, tp=110)
+
+    def target_close_request(self, **overrides):
+        req = {"environment": "demo", "ticket": 101, "confirmed": True,
+               "intent_id": "netTargetClose12345678", "net_target_usd": 3.0}
+        req.update(overrides)
+        return req
+
+    def test_guarded_close_rechecks_current_net_including_costs_before_sending(self):
+        pos = self.target_position()
+        self.fake_mt5.positions_get.return_value = [pos]
+        self.fake_mt5.history_deals_get.return_value = [types.SimpleNamespace(commission=-0.3, fee=0)]
+        skipped = self.bridge.handle_close(self.target_close_request(net_target_usd=3.25))
+        self.assertEqual(skipped["type"], "close_skipped", skipped)
+        self.assertEqual(skipped["reason"], "NET_TARGET_NOT_REACHED")
+        self.assertAlmostEqual(skipped["net_profit"], 3.1)
+        self.fake_mt5.order_send.assert_not_called()
+        # Once the *net*, not the gross, reaches the custom target, submit exactly one close.
+        pos.profit = 3.65
+        closed = self.bridge.handle_close(self.target_close_request(net_target_usd=3.25))
+        self.assertEqual(closed["type"], "closed", closed)
+        self.fake_mt5.order_send.assert_called_once()
+        self.assertEqual(self.fake_mt5.order_send.call_args.args[0]["position"], 101)
+        self.assertEqual(self.bridge.handle_close(self.target_close_request(net_target_usd=3.25)), closed)
+        self.fake_mt5.order_send.assert_called_once()
+
+    def test_unknown_costs_cannot_trigger_target_close_or_fabricate_zero_fees(self):
+        self.fake_mt5.positions_get.return_value = [self.target_position()]
+        self.fake_mt5.history_deals_get.return_value = None
+        skipped = self.bridge.handle_close(self.target_close_request())
+        self.assertEqual(skipped["type"], "close_skipped", skipped)
+        self.assertEqual(skipped["reason"], "NET_PROFIT_UNAVAILABLE")
+        positions = self.bridge.handle_positions({})
+        self.assertIsNone(positions["list"][0]["net_profit"])
+        self.assertFalse(positions["list"][0]["costs_verified"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_guarded_close_rejects_invalid_targets_and_uncertain_execution(self):
+        self.fake_mt5.positions_get.return_value = [self.target_position()]
+        for target in (0, -1, float("nan"), float("inf"), "bad"):
+            reply = self.bridge.handle_close(self.target_close_request(net_target_usd=target))
+            self.assertEqual(reply["type"], "error", reply)
+        self.bridge._MT5_ORDER_UNCERTAIN = True
+        reply = self.bridge.handle_close(self.target_close_request())
+        self.assertIn("uncertain", reply["message"])
+        self.fake_mt5.order_send.assert_not_called()
+
+    def test_partial_close_pauses_further_automatic_target_closes(self):
+        self.fake_mt5.positions_get.return_value = [self.target_position()]
+        self.fake_mt5.order_send.return_value.retcode = self.fake_mt5.TRADE_RETCODE_DONE_PARTIAL
+        reply = self.bridge.handle_close(self.target_close_request())
+        self.assertEqual(reply["type"], "error", reply)
+        self.assertIn("partial or pending", reply["message"])
+        self.assertTrue(self.bridge._MT5_ORDER_UNCERTAIN)
+        self.bridge.handle_close(self.target_close_request(intent_id="secondTarget1234567890"))
+        self.fake_mt5.order_send.assert_called_once()
+
+    def test_account_advertises_guarded_target_support_and_positions_fail_closed(self):
+        self.assertTrue(self.bridge.handle_account({})["net_target_close_supported"])
+        self.fake_mt5.positions_get.return_value = None
+        self.assertEqual(self.bridge.handle_positions({})["type"], "error")
+
     def test_m15_history_is_read_only_and_uses_mt5_tick_volume(self):
         self.fake_mt5.TIMEFRAME_M1 = 1
         self.fake_mt5.TIMEFRAME_M5 = 5
